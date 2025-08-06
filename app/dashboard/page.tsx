@@ -9,6 +9,7 @@ import { TrendingUp, TrendingDown, PlusCircle, BarChart3, Calendar, Target, Info
 import Link from "next/link"
 import { Sidebar } from "@/components/layout/sidebar"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { MarketTicker } from "@/components/IndexTicker"
 export default function DashboardPage() {
   const [stats, setStats] = useState<any>({
     totalTrades: 0,
@@ -45,8 +46,9 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="flex">
+    <div className="">
       {/* <Sidebar /> */}
+           <MarketTicker/>
       <div className="flex-1 p-4 lg:p-8">
         <div className="space-y-6">
         

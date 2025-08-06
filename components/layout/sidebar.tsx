@@ -3,16 +3,15 @@
 import { useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, Calendar, FileText, Home, PlusCircle, Settings, TrendingUp, LogOut, Menu, X } from "lucide-react"
+import { BarChart3, Calendar, FileText, Home, PlusCircle, Settings, TrendingUp, LogOut, Menu, X,Building,Calculator } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { signOut } from "@/lib/auth"
 import { useRouter } from "next/navigation"
-
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: Home },  
-  { name: "Stock", href: "/stocks", icon: Home },
-  { name: "Pip Calculator", href: "/pip-calculator", icon: Home },
+  { name: "Stock", href: "/stocks", icon: Building },
+  { name: "Pip Calculator", href: "/pip-calculator", icon: Calculator },
   { name: "Add Trade", href: "/trades/new", icon: PlusCircle },
   { name: "Trade History", href: "/trades", icon: FileText },
   { name: "Strategy", href: "/strategy", icon: FileText },

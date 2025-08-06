@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 
+
 export default function LandingPage() {
   return (
     <div className="min-h-screen bg-[#0d1117] text-[#f0f6fc]">
@@ -37,7 +38,10 @@ export default function LandingPage() {
             <Link href="#about" className="text-[#7d8590] hover:text-[#f0f6fc] transition-colors">
               About
             </Link>
-            <Button className="bg-[#238636] hover:bg-[#2ea043] text-white">Get Started</Button>
+            <Button className="bg-[#238636] hover:bg-[#2ea043] text-white">
+                <Link href={"/dashboard"} className="flex items-center">
+                Get Started</Link>
+            </Button>
           </div>
         </div>
       </nav>

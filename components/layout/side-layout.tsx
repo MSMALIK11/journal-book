@@ -1,6 +1,6 @@
 import { ReactNode } from "react"
 import { Sidebar } from "./sidebar"
-import { MarketTicker } from "../IndexTicker"
+// import { MarketTicker } from "../IndexTicker"
 // import IndianIndex from "../analytics/nse-market-tracker"
 
 
@@ -18,7 +18,7 @@ export default function SideLayout({ children }: SiteLayoutProps) {
 
       {/* Main content (takes rest of the space) */}
       <main className="flex-1 p-6">
-        <MarketTicker/>
+   
         {/* <IndianIndex /> */}
         {children}
       </main>

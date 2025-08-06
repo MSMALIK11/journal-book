@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useToast } from "@/hooks/use-toast"
-
+import '../../styles/globals.css' // Ensure global styles are applied
 export function AuthForm() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -45,7 +45,7 @@ export function AuthForm() {
         title: "Success",
         description: "Signed in successfully!",
       })
-      router.push("/dashboard")
+      router.push("/landing-page")
     } catch (error: any) {
       toast({
         title: "Error",
@@ -84,7 +84,7 @@ export function AuthForm() {
         title: "Success",
         description: "Account created successfully!",
       })
-      router.push("/profile")
+      router.push("/dashboard")
     } catch (error: any) {
       toast({
         title: "Error",
