@@ -2,8 +2,7 @@ import { ReactNode } from "react"
 import { Sidebar } from "./sidebar"
 // import { MarketTicker } from "../IndexTicker"
 // import IndianIndex from "../analytics/nse-market-tracker"
-
-
+import Header from "./header"
 interface SiteLayoutProps {
   children: ReactNode
 }
@@ -15,12 +14,14 @@ export default function SideLayout({ children }: SiteLayoutProps) {
       <div className="lg:w-64">
         <Sidebar />
       </div>
-
       {/* Main content (takes rest of the space) */}
-      <main className="flex-1 p-6">
-   
-        {/* <IndianIndex /> */}
+      <main className="flex-1">
+<Header  />
+        
+   <div className="p-6">
+
         {children}
+   </div>
       </main>
     </div>
   )

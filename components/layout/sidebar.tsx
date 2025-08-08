@@ -3,11 +3,11 @@
 import { useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, Calendar, FileText, Home, PlusCircle, Settings, TrendingUp, LogOut, Menu, X,Building,Calculator } from "lucide-react"
+import { BarChart3, Calendar, FileText, Home, PlusCircle, Settings, TrendingUp, LogOut, Menu, X,Building,Calculator, ChartNoAxesColumnDecreasing } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { signOut } from "@/lib/auth"
 import { useRouter } from "next/navigation"
+import api from '@/services'
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: Home },  
   { name: "Stock", href: "/stocks", icon: Building },
@@ -27,8 +27,14 @@ export function Sidebar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
 
   const handleSignOut = async () => {
-    await signOut()
-    router.push("/")
+    try {
+      await api.signout()
+      router.push("/")
+      
+    } catch (error) {
+console.error('Error',error)
+      
+    }
   }
 
   return (

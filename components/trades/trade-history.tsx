@@ -1,6 +1,10 @@
+
+
+
+
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useMemo } from "react"
 import { format } from "date-fns"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
@@ -8,112 +12,123 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Edit, Trash2, Search } from "lucide-react"
-
-// ✅ Mock trades data
-const MOCK_TRADES = [
-  {
-    id: "1",
-    entry_date: "2025-08-01",
-    instrument: "NIFTY",
-    trade_type: "Buy",
-    entry_price: 20000,
-    exit_price: 20150,
-    quantity: 1,
-    net_pnl: 150,
-    strategy: "Breakout",
-    emotion_tag: "Confident",
-  },
-  {
-    id: "2",
-    entry_date: "2025-08-02",
-    instrument: "BANKNIFTY",
-    trade_type: "Sell",
-    entry_price: 44000,
-    exit_price: 43800,
-    quantity: 2,
-    net_pnl: 400,
-    strategy: "Reversal",
-    emotion_tag: "Calm",
-  },
-  {
-    id: "3",
-    entry_date: "2025-08-03",
-    instrument: "RELIANCE",
-    trade_type: "Buy",
-    entry_price: 2600,
-    exit_price: 2550,
-    quantity: 10,
-    net_pnl: -500,
-    strategy: "Scalping",
-    emotion_tag: "Fearful",
-  },
-  // Add more mock trades here as needed
-]
-
+import { Edit, Trash2, Search, Plus } from "lucide-react"
+import { TradeForm } from "./trade-form"
+import { useUserTradeHistory } from "@/hooks/useUser"
+import Loading from '@/components/shared/loading'
+import ConfirmationModal from "../shared/ConfirmationModel"
+import { useToast } from "@/hooks/use-toast"
+import api from '@/services'
+import { useQueryClient } from "@tanstack/react-query"
 export function TradeHistory() {
-  const [trades, setTrades] = useState<any[]>([])
-  const [filteredTrades, setFilteredTrades] = useState<any[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [filterType, setFilterType] = useState("all")
   const [filterStrategy, setFilterStrategy] = useState("all")
   const [currentPage, setCurrentPage] = useState(1)
-
+  const[deleteTradeId,setDeleteTradeId]=useState("")
+  const [isDeleting,setIsDeleting]=useState(false)
+  const [open, setOpen] = useState(false)
+  const {toast}=useToast()
+  const queryClient=useQueryClient()
   const tradesPerPage = 10
 
-  useEffect(() => {
-    setTrades(MOCK_TRADES)
-  }, [])
+  const { data, isLoading } = useUserTradeHistory()
+  const trades = data?.data?.trades || []
+console.log(trades)
+  // Unique strategies for filter dropdown
+  const strategies = useMemo(() => {
+    const allStrategies = trades.map((t) => t.strategy).filter(Boolean)
+    return Array.from(new Set(allStrategies))
+  }, [trades])
 
-  useEffect(() => {
-    filterTrades()
+  // Filter trades
+  const filteredTrades = useMemo(() => {
+    return trades.filter((trade) => {
+      const matchesSearch =
+        trade.instrument?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        trade.strategy?.toLowerCase().includes(searchTerm.toLowerCase())
+
+      const matchesType =
+        filterType === "all"
+          ? true
+          : filterType === "profit"
+          ? trade.net_pnl > 0
+          : trade.net_pnl < 0
+
+      const matchesStrategy =
+        filterStrategy === "all" ? true : trade.strategy === filterStrategy
+
+      return matchesSearch && matchesType && matchesStrategy
+    })
   }, [trades, searchTerm, filterType, filterStrategy])
 
-  const filterTrades = () => {
-    let filtered = trades
-
-    if (searchTerm) {
-      filtered = filtered.filter(
-        (trade) =>
-          trade.instrument.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          trade.strategy?.toLowerCase().includes(searchTerm.toLowerCase()),
-      )
-    }
-
-    if (filterType !== "all") {
-      if (filterType === "profit") {
-        filtered = filtered.filter((trade) => trade.net_pnl > 0)
-      } else if (filterType === "loss") {
-        filtered = filtered.filter((trade) => trade.net_pnl < 0)
-      }
-    }
-
-    if (filterStrategy !== "all") {
-      filtered = filtered.filter((trade) => trade.strategy === filterStrategy)
-    }
-
-    setFilteredTrades(filtered)
-    setCurrentPage(1)
-  }
+  // Pagination
+  const totalPages = Math.ceil(filteredTrades.length / tradesPerPage)
+  const paginatedTrades = useMemo(() => {
+    const start = (currentPage - 1) * tradesPerPage
+    return filteredTrades.slice(start, start + tradesPerPage)
+  }, [filteredTrades, currentPage])
 
   const deleteTrade = (tradeId: string) => {
-    if (!confirm("Are you sure you want to delete this trade?")) return
-    const updated = trades.filter((trade) => trade.id !== tradeId)
-    setTrades(updated)
+    console.log("Delete trade with ID:", tradeId)
+    // API call to delete can go here
+    setDeleteTradeId(tradeId)
   }
 
-  const paginatedTrades = filteredTrades.slice((currentPage - 1) * tradesPerPage, currentPage * tradesPerPage)
-  const totalPages = Math.ceil(filteredTrades.length / tradesPerPage)
-  const strategies = [...new Set(trades.map((trade) => trade.strategy).filter(Boolean))]
 
+
+const handleDelete = async () => {
+  if (!deleteTradeId) return;
+
+  try {
+    toast({
+
+      title: "Deleting trade...",
+      description: "Please wait while the trade is being deleted.",
+    });
+
+    const response = await api.trade.delete(deleteTradeId);
+
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+
+    toast({
+      title: "Success",
+      description: "Trade deleted successfully.",
+    });
+
+    setDeleteTradeId("");
+   queryClient.invalidateQueries({ queryKey: ['user-trade-history'] })
+  } catch (error: any) {
+    toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      })
+  }
+};
+
+
+    if (isLoading) {
+    return <Loading isLoading={isLoading} />
+  }
   return (
     <div className="space-y-6">
-      <Card>
+      <TradeForm open={open} setOpen={setOpen} />
+      <ConfirmationModal   isOpen={!!deleteTradeId} loading={isDeleting} onDelete={handleDelete} />
+      <Card className="relative">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Search className="h-5 w-5" />
             Search & Filter
           </CardTitle>
+          <Button
+            onClick={() => setOpen(true)}
+            className="rounded-full w-8 h-8 shadow-lg absolute right-4 top-4"
+          >
+            <Plus />
+          </Button>
         </CardHeader>
         <CardContent>
           <div className="flex flex-col md:flex-row gap-4">
@@ -178,15 +193,17 @@ export function TradeHistory() {
                     <TableCell>{format(new Date(trade.entry_date), "dd/MM/yyyy")}</TableCell>
                     <TableCell className="font-medium">{trade.instrument}</TableCell>
                     <TableCell>
-                      <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>{trade.trade_type}</Badge>
+                      <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>
+                        {trade.trade_type}
+                      </Badge>
                     </TableCell>
                     <TableCell>₹{trade.entry_price}</TableCell>
                     <TableCell>{trade.exit_price ? `₹${trade.exit_price}` : "-"}</TableCell>
                     <TableCell>{trade.quantity}</TableCell>
                     <TableCell>
                       {trade.net_pnl !== null ? (
-                        <span className={trade.net_pnl >= 0 ? "text-green-600" : "text-red-600"}>
-                          ₹{trade.net_pnl.toFixed(2)}
+                        <span className={Number(trade.net_pnl) >= 0 ? "text-green-600" : "text-red-600"}>
+                          ₹{Number(trade.net_pnl)}
                         </span>
                       ) : (
                         "-"

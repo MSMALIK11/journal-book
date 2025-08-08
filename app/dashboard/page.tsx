@@ -10,6 +10,7 @@ import Link from "next/link"
 import { Sidebar } from "@/components/layout/sidebar"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { MarketTicker } from "@/components/IndexTicker"
+import api from '@/services'
 export default function DashboardPage() {
   const [stats, setStats] = useState<any>({
     totalTrades: 0,
@@ -22,17 +23,26 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    loadDashboardData()
+    // Check if MongoDB is configured
+    const getUser = async () => {
+      setLoading(true)
+      try {
+      const res=await api.getUser()
+      console.log('res',res)
+      if(res.data.status !== 200) {
+          throw new Error("MongoDB is not configured")
+        }
+      } catch (error) {
+        console.error("Error fetching user:", error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    getUser()
   }, [])
 
-  const loadDashboardData = async () => {
-    const user = true
 
-    if (!user) {
-      setLoading(false)
-      return
-    }
-  }
 
   if (loading) {
     return (

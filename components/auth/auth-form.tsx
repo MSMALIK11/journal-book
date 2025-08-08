@@ -11,75 +11,58 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useToast } from "@/hooks/use-toast"
 import '../../styles/globals.css' // Ensure global styles are applied
+import api  from '@/services'
 export function AuthForm() {
   const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
+  const [password, setPassword] = useState("")
   const router = useRouter()
   const { toast } = useToast()
+ 
 
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
+ const handleSignIn = async (e: React.FormEvent) => {
+  e.preventDefault()
+  setLoading(true)
 
-    try {
-      const response = await fetch("/api/auth/signin", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ email, password }),
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || "Sign in failed")
-      }
-
-      // Store auth data in localStorage
-      localStorage.setItem("auth_token", data.token)
-      localStorage.setItem("user_data", JSON.stringify(data.user))
-
-      toast({
-        title: "Success",
-        description: "Signed in successfully!",
-      })
-      router.push("/landing-page")
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      })
+  try {
+    const response = await api.signIn({ email, password })
+console.log('response',response)
+    if (response.data.status) {
+      throw new Error("Sign in failed")
     }
 
+    toast({
+      title: "Success",
+      description: "Signed in successfully!",
+    })
+
+    router.push("/landing-page")
+  } catch (error: any) {
+    const message =
+      error?.response?.data?.error || error.message || "Something went wrong"
+
+    toast({
+      title: "Error",
+      description: message,
+      variant: "destructive",
+    })
+  } finally {
     setLoading(false)
   }
+}
+
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
 
     try {
-      const response = await fetch("/api/auth/signup", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ email, password }),
-      })
+      const response = await api.signUp({ email, password })
 
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || "Sign up failed")
+      if (response.status !== 200) {
+        throw new Error("Sign up failed")
       }
-
-      // Store auth data in localStorage
-      localStorage.setItem("auth_token", data.token)
-      localStorage.setItem("user_data", JSON.stringify(data.user))
-
+     setLoading(false)
       toast({
         title: "Success",
         description: "Account created successfully!",
@@ -93,7 +76,6 @@ export function AuthForm() {
       })
     }
 
-    setLoading(false)
   }
 
   return (
