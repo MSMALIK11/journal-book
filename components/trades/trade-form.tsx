@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   Card,
   CardContent,
@@ -36,7 +36,13 @@ import { TradeFormData } from "@/app/types/trade"
 import { useToast } from "@/hooks/use-toast"
 import api from "@/services"
 import { useQueryClient } from "@tanstack/react-query"
-export function TradeForm({ open, setOpen }: { open: boolean, setOpen: (open: boolean) => void }) {
+interface TradeFormProps {
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  initialData?: TradeFormData | null; // Optional, for update mode
+}
+
+export function TradeForm({ open, setOpen, initialData }: TradeFormProps) {
   const [formData, setFormData] = useState<TradeFormData>({
     category: "",
     instrument: "",
@@ -81,6 +87,20 @@ export function TradeForm({ open, setOpen }: { open: boolean, setOpen: (open: bo
     })
   }
 
+   useEffect(() => {
+    console.log('initial',initialData)
+    if (initialData) {
+      setFormData({
+        ...initialData
+        // net_pnl: initialData.net_pnl?.toString() || "0", // convert number to string
+        // entry_date: initialData.entry_date || "",
+        // exit_date: initialData.exit_date || "",
+      });
+    } else {
+      resetForm();
+    }
+  }, [initialData]);
+
   const handleAddInstrument = () => {
     if (newInstrument.trim() && !instrumentList.includes(newInstrument)) {
       setInstrumentList([...instrumentList, newInstrument])
@@ -90,36 +110,36 @@ export function TradeForm({ open, setOpen }: { open: boolean, setOpen: (open: bo
     setShowAddInstrument(false)
   }
   
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
+
+
+   const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
 
     try {
-      const res=await api.trade.add(formData)
-      console.log('res',res)
-      if (res.status !== 201) {
-        throw new Error("Failed to add trade")
+      if (initialData && initialData?.id) {
+        // UPDATE existing trade
+        const res = await api.trade.update(initialData?.id, formData);
+        // if (!res || res.error) throw new Error(res?.error || "Failed to update trade");
+
+        toast({ title: "Success", description: "Trade updated successfully!" });
+      } else {
+        // ADD new trade
+        const res = await api.trade.add(formData);
+        // if (!res || res.error) throw new Error(res?.error || "Failed to add trade");
+
+        toast({ title: "Success", description: "Trade added successfully!" });
       }
-   toast({
-        title: "Success",
-        description: "Trade Added successfully!",
-      })
-  queryClient.invalidateQueries({ queryKey: ['user-trade-history'] })
-      resetForm()
-      setOpen(false)
 
-    } catch (error:any) {
-      console.error("Error adding trade:", error)
-        toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      })
+   queryClient.invalidateQueries({ queryKey: ['user-trade-history'] })
+      resetForm();
+      setOpen(false);
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
-
+  };
   return (
     <div className="relative">
       {/* Floating Add Button */}

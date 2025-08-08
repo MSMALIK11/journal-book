@@ -9,7 +9,16 @@ export const useUserTradeHistory = () => {
   return useQuery({
     queryKey: ["user-trade-history"],
     queryFn: () => api.trade.getTradesHistory(), // wrapped in function
-    enabled:true
+    enabled:true,
+    staleTime:0,
+  });
+};
+export const useUserstocks = () => {
+  return useQuery({
+    queryKey: ["user-stocks"],
+    queryFn: () => api.stock.getStocks(),
+    enabled:true,
+    staleTime:0,
   });
 };
 

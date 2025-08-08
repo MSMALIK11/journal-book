@@ -7,7 +7,7 @@ export default function NewTradePage() {
       <Sidebar />
       <div className="flex-1  p-4 lg:p-8">
         <div className="space-y-6">
-          <TradeForm />
+          <TradeForm  />
         </div>
       </div>
     </div>

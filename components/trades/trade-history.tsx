@@ -26,6 +26,7 @@ export function TradeHistory() {
   const [filterStrategy, setFilterStrategy] = useState("all")
   const [currentPage, setCurrentPage] = useState(1)
   const[deleteTradeId,setDeleteTradeId]=useState("")
+  const [initialData,setInitialData]=useState(null)
   const [isDeleting,setIsDeleting]=useState(false)
   const [open, setOpen] = useState(false)
   const {toast}=useToast()
@@ -79,7 +80,7 @@ console.log(trades)
 
 const handleDelete = async () => {
   if (!deleteTradeId) return;
-
+setIsDeleting(true)
   try {
     toast({
 
@@ -88,11 +89,9 @@ const handleDelete = async () => {
     });
 
     const response = await api.trade.delete(deleteTradeId);
-
-    if (response?.error) {
-      throw new Error(response.error);
+    if (response.status !== 200) {
+      throw new Error("Failed to delete trade");
     }
-
     toast({
       title: "Success",
       description: "Trade deleted successfully.",
@@ -106,16 +105,22 @@ const handleDelete = async () => {
         description: error.message,
         variant: "destructive",
       })
+  }finally {  
+    setIsDeleting(false)
   }
+  setDeleteTradeId("");
 };
 
-
+const handleEdit=(trade)=>{
+  setOpen(true)
+  setInitialData(trade)
+}
     if (isLoading) {
     return <Loading isLoading={isLoading} />
   }
   return (
     <div className="space-y-6">
-      <TradeForm open={open} setOpen={setOpen} />
+      <TradeForm open={open} setOpen={setOpen} initialData={initialData} />
       <ConfirmationModal   isOpen={!!deleteTradeId} loading={isDeleting} onDelete={handleDelete} />
       <Card className="relative">
         <CardHeader>
@@ -213,7 +218,7 @@ const handleDelete = async () => {
                     <TableCell>{trade.emotion_tag && <Badge variant="outline">{trade.emotion_tag}</Badge>}</TableCell>
                     <TableCell>
                       <div className="flex gap-2">
-                        <Button size="sm" variant="outline">
+                        <Button size="sm" variant="outline" onClick={()=>handleEdit(trade)}>
                           <Edit className="h-4 w-4" />
                         </Button>
                         <Button size="sm" variant="outline" onClick={() => deleteTrade(trade.id)}>

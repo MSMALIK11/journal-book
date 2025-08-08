@@ -65,7 +65,7 @@ export const POST = withAuth(async (request: NextRequest, userId: string) => {
       !body.entry_price ||
       !body.quantity ||
       !body.trade_type ||
-      body.net_pnl === undefined // must be explicitly sent by user
+      body.net_pnl === undefined
     ) {
       return NextResponse.json(
         { message: "Missing required fields" },
@@ -98,6 +98,68 @@ export const POST = withAuth(async (request: NextRequest, userId: string) => {
     return NextResponse.json(
       {
         message: "Failed to create trade",
+        error: error.message || "Internal server error",
+      },
+      { status: 500 }
+    );
+  }
+});
+
+
+export const PUT = withAuth(async (request: NextRequest, userId: string, { params }: { params: { id: string } }) => {
+  try {
+    await connectDB();
+
+    if (!userId) {
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+    }
+
+    const tradeId = params.id;
+    const body = await request.json();
+
+    // Basic validation (you can adjust required fields here)
+    if (
+      !body.entry_date ||
+      !body.entry_price ||
+      !body.quantity ||
+      !body.trade_type
+    ) {
+      return NextResponse.json(
+        { message: "Missing required fields" },
+        { status: 400 }
+      );
+    }
+
+    // Find and update the trade if it belongs to the user
+    const updatedTrade = await Trade.findOneAndUpdate(
+      { _id: tradeId, userId },
+      {
+        ...body,
+        entry_date: new Date(body.entry_date),
+        exit_date: body.exit_date ? new Date(body.exit_date) : undefined,
+      },
+      { new: true }
+    );
+
+    if (!updatedTrade) {
+      return NextResponse.json({ message: "Trade not found or unauthorized" }, { status: 404 });
+    }
+
+    return NextResponse.json(
+      {
+        message: "Trade updated successfully",
+        trade: {
+          ...updatedTrade.toObject(),
+          id: updatedTrade._id.toString(),
+        },
+      },
+      { status: 200 }
+    );
+  } catch (error: any) {
+    console.error("Error updating trade:", error);
+    return NextResponse.json(
+      {
+        message: "Failed to update trade",
         error: error.message || "Internal server error",
       },
       { status: 500 }

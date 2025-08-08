@@ -2,6 +2,7 @@ type TradeCategory = "Forex" | "Indian" | ""; // category dropdown options
 type TradeType = "Buy" | "Sell" | ""; // trade direction
 
 export interface TradeFormData {
+  id?: string; // optional for updates
   category: TradeCategory;
   instrument: string;
   entry_date: string; // ISO datetime string
@@ -16,5 +17,5 @@ export interface TradeFormData {
   emotion_tag: string;
   setup_notes: string;
   tags: string[];
-  net_pnl:string
+  net_pnl:string | number
 }

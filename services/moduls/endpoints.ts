@@ -6,6 +6,7 @@ const endpoints = {
   getUser: "/user",
   checkhealth: "/health",
   trades: "/trades",
+  stocks: "/stocks",
 };
 
 export default endpoints;

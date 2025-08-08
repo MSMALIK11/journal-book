@@ -14,5 +14,9 @@ export const trade={
     async  delete(tradeId:string) {
   const res = await axios.delete(`${endpoints.trades}/${tradeId}`);
   return res
+},
+    async  update(tradeId:string,data:TradeFormData) {
+  const res = await axios.put(`${endpoints.trades}/${tradeId}`,data);
+  return res
 }
 }
