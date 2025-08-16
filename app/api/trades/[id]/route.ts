@@ -8,7 +8,7 @@ import { withAuth } from "../../middleware/withAuth"; // adjust path accordingly
 export const GET = withAuth(async (request: NextRequest, userId: string, { params }: { params: { id: string } }) => {
   await connectDB();
   try {
-    const trade = await Trade.findOne({ _id: params.id, userId }).lean();
+    const trade = await Trade.findOne({ _id: params.id, userId }).sort({ createdAt: -1 }) .lean();
     if (!trade) return NextResponse.json({ error: "Trade not found" }, { status: 404 });
     return NextResponse.json({
       ...trade,
@@ -24,18 +24,18 @@ export const PUT = withAuth(async (request: NextRequest, userId: string, { param
   try {
     const body = await request.json();
 
-    const net_pnl =
-      body.exit_price && body.entry_price && body.quantity
-        ? (body.trade_type === "Buy"
-            ? body.exit_price - body.entry_price
-            : body.entry_price - body.exit_price) * body.quantity
-        : null;
+    // const net_pnl =
+    //   body.exit_price && body.entry_price && body.quantity
+    //     ? (body.trade_type === "Buy"
+    //         ? body.exit_price - body.entry_price
+    //         : body.entry_price - body.exit_price) * body.quantity
+    //     : null;
 
     const updated = await Trade.findOneAndUpdate(
       { _id: params.id, userId },
       {
         ...body,
-        net_pnl,
+        // net_pnl,
         entry_date: body.entry_date ? new Date(body.entry_date) : null,
         exit_date: body.exit_date ? new Date(body.exit_date) : null,
         updatedAt: new Date(),

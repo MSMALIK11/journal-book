@@ -4,21 +4,13 @@ import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Alert, AlertDescription } from "@/components/ui/alert"
 import { TrendingUp, TrendingDown, PlusCircle, BarChart3, Calendar, Target, Info } from "lucide-react"
 import Link from "next/link"
-import { Sidebar } from "@/components/layout/sidebar"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { MarketTicker } from "@/components/IndexTicker"
 import api from '@/services'
 export default function DashboardPage() {
-  const [stats, setStats] = useState<any>({
-    totalTrades: 0,
-    completedTrades: 0,
-    winRate: 0,
-    totalPnL: 0,
-    todayTrades: 0,
-  })
+  const [stats, setStats] = useState<any>({})
   const [recentTrades, setRecentTrades] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -40,9 +32,19 @@ export default function DashboardPage() {
     }
 
     getUser()
+    fetchDashboardData()
   }, [])
 
-
+const fetchDashboardData=async()=>{
+  try {
+    const res=await api.dashboard.getDashboardData()
+    console.log('res dashboard',res)
+    setStats(res)
+    
+  } catch (error) {
+    
+  }
+}
 
   if (loading) {
     return (
@@ -82,8 +84,8 @@ export default function DashboardPage() {
                 <BarChart3 className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{stats.totalTrades}</div>
-                <p className="text-xs text-muted-foreground">{stats.completedTrades} completed</p>
+                <div className="text-2xl font-bold">{stats?.totalTrades}</div>
+                <p className="text-xs text-muted-foreground">{stats?.completedTrades} completed</p>
               </CardContent>
             </Card>
 
@@ -93,7 +95,7 @@ export default function DashboardPage() {
                 <Target className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{stats.winRate?.toFixed(1)}%</div>
+                <div className="text-2xl font-bold">{stats?.winRate}%</div>
                 <p className="text-xs text-muted-foreground">Success rate</p>
               </CardContent>
             </Card>
@@ -101,15 +103,15 @@ export default function DashboardPage() {
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <CardTitle className="text-sm font-medium">Total P&L</CardTitle>
-                {stats.totalPnL >= 0 ? (
+                {stats?.totalPnL >= 0 ? (
                   <TrendingUp className="h-4 w-4 text-green-600" />
                 ) : (
                   <TrendingDown className="h-4 w-4 text-red-600" />
                 )}
               </CardHeader>
               <CardContent>
-                <div className={`text-2xl font-bold ${stats.totalPnL >= 0 ? "text-green-600" : "text-red-600"}`}>
-                  ₹{stats.totalPnL?.toFixed(2)}
+                <div className={`text-2xl font-bold ${stats?.totalPnL >= 0 ? "text-green-600" : "text-red-600"}`}>
+                  ${stats?.totalPnL}
                 </div>
                 <p className="text-xs text-muted-foreground">Net profit/loss</p>
               </CardContent>
@@ -121,7 +123,7 @@ export default function DashboardPage() {
                 <Calendar className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{stats.todayTrades}</div>
+                <div className="text-2xl font-bold">{stats?.todaysTrades}</div>
                 <p className="text-xs text-muted-foreground">Trades today</p>
               </CardContent>
             </Card>

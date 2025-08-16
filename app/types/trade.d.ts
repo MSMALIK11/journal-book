@@ -3,7 +3,7 @@ type TradeType = "Buy" | "Sell" | ""; // trade direction
 
 export interface TradeFormData {
   id?: string; // optional for updates
-  category: TradeCategory;
+  category: string;
   instrument: string;
   entry_date: string; // ISO datetime string
   exit_date: string; // ISO datetime string

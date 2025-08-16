@@ -7,6 +7,8 @@ const endpoints = {
   checkhealth: "/health",
   trades: "/trades",
   stocks: "/stocks",
+  instruments: "/instruments",
+  dashboard: "/dashboard",
 };
 
 export default endpoints;

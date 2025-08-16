@@ -31,18 +31,41 @@ import {
   SelectItem,
   SelectValue,
 } from "@/components/ui/select"
-import { Plus } from "lucide-react"
+import { ContrastIcon, Plus } from "lucide-react"
 import { TradeFormData } from "@/app/types/trade"
 import { useToast } from "@/hooks/use-toast"
 import api from "@/services"
 import { useQueryClient } from "@tanstack/react-query"
+import { Instruments, Pair } from "@/app/types/instrumnts"
+import { InstrumentsApiResponse } from "@/app/types/ApiResponse/instrumentsApiResponse"
 interface TradeFormProps {
   open: boolean;
   setOpen: (open: boolean) => void;
+  onClose: () => void;
   initialData?: TradeFormData | null; // Optional, for update mode
 }
+const CONTRACT_SIZES = [
+  // Forex
+  { symbol: "EUR/USD", size: 100000, category: "Forex" },
+  { symbol: "GBP/USD", size: 100000, category: "Forex" },
+  { symbol: "USD/JPY", size: 100000, category: "Forex" },
+  { symbol: "AUD/USD", size: 100000, category: "Forex" },
+  { symbol: "USD/CAD", size: 100000, category: "Forex" },
+  { symbol: "USD/CHF", size: 100000, category: "Forex" },
 
-export function TradeForm({ open, setOpen, initialData }: TradeFormProps) {
+  // Metals
+  { symbol: "XAUUSD", size: 100, category: "Metal" },   // 100 ounces
+  { symbol: "XAGUSD", size: 5000, category: "Metal" },  // 5000 ounces
+
+  // Crypto
+  { symbol: "BTCUSD", size: 1, category: "Crypto" },    // 1 Bitcoin
+  { symbol: "ETHUSD", size: 1, category: "Crypto" },    // 1 Ether
+  { symbol: "LTCUSD", size: 1, category: "Crypto" },    // 1 Litecoin
+  { symbol: "XRPUSD", size: 1000, category: "Crypto" }, // 1000 Ripple
+];
+
+
+export function TradeForm({ open, setOpen, initialData,onClose }: TradeFormProps) {
   const [formData, setFormData] = useState<TradeFormData>({
     category: "",
     instrument: "",
@@ -61,16 +84,19 @@ export function TradeForm({ open, setOpen, initialData }: TradeFormProps) {
     net_pnl:"0",
   })
   const [loading, setLoading] = useState(false)
-  const [instrumentList, setInstrumentList] = useState(["NIFTY", "BANKNIFTY", "EUR/USD"])
+  const [instrumentList, setInstrumentList] = useState<InstrumentsApiResponse>([])
   const [newInstrument, setNewInstrument] = useState("")
   const [showAddInstrument, setShowAddInstrument] = useState(false)
   const [strategies,setStrategies]=useState(["Breakout", "Reversal", "5 EMA","MACD"])
+  const[contractSize,setContractSize]=useState(100)
+  const [category,setNewCategory]=useState<string>("")
+  const [savingpair,setSavingPair]=useState(false)
   const { toast } = useToast()
  const queryClient=useQueryClient()
   const resetForm = () => {
     setFormData({
       category: "",
-      instrument: "",
+      instrument: "XAUUSD",
       entry_date: "",
       exit_date: "",
       trade_type: "",
@@ -88,34 +114,75 @@ export function TradeForm({ open, setOpen, initialData }: TradeFormProps) {
   }
 
    useEffect(() => {
-    console.log('initial',initialData)
+  resetForm();
     if (initialData) {
       setFormData({
         ...initialData
-        // net_pnl: initialData.net_pnl?.toString() || "0", // convert number to string
-        // entry_date: initialData.entry_date || "",
-        // exit_date: initialData.exit_date || "",
       });
     } else {
       resetForm();
     }
   }, [initialData]);
 
-  const handleAddInstrument = () => {
-    if (newInstrument.trim() && !instrumentList.includes(newInstrument)) {
-      setInstrumentList([...instrumentList, newInstrument])
-      setFormData({ ...formData, instrument: newInstrument })
+  const handleAddInstrument =async (paylaod:Instruments) => {
+    try {
+    
+      const res=await  api.instrumnts.addInstruments(paylaod)
+      console.log('response a',res)
+      setInstrumentList(res.data)
+      
+    } catch (error) {
+      console.error(error)
+      
     }
-    setNewInstrument("")
-    setShowAddInstrument(false)
   }
   
+// Add this useEffect inside your component, after state definitions
+
+useEffect(() => {
+  console.log('calculating...');
+  fetchInstruments()
+  if (formData.instrument) {
+    const entry = parseFloat(formData.entry_price);
+    const exit = parseFloat(formData.exit_price);
+    const qty = parseFloat(formData.quantity);  // usually in lots
+ 
+
+    console.log('entry', entry, 'exit', exit, 'qty', qty, 'contractSize', contractSize);
+
+    if (!isNaN(entry) && !isNaN(exit) && !isNaN(qty) && !isNaN(contractSize)) {
+      const pnl = (exit - entry) * qty * contractSize;
+      console.log('pnl', pnl);
+
+      setFormData(prev => ({
+        ...prev,
+        net_pnl: pnl.toFixed(2) // keep 2 decimal places
+      }));
+    }
+  }
+}, [
+  formData.entry_price,
+  formData.exit_price,
+  formData.quantity,
+  formData.instrument
+]);
+const fetchInstruments= async()=>{
+try {
+  const res=await api.instrumnts.getInstruments()
+  setInstrumentList(res.data)
+  
+} catch (error) {
+  
+}
+
+}
+
 
 
    const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-
+console.log('form data ',formData)
     try {
       if (initialData && initialData?.id) {
         // UPDATE existing trade
@@ -140,6 +207,7 @@ export function TradeForm({ open, setOpen, initialData }: TradeFormProps) {
       setLoading(false);
     }
   };
+
   return (
     <div className="relative">
       {/* Floating Add Button */}
@@ -151,7 +219,14 @@ export function TradeForm({ open, setOpen, initialData }: TradeFormProps) {
       </Button>
 
       {/* Add Trade Dialog */}
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open}   onOpenChange={(isOpen) => {
+        console.log("Dialog open state changed:", isOpen);
+    setOpen(isOpen);
+    if (!isOpen) {
+      onClose();
+    }
+     
+  }}>
         <DialogContent className="lg:min-w-4xl max-w-7xl">
           <DialogHeader>
             <DialogTitle className="text-2xl font-semibold text-primary">
@@ -188,30 +263,54 @@ export function TradeForm({ open, setOpen, initialData }: TradeFormProps) {
                 {/* Instrument Dropdown */}
                 <div>
                   <Label>Instrument</Label>
+  
                   <Select
-                    value={formData.instrument}
-                    onValueChange={(value) => {
-                      if (value === "__add_new") {
-                        setShowAddInstrument(true)
-                      } else {
-                        setFormData({ ...formData, instrument: value })
-                      }
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select instrument" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {instrumentList.map((inst, idx) => (
-                        <SelectItem key={idx} value={inst}>
-                          {inst}
-                        </SelectItem>
-                      ))}
-                      <SelectItem value="__add_new" className="text-blue-600">
-                        ➕ Add New Instrument
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
+  value={formData.instrument}
+ onValueChange={(value) => {
+  console.log('value',value)
+  if (value === "__add_new") {
+    setShowAddInstrument(true);
+  } else {
+   const selectedInstrument = instrumentList
+  ?.flatMap((cat) => cat.instruments)
+  .find((p) => p.symbol === value);
+if (selectedInstrument) {
+  setContractSize(selectedInstrument.size);
+  setFormData({
+    ...formData,
+    instrument: selectedInstrument.symbol,
+  });
+}
+  }
+}}
+
+>
+  <SelectTrigger>
+    <SelectValue placeholder="Select instrument" />
+  </SelectTrigger>
+  <SelectContent>
+    {instrumentList?.map((item: any) => (
+      <div key={item._id}>
+        {/* Category Heading */}
+        <div className="px-2 py-1 text-sm font-semibold text-gray-500">
+          {item.category}
+        </div>
+        {/* Symbols under this category */}
+        {item.instruments.map((pair: any) => (
+          <SelectItem key={pair._id} value={pair.symbol}>
+            {pair.symbol}
+          </SelectItem>
+        ))}
+      </div>
+    ))}
+
+    {/* Add New */}
+    <SelectItem value="__add_new" className="text-blue-600">
+      ➕ Add New Instrument
+    </SelectItem>
+  </SelectContent>
+</Select>
+
                 </div>
 
                 {/* Entry & Exit Price */}
@@ -379,7 +478,7 @@ export function TradeForm({ open, setOpen, initialData }: TradeFormProps) {
                   Reset
                 </Button>
                 <Button onClick={handleSubmit} disabled={loading}>
-                  {loading ? "Saving..." : "Add Trade"}
+                  {loading ? "Saving..." :initialData?.id?"Update": "Add Trade"}
                 </Button>
               </div>
             </TabsContent>
@@ -394,24 +493,64 @@ export function TradeForm({ open, setOpen, initialData }: TradeFormProps) {
       </Dialog>
 
       {/* Add Instrument Dialog */}
-      <Dialog open={showAddInstrument} onOpenChange={setShowAddInstrument}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add New Instrument</DialogTitle>
-          </DialogHeader>
-          <Input
-            placeholder="Enter new instrument name"
-            value={newInstrument}
-            onChange={(e) => setNewInstrument(e.target.value)}
-          />
-          <div className="flex justify-end gap-2 mt-4">
-            <Button variant="secondary" onClick={() => setShowAddInstrument(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddInstrument}>Save</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+    {/* Add Instrument Dialog */}
+<Dialog open={showAddInstrument} onOpenChange={setShowAddInstrument}>
+  <DialogContent>
+    <DialogHeader>
+      <DialogTitle>Add New Instrument</DialogTitle>
+    </DialogHeader>
+
+    {/* Category */}
+    <Select value={category} onValueChange={(val:string)=>setNewCategory(val)}>
+      <SelectTrigger>
+        <SelectValue placeholder="Select Category" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="Forex">Forex</SelectItem>
+        <SelectItem value="Metals">Metals</SelectItem>
+        <SelectItem value="Crypto">Crypto</SelectItem>
+      </SelectContent>
+    </Select>
+
+    {/* Symbol */}
+    <Input
+      placeholder="Enter instrument symbol (e.g. EUR/USD, XAUUSD)"
+      value={newInstrument}
+      onChange={(e) => setNewInstrument(e.target.value)}
+      className="mt-3"
+    />
+
+    {/* Contract Size */}
+    <Input
+      placeholder="Enter contract size (e.g. 100000)"
+      type="number"
+      value={contractSize}
+      onChange={(e) => setContractSize(Number(e.target.value))}
+      className="mt-3"
+    />
+
+    {/* Actions */}
+    <div className="flex justify-end gap-2 mt-4">
+      <Button variant="secondary" onClick={() => setShowAddInstrument(false)}>
+        Cancel
+      </Button>
+      <Button
+        onClick={() => {
+          const payload = {
+            category: category,
+            symbol: newInstrument,
+            size: contractSize,
+           
+          };
+          handleAddInstrument(payload);
+        }}
+      >
+        Save
+      </Button>
+    </div>
+  </DialogContent>
+</Dialog>
+
     </div>
   )
 }

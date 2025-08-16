@@ -24,6 +24,7 @@ export function TradeHistory() {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterType, setFilterType] = useState("all")
   const [filterStrategy, setFilterStrategy] = useState("all")
+  const [filterMarket, setFilterMarket] = useState("all");
   const [currentPage, setCurrentPage] = useState(1)
   const[deleteTradeId,setDeleteTradeId]=useState("")
   const [initialData,setInitialData]=useState(null)
@@ -58,10 +59,14 @@ console.log(trades)
 
       const matchesStrategy =
         filterStrategy === "all" ? true : trade.strategy === filterStrategy
+          const matchesMarket =
+      filterMarket === "all"
+        ? true
+        : trade.category?.toLowerCase() === filterMarket.toLowerCase();
 
-      return matchesSearch && matchesType && matchesStrategy
+      return matchesSearch && matchesType && matchesStrategy && matchesMarket
     })
-  }, [trades, searchTerm, filterType, filterStrategy])
+  }, [trades, searchTerm, filterType, filterStrategy, filterMarket])
 
   // Pagination
   const totalPages = Math.ceil(filteredTrades.length / tradesPerPage)
@@ -115,13 +120,18 @@ const handleEdit=(trade)=>{
   setOpen(true)
   setInitialData(trade)
 }
+const handleClose=()=>{
+  setInitialData(null)
+
+
+}
     if (isLoading) {
     return <Loading isLoading={isLoading} />
   }
   return (
     <div className="space-y-6">
-      <TradeForm open={open} setOpen={setOpen} initialData={initialData} />
-      <ConfirmationModal   isOpen={!!deleteTradeId} loading={isDeleting} onDelete={handleDelete} />
+      <TradeForm open={open} onClose={handleClose} setOpen={setOpen} initialData={initialData} />
+      <ConfirmationModal    isOpen={!!deleteTradeId} loading={isDeleting} onDelete={handleDelete} />
       <Card className="relative">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -144,6 +154,17 @@ const handleEdit=(trade)=>{
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
             </div>
+            <Select value={filterMarket} onValueChange={setFilterMarket}>
+  <SelectTrigger className="w-full md:w-40">
+    <SelectValue placeholder="Filter by Market" />
+  </SelectTrigger>
+  <SelectContent>
+    <SelectItem value="all">All Markets</SelectItem>
+    <SelectItem value="indian">Indian Market</SelectItem>
+    <SelectItem value="forex">Forex/Crypto</SelectItem>
+  </SelectContent>
+</Select>
+
             <Select value={filterType} onValueChange={setFilterType}>
               <SelectTrigger className="w-full md:w-40">
                 <SelectValue placeholder="Filter by P&L" />
@@ -154,6 +175,7 @@ const handleEdit=(trade)=>{
                 <SelectItem value="loss">Loss Making</SelectItem>
               </SelectContent>
             </Select>
+
             <Select value={filterStrategy} onValueChange={setFilterStrategy}>
               <SelectTrigger className="w-full md:w-40">
                 <SelectValue placeholder="Filter by Strategy" />
@@ -195,7 +217,7 @@ const handleEdit=(trade)=>{
               <TableBody>
                 {paginatedTrades.map((trade) => (
                   <TableRow key={trade.id}>
-                    <TableCell>{format(new Date(trade.entry_date), "dd/MM/yyyy")}</TableCell>
+                    <TableCell>{format(new Date(trade.updatedAt), "dd/MM/yyyy")}</TableCell>
                     <TableCell className="font-medium">{trade.instrument}</TableCell>
                     <TableCell>
                       <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>
@@ -208,7 +230,7 @@ const handleEdit=(trade)=>{
                     <TableCell>
                       {trade.net_pnl !== null ? (
                         <span className={Number(trade.net_pnl) >= 0 ? "text-green-600" : "text-red-600"}>
-                          ₹{Number(trade.net_pnl)}
+                          ${Number(trade.net_pnl)}
                         </span>
                       ) : (
                         "-"

@@ -111,8 +111,9 @@ const stocks=data?.data.stocks
       resetForm()
     }
   }, [editStockId])
+  
 
-  function resetForm() {
+  function resetForm(close=true) {
     setFormData({
       symbol: "",
       sector: "",
@@ -124,6 +125,7 @@ const stocks=data?.data.stocks
     setRemarks([])
     setNewRemarkText("")
     setDialogOpen(false)
+      if (close) setDialogOpen(false)
   }
 
   async function saveStock() {
@@ -197,6 +199,7 @@ try {
     return <Loaidng isLoading={isLoading} />
   }
 
+ 
   return (
     <div className="p-6 space-y-6">
 
@@ -205,7 +208,11 @@ try {
         <h1 className="text-3xl font-bold">Stock Manager</h1>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
-            <Button onClick={()=>setDialogOpen(true)}>
+            <Button   onClick={() => {
+        setEditStockId(null)
+        resetForm(false) 
+        setDialogOpen(true)
+      }}>
               <Plus className="w-4 h-4 mr-1" />
               Add Stock
             </Button>

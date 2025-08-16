@@ -2,9 +2,10 @@ import mongoose from "mongoose"
 
 export interface ITrade {
   _id?: string
+  category: string
   userId: string
   instrument: string
-  entry_date: Date
+  entry_date?: Date
   exit_date?: Date
   trade_type: "Buy" | "Sell"
   entry_price: number
@@ -30,6 +31,10 @@ const TradeSchema = new mongoose.Schema<ITrade>(
       index: true,
     },
     instrument: {
+      type: String,
+      required: true,
+    },
+    category: {
       type: String,
       required: true,
     },

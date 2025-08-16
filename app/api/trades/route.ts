@@ -106,7 +106,7 @@ export const POST = withAuth(async (request: NextRequest, userId: string) => {
 });
 
 
-export const PUT = withAuth(async (request: NextRequest, userId: string, { params }: { params: { id: string } }) => {
+export const PUT = withAuth(async (request: NextRequest, userId: string,context: any ) => {
   try {
     await connectDB();
 
@@ -114,9 +114,10 @@ export const PUT = withAuth(async (request: NextRequest, userId: string, { param
       return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
 
+    const { params } = await context; 
     const tradeId = params.id;
     const body = await request.json();
-
+console.log("body", body);
     // Basic validation (you can adjust required fields here)
     if (
       !body.entry_date ||

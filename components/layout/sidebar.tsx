@@ -3,21 +3,21 @@
 import { useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, Calendar, FileText, Home, PlusCircle, Settings, TrendingUp, LogOut, Menu, X,Building,Calculator, ChartNoAxesColumnDecreasing } from "lucide-react"
+import { BarChart3, Calendar, FileText, Home, PlusCircle, Settings, TrendingUp, LogOut, Menu, X,Building,Calculator,StickyNote,CalculatorIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { useRouter } from "next/navigation"
 import api from '@/services'
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: Home },  
+  { name: "Trade", href: "/trades", icon: FileText },
   { name: "Stock", href: "/stocks", icon: Building },
-  { name: "Pip Calculator", href: "/pip-calculator", icon: Calculator },
-  { name: "Add Trade", href: "/trades/new", icon: PlusCircle },
-  { name: "Trade History", href: "/trades", icon: FileText },
   { name: "Strategy", href: "/strategy", icon: FileText },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "Calendar", href: "/calendar", icon: Calendar },
   { name: "Reports", href: "/reports", icon: TrendingUp },
+  { name: "Taks", href: "/tasks", icon: StickyNote },
+  { name: "Pip Calculator", href: "/pip-calculator", icon: CalculatorIcon },
   { name: "Settings", href: "/settings", icon: Settings },
 ]
 
