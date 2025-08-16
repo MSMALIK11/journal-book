@@ -7,28 +7,36 @@ export const GET = withAuth(async (request: NextRequest, userId: string) => {
   await connectDB();
   try {
     const objectId = new mongoose.Types.ObjectId(userId);
-
+console.log('userId',userId)
     // ✅ total trades
     const totalTrades = await Trade.countDocuments({ userId: objectId });
-
+const recentTrades = await Trade.find({ userId: objectId })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean();
     // ✅ total PnL (ignore invalid strings)
-    const pnlAgg = await Trade.aggregate([
-  { $match: { userId: objectId } },
+  const pnlAgg = await Trade.aggregate([
+  { $match: { userId: userId } },
   {
-    $group: {
-      _id: null,
-      totalPnL: {
-        $sum: {
-          $cond: [
-            { $and: [ { $ne: ["$net_pnl", ""] }, { $ne: ["$net_pnl", null] } ] }, 
-            { $toDouble: "$net_pnl" },
-            0,
-          ],
+    $project: {
+      net_pnl_num: {
+        $convert: {
+          input: "$net_pnl",
+          to: "double",
+          onError: 0,   // if conversion fails, use 0
+          onNull: 0,    // if null, use 0
         },
       },
     },
   },
+  {
+    $group: {
+      _id: null,
+      totalPnL: { $sum: "$net_pnl_num" },
+    },
+  },
 ]);
+
     const totalPnL = pnlAgg[0]?.totalPnL || 0;
 
     // ✅ today's trades count
@@ -42,7 +50,7 @@ export const GET = withAuth(async (request: NextRequest, userId: string) => {
 
     // ✅ win/loss stats
    const winLossAgg = await Trade.aggregate([
-  { $match: { userId: objectId } },
+  { $match: { userId: userId } },
   {
     $group: {
       _id: null,
@@ -81,6 +89,7 @@ export const GET = withAuth(async (request: NextRequest, userId: string) => {
       todaysTrades,
       winRate: winRate.toFixed(2),
       lossRate: lossRate.toFixed(2),
+      recentTrades
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

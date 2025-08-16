@@ -75,7 +75,6 @@ const fetchDashboardData=async()=>{
               <ThemeToggle />
             </div>
           </div>
-
           {/* Quick Stats */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <Card>
@@ -181,9 +180,9 @@ const fetchDashboardData=async()=>{
               </div>
             </CardHeader>
             <CardContent>
-              {recentTrades.length > 0 ? (
+              {stats?.recentTrades?.length > 0 ? (
                 <div className="space-y-4">
-                  {recentTrades.map((trade) => (
+                  {stats?.recentTrades?.map((trade) => (
                     <div key={trade.id} className="flex items-center justify-between p-4 border rounded-lg">
                       <div className="flex items-center gap-4">
                         <div>
@@ -198,7 +197,7 @@ const fetchDashboardData=async()=>{
                         <div className="font-medium">₹{trade.entry_price}</div>
                         {trade.net_pnl !== null && (
                           <div className={`text-sm ${trade.net_pnl >= 0 ? "text-green-600" : "text-red-600"}`}>
-                            {trade.net_pnl >= 0 ? "+" : ""}₹{trade.net_pnl.toFixed(2)}
+                            {trade.net_pnl >= 0 ? "+" : ""}₹{trade.net_pnl}
                           </div>
                         )}
                       </div>
