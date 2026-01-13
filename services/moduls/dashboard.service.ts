@@ -4,7 +4,7 @@ import endpoints from "./endpoints";
 
 export const dashboard={
     async getDashboardData() {
-        const res= await axios.get(endpoints.dashboard)
+        const res= await axios.get(endpoints.analytics)
         return res.data
     }
 }

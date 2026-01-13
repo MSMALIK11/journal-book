@@ -204,6 +204,7 @@ const handleClose=()=>{
                 <TableRow>
                   <TableHead>Date</TableHead>
                   <TableHead>Symbol</TableHead>
+                  <TableHead>Category</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Entry</TableHead>
                   <TableHead>Exit</TableHead>
@@ -219,6 +220,7 @@ const handleClose=()=>{
                   <TableRow key={trade.id}>
                     <TableCell>{format(new Date(trade.updatedAt), "dd/MM/yyyy")}</TableCell>
                     <TableCell className="font-medium">{trade.instrument}</TableCell>
+                    <TableCell className="font-medium">{trade.category}</TableCell>
                     <TableCell>
                       <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>
                         {trade.trade_type}

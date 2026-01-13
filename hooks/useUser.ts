@@ -33,3 +33,11 @@ export const useSignUp = () => {
     mutationFn: api.signUp,
   });
 };
+export const useUserStrategies = () => {
+  return useQuery({
+    queryKey: ["user-strategy"],
+    queryFn: () => api.strategy.getAll(),
+    enabled:true,
+    staleTime:0,
+  })
+}

@@ -11,109 +11,121 @@ import {
   PieChart, Pie, Cell, LineChart, Line
 } from "recharts"
 import { TrendingUp, TrendingDown, Target, AlertTriangle } from "lucide-react"
-
+import api from '@/services'
+import DayOfWeekCharts from "./DayOfWeekCharts"
 const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#8884D8"]
 
-// 🧪 Mock Trade Data
-const mockTrades = [
-  { user_id: "123", net_pnl: 500, strategy: "Breakout", emotion_tag: "Confident", entry_date: "2025-08-01" },
-  { user_id: "123", net_pnl: -300, strategy: "Reversal", emotion_tag: "Greedy", entry_date: "2025-08-01" },
-  { user_id: "123", net_pnl: 700, strategy: "Breakout", emotion_tag: "Confident", entry_date: "2025-08-02" },
-  { user_id: "123", net_pnl: -100, strategy: "Scalping", emotion_tag: "Fearful", entry_date: "2025-08-02" },
-  { user_id: "123", net_pnl: 0, strategy: "Reversal", emotion_tag: "Calm", entry_date: "2025-08-03" },
-  { user_id: "123", net_pnl: 400, strategy: "Breakout", emotion_tag: "Confident", entry_date: "2025-08-03" },
-  { user_id: "123", net_pnl: -200, strategy: "Scalping", emotion_tag: "Greedy", entry_date: "2025-08-04" },
-]
+// // 🧪 Mock Trade Data
+// const mockTrades = [
+//   { user_id: "123", net_pnl: 500, strategy: "Breakout", emotion_tag: "Confident", entry_date: "2025-08-01" },
+//   { user_id: "123", net_pnl: -300, strategy: "Reversal", emotion_tag: "Greedy", entry_date: "2025-08-01" },
+//   { user_id: "123", net_pnl: 700, strategy: "Breakout", emotion_tag: "Confident", entry_date: "2025-08-02" },
+//   { user_id: "123", net_pnl: -100, strategy: "Scalping", emotion_tag: "Fearful", entry_date: "2025-08-02" },
+//   { user_id: "123", net_pnl: 0, strategy: "Reversal", emotion_tag: "Calm", entry_date: "2025-08-03" },
+//   { user_id: "123", net_pnl: 400, strategy: "Breakout", emotion_tag: "Confident", entry_date: "2025-08-03" },
+//   { user_id: "123", net_pnl: -200, strategy: "Scalping", emotion_tag: "Greedy", entry_date: "2025-08-04" },
+// ]
 
 export function AnalyticsDashboard() {
   const [analytics, setAnalytics] = useState<any>({})
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    calculateAnalytics(mockTrades)
+    // calculateAnalytics(mockTrades)
+    fetchDashboardData()
     setLoading(false)
   }, [])
 
-  const calculateAnalytics = (tradesData: any[]) => {
-    const completedTrades = tradesData.filter((trade) => trade.net_pnl !== null)
-    const profitableTrades = completedTrades.filter((trade) => trade.net_pnl > 0)
-    const losingTrades = completedTrades.filter((trade) => trade.net_pnl < 0)
+  // const calculateAnalytics = (tradesData: any[]) => {
+  //   const completedTrades = tradesData.filter((trade) => trade.net_pnl !== null)
+  //   const profitableTrades = completedTrades.filter((trade) => trade.net_pnl > 0)
+  //   const losingTrades = completedTrades.filter((trade) => trade.net_pnl < 0)
 
-    const totalPnL = completedTrades.reduce((sum, trade) => sum + trade.net_pnl, 0)
-    const totalProfit = profitableTrades.reduce((sum, trade) => sum + trade.net_pnl, 0)
-    const totalLoss = Math.abs(losingTrades.reduce((sum, trade) => sum + trade.net_pnl, 0))
+  //   const totalPnL = completedTrades.reduce((sum, trade) => sum + trade.net_pnl, 0)
+  //   const totalProfit = profitableTrades.reduce((sum, trade) => sum + trade.net_pnl, 0)
+  //   const totalLoss = Math.abs(losingTrades.reduce((sum, trade) => sum + trade.net_pnl, 0))
 
-    const winRate = completedTrades.length > 0 ? (profitableTrades.length / completedTrades.length) * 100 : 0
-    const avgRR = totalLoss > 0 ? totalProfit / totalLoss : 0
+  //   const winRate = completedTrades.length > 0 ? (profitableTrades.length / completedTrades.length) * 100 : 0
+  //   const avgRR = totalLoss > 0 ? totalProfit / totalLoss : 0
 
-    const strategyStats = completedTrades.reduce((acc, trade) => {
-      const strategy = trade.strategy || "Unknown"
-      if (!acc[strategy]) acc[strategy] = { count: 0, pnl: 0 }
-      acc[strategy].count++
-      acc[strategy].pnl += trade.net_pnl
-      return acc
-    }, {})
+  //   const strategyStats = completedTrades.reduce((acc, trade) => {
+  //     const strategy = trade.strategy || "Unknown"
+  //     if (!acc[strategy]) acc[strategy] = { count: 0, pnl: 0 }
+  //     acc[strategy].count++
+  //     acc[strategy].pnl += trade.net_pnl
+  //     return acc
+  //   }, {})
 
-    const strategyData = Object.entries(strategyStats).map(([name, stats]: [string, any]) => ({
-      name, count: stats.count, pnl: stats.pnl,
-    }))
+  //   const strategyData = Object.entries(strategyStats).map(([name, stats]: [string, any]) => ({
+  //     name, count: stats.count, pnl: stats.pnl,
+  //   }))
 
-    const emotionStats = completedTrades.reduce((acc, trade) => {
-      const emotion = trade.emotion_tag || "Unknown"
-      if (!acc[emotion]) acc[emotion] = { count: 0, pnl: 0 }
-      acc[emotion].count++
-      acc[emotion].pnl += trade.net_pnl
-      return acc
-    }, {})
+  //   const emotionStats = completedTrades.reduce((acc, trade) => {
+  //     const emotion = trade.emotion_tag || "Unknown"
+  //     if (!acc[emotion]) acc[emotion] = { count: 0, pnl: 0 }
+  //     acc[emotion].count++
+  //     acc[emotion].pnl += trade.net_pnl
+  //     return acc
+  //   }, {})
 
-    const emotionData = Object.entries(emotionStats).map(([name, stats]: [string, any]) => ({
-      name, count: stats.count, pnl: stats.pnl,
-    }))
+  //   const emotionData = Object.entries(emotionStats).map(([name, stats]: [string, any]) => ({
+  //     name, count: stats.count, pnl: stats.pnl,
+  //   }))
 
-    const dailyPnL = completedTrades.reduce((acc, trade) => {
-      const date = trade.entry_date
-      if (!acc[date]) acc[date] = 0
-      acc[date] += trade.net_pnl
-      return acc
-    }, {})
+  //   const dailyPnL = completedTrades.reduce((acc, trade) => {
+  //     const date = trade.entry_date
+  //     if (!acc[date]) acc[date] = 0
+  //     acc[date] += trade.net_pnl
+  //     return acc
+  //   }, {})
 
-    const dailyData = Object.entries(dailyPnL)
-      .map(([date, pnl]: [string, any]) => ({ date, pnl }))
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+  //   const dailyData = Object.entries(dailyPnL)
+  //     .map(([date, pnl]: [string, any]) => ({ date, pnl }))
+  //     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
-    const bestDay = Math.max(...(Object.values(dailyPnL) as number[]))
-    const worstDay = Math.min(...(Object.values(dailyPnL) as number[]))
+  //   const bestDay = Math.max(...(Object.values(dailyPnL) as number[]))
+  //   const worstDay = Math.min(...(Object.values(dailyPnL) as number[]))
 
-    let maxDrawdown = 0
-    let peak = 0
-    let runningPnL = 0
+  //   let maxDrawdown = 0
+  //   let peak = 0
+  //   let runningPnL = 0
 
-    dailyData.forEach((day) => {
-      runningPnL += day.pnl
-      if (runningPnL > peak) peak = runningPnL
-      const drawdown = peak - runningPnL
-      if (drawdown > maxDrawdown) maxDrawdown = drawdown
-    })
+  //   dailyData.forEach((day) => {
+  //     runningPnL += day.pnl
+  //     if (runningPnL > peak) peak = runningPnL
+  //     const drawdown = peak - runningPnL
+  //     if (drawdown > maxDrawdown) maxDrawdown = drawdown
+  //   })
 
-    setAnalytics({
-      totalTrades: completedTrades.length,
-      winRate,
-      avgRR,
-      totalPnL,
-      totalProfit,
-      totalLoss,
-      bestDay,
-      worstDay,
-      maxDrawdown,
-      strategyData,
-      emotionData,
-      dailyData,
-      mostProfitableStrategy: strategyData.reduce((best, current) => (current.pnl > best.pnl ? current : best), {
-        name: "None", pnl: 0,
-      }),
-    })
+  //   setAnalytics({
+  //     totalTrades: completedTrades.length,
+  //     winRate,
+  //     avgRR,
+  //     totalPnL,
+  //     totalProfit,
+  //     totalLoss,
+  //     bestDay,
+  //     worstDay,
+  //     maxDrawdown,
+  //     strategyData,
+  //     emotionData,
+  //     dailyData,
+  //     mostProfitableStrategy: strategyData.reduce((best, current) => (current.pnl > best.pnl ? current : best), {
+  //       name: "None", pnl: 0,
+  //     }),
+  //   })
+  // }
+
+  const fetchDashboardData=async()=>{
+    try {
+      const res=await api.dashboard.getDashboardData()
+      console.log('res dashboard',res)
+      setAnalytics(res)
+      
+    } catch (error) {
+      
+    }
   }
-
   if (loading) return <div className="flex justify-center p-8">Loading analytics...</div>
 
   return (
@@ -126,8 +138,8 @@ export function AnalyticsDashboard() {
             <Target className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{analytics.winRate?.toFixed(1)}%</div>
-            <Progress value={analytics.winRate} className="mt-2" />
+            <div className="text-2xl font-bold">{analytics.winRate}%</div>
+            <Progress value={analytics?.winRate} className="mt-2" />
           </CardContent>
         </Card>
 
@@ -142,7 +154,7 @@ export function AnalyticsDashboard() {
           </CardHeader>
           <CardContent>
             <div className={`text-2xl font-bold ${analytics.totalPnL >= 0 ? "text-green-600" : "text-red-600"}`}>
-              ₹{analytics.totalPnL?.toFixed(2)}
+              ${analytics.totalPnL}
             </div>
             <p className="text-xs text-muted-foreground">{analytics.totalTrades} completed trades</p>
           </CardContent>
@@ -154,7 +166,7 @@ export function AnalyticsDashboard() {
             <Target className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{analytics.avgRR?.toFixed(2)}</div>
+            <div className="text-2xl font-bold">{analytics.avgRR}</div>
             <p className="text-xs text-muted-foreground">Risk to Reward</p>
           </CardContent>
         </Card>
@@ -165,7 +177,7 @@ export function AnalyticsDashboard() {
             <AlertTriangle className="h-4 w-4 text-red-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-red-600">₹{analytics.maxDrawdown?.toFixed(2)}</div>
+            <div className="text-2xl font-bold text-red-600">₹{analytics?.maxDrawdown}</div>
             <p className="text-xs text-muted-foreground">Maximum loss from peak</p>
           </CardContent>
         </Card>
@@ -180,11 +192,11 @@ export function AnalyticsDashboard() {
           <CardContent className="space-y-4">
             <div className="flex justify-between items-center">
               <span className="text-sm font-medium">Best Trading Day</span>
-              <Badge className="bg-green-100 text-green-800">₹{analytics.bestDay?.toFixed(2)}</Badge>
+              <Badge className="bg-green-100 text-green-800">₹{analytics.bestDay?.pnl}</Badge>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-sm font-medium">Worst Trading Day</span>
-              <Badge variant="destructive">₹{analytics.worstDay?.toFixed(2)}</Badge>
+              <Badge variant="destructive">₹{analytics.worstDay?.pnl}</Badge>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-sm font-medium">Most Profitable Strategy</span>
@@ -201,17 +213,17 @@ export function AnalyticsDashboard() {
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium">Total Profit</span>
-                <span className="text-green-600 font-bold">₹{analytics.totalProfit?.toFixed(2)}</span>
+                <span className="text-green-600 font-bold">₹{analytics.totalProfit}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium">Total Loss</span>
-                <span className="text-red-600 font-bold">₹{analytics.totalLoss?.toFixed(2)}</span>
+                <span className="text-red-600 font-bold">₹{analytics.totalLoss}</span>
               </div>
               <div className="pt-2 border-t">
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-medium">Net P&L</span>
-                  <span className={`font-bold ${analytics.totalPnL >= 0 ? "text-green-600" : "text-red-600"}`}>
-                    ₹{analytics.totalPnL?.toFixed(2)}
+                  <span className={`font-bold ${analytics?.totalPnL >= 0 ? "text-green-600" : "text-red-600"}`}>
+                    ₹{analytics.totalPnL}
                   </span>
                 </div>
               </div>
@@ -220,7 +232,10 @@ export function AnalyticsDashboard() {
         </Card>
       </div>
 
-      {/* Charts */}
+      {/* Day and week  */}
+      <DayOfWeekCharts dayOfWeekData={analytics.dayOfWeekData} />
+
+   
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
@@ -267,7 +282,7 @@ export function AnalyticsDashboard() {
         </Card>
       </div>
 
-      {/* Daily P&L Chart */}
+  
       <Card>
         <CardHeader>
           <CardTitle>Daily P&L Trend</CardTitle>

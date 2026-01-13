@@ -1,4 +1,5 @@
 
+
 const endpoints = {
   signUp: "/auth/signup",
   signIn: "/auth/signin",
@@ -9,6 +10,8 @@ const endpoints = {
   stocks: "/stocks",
   instruments: "/instruments",
   dashboard: "/dashboard",
+  analytics: "/analytics",
+  strategies: "/strategies",
 };
 
 export default endpoints;

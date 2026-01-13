@@ -35,7 +35,7 @@ import { ContrastIcon, Plus } from "lucide-react"
 import { TradeFormData } from "@/app/types/trade"
 import { useToast } from "@/hooks/use-toast"
 import api from "@/services"
-import { useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Instruments, Pair } from "@/app/types/instrumnts"
 import { InstrumentsApiResponse } from "@/app/types/ApiResponse/instrumentsApiResponse"
 interface TradeFormProps {
@@ -44,30 +44,12 @@ interface TradeFormProps {
   onClose: () => void;
   initialData?: TradeFormData | null; // Optional, for update mode
 }
-const CONTRACT_SIZES = [
-  // Forex
-  { symbol: "EUR/USD", size: 100000, category: "Forex" },
-  { symbol: "GBP/USD", size: 100000, category: "Forex" },
-  { symbol: "USD/JPY", size: 100000, category: "Forex" },
-  { symbol: "AUD/USD", size: 100000, category: "Forex" },
-  { symbol: "USD/CAD", size: 100000, category: "Forex" },
-  { symbol: "USD/CHF", size: 100000, category: "Forex" },
 
-  // Metals
-  { symbol: "XAUUSD", size: 100, category: "Metal" },   // 100 ounces
-  { symbol: "XAGUSD", size: 5000, category: "Metal" },  // 5000 ounces
-
-  // Crypto
-  { symbol: "BTCUSD", size: 1, category: "Crypto" },    // 1 Bitcoin
-  { symbol: "ETHUSD", size: 1, category: "Crypto" },    // 1 Ether
-  { symbol: "LTCUSD", size: 1, category: "Crypto" },    // 1 Litecoin
-  { symbol: "XRPUSD", size: 1000, category: "Crypto" }, // 1000 Ripple
-];
 
 
 export function TradeForm({ open, setOpen, initialData,onClose }: TradeFormProps) {
   const [formData, setFormData] = useState<TradeFormData>({
-    category: "",
+    category: "Forex",
     instrument: "",
     entry_date: "",
     exit_date: "",
@@ -87,15 +69,15 @@ export function TradeForm({ open, setOpen, initialData,onClose }: TradeFormProps
   const [instrumentList, setInstrumentList] = useState<InstrumentsApiResponse>([])
   const [newInstrument, setNewInstrument] = useState("")
   const [showAddInstrument, setShowAddInstrument] = useState(false)
-  const [strategies,setStrategies]=useState(["Breakout", "Reversal", "5 EMA","MACD"])
+  const [setStrategies]=useState(["Breakout", "Reversal", "5 EMA","MACD"])
   const[contractSize,setContractSize]=useState(100)
-  const [category,setNewCategory]=useState<string>("")
+  const [category,setNewCategory]=useState<string>("Forex")
   const [savingpair,setSavingPair]=useState(false)
   const { toast } = useToast()
  const queryClient=useQueryClient()
   const resetForm = () => {
     setFormData({
-      category: "",
+      category: "Forex",
       instrument: "XAUUSD",
       entry_date: "",
       exit_date: "",
@@ -113,6 +95,13 @@ export function TradeForm({ open, setOpen, initialData,onClose }: TradeFormProps
     })
   }
 
+  const {data}=useQuery({
+    queryKey:["get-all-strategy"],
+    queryFn:api.strategy.getAll,
+    
+  })
+  const strategies=data?.strategies || []
+  console.log('all strategies',data)
    useEffect(() => {
   resetForm();
     if (initialData) {
@@ -146,17 +135,12 @@ useEffect(() => {
     const entry = parseFloat(formData.entry_price);
     const exit = parseFloat(formData.exit_price);
     const qty = parseFloat(formData.quantity);  // usually in lots
- 
-
-    console.log('entry', entry, 'exit', exit, 'qty', qty, 'contractSize', contractSize);
 
     if (!isNaN(entry) && !isNaN(exit) && !isNaN(qty) && !isNaN(contractSize)) {
       const pnl = (exit - entry) * qty * contractSize;
-      console.log('pnl', pnl);
-
       setFormData(prev => ({
         ...prev,
-        net_pnl: pnl.toFixed(2) // keep 2 decimal places
+        net_pnl: pnl.toFixed(2)
       }));
     }
   }
@@ -242,32 +226,13 @@ console.log('form data ',formData)
 
             <TabsContent value="general">
               <div className="grid md:grid-cols-3 gap-6">
-
-                {/* Trade Category */}
-                <div>
-                  <Label>Trade Category</Label>
-                  <Select
-                    value={formData.category}
-                    onValueChange={(value) => setFormData({ ...formData, category: value })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select category" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Forex">Forex</SelectItem>
-                      <SelectItem value="Indian">Indian</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Instrument Dropdown */}
+                  {/* Instrument Dropdown */}
                 <div>
                   <Label>Instrument</Label>
   
                   <Select
   value={formData.instrument}
  onValueChange={(value) => {
-  console.log('value',value)
   if (value === "__add_new") {
     setShowAddInstrument(true);
   } else {
@@ -312,6 +277,24 @@ if (selectedInstrument) {
 </Select>
 
                 </div>
+                <div>
+                  <Label>Category</Label>
+                  <Select
+                    defaultValue="Forex"
+                    value={formData.category}
+                    onValueChange={(value) => setFormData({ ...formData, category: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Forex">Forex</SelectItem>
+                      <SelectItem value="Indian">Indian</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+              
 
                 {/* Entry & Exit Price */}
                 <div>
@@ -419,9 +402,9 @@ if (selectedInstrument) {
                       <SelectValue placeholder="Select Strategy" />
                     </SelectTrigger>
                     <SelectContent>
-                      {strategies.map((inst, idx) => (
-                        <SelectItem key={idx} value={inst}>
-                          {inst}
+                      {strategies.map((str:any) => (
+                        <SelectItem key={str?.idx} value={str?.name}>
+                          {str.name}
                         </SelectItem>
                       ))}
 

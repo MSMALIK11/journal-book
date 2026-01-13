@@ -58,7 +58,6 @@ export const POST = withAuth(async (request: NextRequest, userId: string) => {
     }
 
     const body = await request.json();
-
     // Basic validation
     if (
       !body.entry_date ||

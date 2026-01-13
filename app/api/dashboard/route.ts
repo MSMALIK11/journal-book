@@ -7,14 +7,14 @@ export const GET = withAuth(async (request: NextRequest, userId: string) => {
   await connectDB();
   try {
     const objectId = new mongoose.Types.ObjectId(userId);
-console.log('userId',userId)
-    // ✅ total trades
+    // TOTAL Trades
     const totalTrades = await Trade.countDocuments({ userId: objectId });
 const recentTrades = await Trade.find({ userId: objectId })
       .sort({ createdAt: -1 })
       .limit(5)
       .lean();
-    // ✅ total PnL (ignore invalid strings)
+
+    // total PnL
   const pnlAgg = await Trade.aggregate([
   { $match: { userId: userId } },
   {
@@ -83,13 +83,44 @@ const recentTrades = await Trade.find({ userId: objectId })
     const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
     const lossRate = totalTrades > 0 ? (losses / totalTrades) * 100 : 0;
 
+  const trades = await Trade.find({ userId: objectId }).lean();
+
+const formattedTrades = trades.map(t => ({
+  ...t,
+  pnl: parseFloat(t.net_pnl || "0"),
+}));
+
+// 🔹 Daily PnL aggregation
+const dailyPnL: Record<string, number> = {};
+formattedTrades.forEach(t => {
+  // defensive check
+  const d = new Date(t.entry_date);
+  if (!isNaN(d.getTime())) {
+    const day = d.toISOString().split("T")[0];
+    dailyPnL[day] = (dailyPnL[day] || 0) + t.pnl;
+  }
+});
+
+let bestDay: [string, number] | null = null;
+let worstDay: [string, number] | null = null;
+
+if (Object.keys(dailyPnL).length > 0) {
+  bestDay = Object.entries(dailyPnL).reduce((a, b) => (a[1] > b[1] ? a : b));
+  worstDay = Object.entries(dailyPnL).reduce((a, b) => (a[1] < b[1] ? a : b));
+}
+
+console.log("bestDay", bestDay, "worstDay", worstDay);
+
+
     return NextResponse.json({
       totalTrades,
       totalPnL,
       todaysTrades,
       winRate: winRate.toFixed(2),
       lossRate: lossRate.toFixed(2),
-      recentTrades
+      bestDay,
+      recentTrades,
+      worstDay
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
