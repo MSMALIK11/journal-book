@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { getCurrentUser, getProfile, updateProfile } from "@/lib/auth"
+import { getCurrentUser, getProfile, updateProfile } from "@/lib/client-auth"
 import { useToast } from "@/hooks/use-toast"
 
 export function ProfileSetup() {
@@ -29,7 +29,7 @@ export function ProfileSetup() {
       const currentUser = await getCurrentUser()
       if (currentUser) {
         setUser(currentUser)
-        const { data } = await getProfile(currentUser.id)
+        const { data } = await getProfile()
         if (data) {
           setProfile({
             name: data.name || "",
@@ -48,7 +48,7 @@ export function ProfileSetup() {
     if (!user) return
 
     setLoading(true)
-    const { data, error } = await updateProfile(user.id, profile)
+    const { data, error } = await updateProfile(profile)
 
     if (error) {
       toast({

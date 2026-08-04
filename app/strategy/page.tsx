@@ -145,7 +145,7 @@
 //                       strategy.totalProfit < 0 ? "text-red-500" : "text-green-600"
 //                     }
 //                   >
-//                     ₹{strategy.totalProfit.toLocaleString()}
+//                     ${strategy.totalProfit.toLocaleString()}
 //                   </span>
 //                 </p>
 //                 <div>
@@ -319,7 +319,7 @@ export default function StrategyDashboard() {
                     <p>
                       <strong>Total Profit:</strong>{" "}
                       <span className={strategy.totalProfit < 0 ? "text-red-500" : "text-green-600"}>
-                        ₹{strategy.totalProfit.toLocaleString()}
+                        ${strategy.totalProfit.toLocaleString()}
                       </span>
                     </p>
                     <div>

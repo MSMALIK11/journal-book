@@ -3,7 +3,6 @@ import {
   BarChart3,
   BookOpen,
   Brain,
-  Eye,
   Filter,
   LineChart,
   PieChart,
@@ -56,8 +55,8 @@ export default function LandingPage() {
             Master Your Trading Journey with MarketMitra
           </h1>
           <p className="text-xl text-[#7d8590] mb-8 leading-relaxed">
-            The ultimate trading journal, strategy tracker, and portfolio manager. Log trades, analyze strategies, track
-            stocks, and gain insights that transform your trading performance.
+            The ultimate trading journal and strategy tracker. Log trades, analyze strategies, and gain insights that
+            transform your trading performance.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Button size="lg" className="bg-[#238636] hover:bg-[#2ea043] text-white px-8">
@@ -106,18 +105,6 @@ export default function LandingPage() {
                 <CardTitle className="text-[#f0f6fc]">Strategy Tracker</CardTitle>
                 <CardDescription className="text-[#7d8590]">
                   Create, manage, and analyze your trading strategies with detailed performance metrics
-                </CardDescription>
-              </CardHeader>
-            </Card>
-
-            <Card className="bg-[#21262d] border-[#30363d] hover:border-[#f85149]/50 transition-all duration-300 group">
-              <CardHeader>
-                <div className="w-12 h-12 bg-[#da3633]/20 rounded-lg flex items-center justify-center mb-4 group-hover:bg-[#da3633]/30 transition-colors">
-                  <Eye className="w-6 h-6 text-[#f85149]" />
-                </div>
-                <CardTitle className="text-[#f0f6fc]">Stock Tracker</CardTitle>
-                <CardDescription className="text-[#7d8590]">
-                  Organize your watchlist by sectors, add notes, and track your investment interests
                 </CardDescription>
               </CardHeader>
             </Card>
@@ -286,78 +273,6 @@ export default function LandingPage() {
             </div>
           </div>
 
-          <div className="grid lg:grid-cols-2 gap-16 items-center">
-            <div>
-              <Badge className="mb-4 bg-[#da3633]/20 text-[#f85149] border-[#da3633]/30">
-                Stock Tracker & Insights
-              </Badge>
-              <h3 className="text-3xl font-bold mb-6">Smart Watchlist & Deep Analytics</h3>
-              <div className="space-y-4">
-                <div className="flex items-start space-x-3">
-                  <div className="w-2 h-2 bg-[#f85149] rounded-full mt-2"></div>
-                  <div>
-                    <p className="font-semibold text-[#f0f6fc]">Organized Watchlist</p>
-                    <p className="text-[#7d8590]">
-                      Group stocks by sector, category, and interest level with custom notes
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-start space-x-3">
-                  <div className="w-2 h-2 bg-[#f85149] rounded-full mt-2"></div>
-                  <div>
-                    <p className="font-semibold text-[#f0f6fc]">Advanced Filtering</p>
-                    <p className="text-[#7d8590]">Filter by sector, performance, tags, and custom criteria</p>
-                  </div>
-                </div>
-                <div className="flex items-start space-x-3">
-                  <div className="w-2 h-2 bg-[#f85149] rounded-full mt-2"></div>
-                  <div>
-                    <p className="font-semibold text-[#f0f6fc]">Pattern Recognition</p>
-                    <p className="text-[#7d8590]">Identify your most common losing emotions and profitable patterns</p>
-                  </div>
-                </div>
-                <div className="flex items-start space-x-3">
-                  <div className="w-2 h-2 bg-[#f85149] rounded-full mt-2"></div>
-                  <div>
-                    <p className="font-semibold text-[#f0f6fc]">Comprehensive Reports</p>
-                    <p className="text-[#7d8590]">
-                      Trade count by strategy, average RR, winning rates, and emotion statistics
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="bg-[#161b22] rounded-lg p-6 border border-[#30363d]">
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-[#7d8590]">Watchlist</span>
-                  <Badge className="bg-[#da3633]/20 text-[#f85149] border-[#da3633]/30">Tech Sector</Badge>
-                </div>
-                <div className="space-y-3">
-                  <div className="flex justify-between items-center p-3 bg-[#21262d] rounded border border-[#30363d]">
-                    <div>
-                      <p className="font-semibold text-[#f0f6fc]">NVDA</p>
-                      <p className="text-sm text-[#7d8590]">AI Play • Breakout Setup</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[#2ea043] font-semibold">$485.20</p>
-                      <p className="text-sm text-[#7d8590]">+2.4%</p>
-                    </div>
-                  </div>
-                  <div className="flex justify-between items-center p-3 bg-[#21262d] rounded border border-[#30363d]">
-                    <div>
-                      <p className="font-semibold text-[#f0f6fc]">MSFT</p>
-                      <p className="text-sm text-[#7d8590]">Long Term • Earnings Play</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[#f85149] font-semibold">$412.85</p>
-                      <p className="text-sm text-[#7d8590]">-0.8%</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
         </div>
       </section>
 

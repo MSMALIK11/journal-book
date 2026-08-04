@@ -3,19 +3,20 @@
 import { useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, Calendar, FileText, Home, PlusCircle, Settings, TrendingUp, LogOut, Menu, X,Building,Calculator } from "lucide-react"
+import { BarChart3, Calendar, FileText, Home, PlusCircle, Settings, TrendingUp, LogOut, Menu, X, Calculator, Radio } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { signOut } from "@/lib/auth"
+import { signOut } from "@/lib/client-auth"
 import { useRouter } from "next/navigation"
+import { AccountSwitcher } from "@/components/accounts/account-switcher"
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: Home },  
-  { name: "Stock", href: "/stocks", icon: Building },
+  { name: "Live Sync", href: "/live-sync", icon: Radio },
   { name: "Pip Calculator", href: "/pip-calculator", icon: Calculator },
   { name: "Add Trade", href: "/trades/new", icon: PlusCircle },
   { name: "Trade History", href: "/trades", icon: FileText },
   { name: "Strategy", href: "/strategy", icon: FileText },
-  { name: "Analytics", href: "/analytics", icon: BarChart3 },
+  { name: "Analytics", href: "/analytics", icon: BarChart3, description: "Backtest & performance insights" },
   { name: "Calendar", href: "/calendar", icon: Calendar },
   { name: "Reports", href: "/reports", icon: TrendingUp },
   { name: "Settings", href: "/settings", icon: Settings },
@@ -48,17 +49,22 @@ export function Sidebar() {
         )}
       >
         <div className="flex flex-col h-full">
-          <div className="flex items-center justify-center h-16 border-b">
+          <div className="flex items-center justify-center h-16 border-b px-4">
             <h1 className="text-xl font-bold">Trading Journal</h1>
           </div>
 
-          <nav className="flex-1 px-4 py-6 space-y-2">
+          <div className="px-4 pt-4">
+            <AccountSwitcher />
+          </div>
+
+          <nav className="flex-1 px-4 py-4 space-y-2">
             {navigation.map((item) => {
               const isActive = pathname === item.href
               return (
                 <Link
                   key={item.name}
                   href={item.href}
+                  title={"description" in item ? item.description : undefined}
                   className={cn(
                     "flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors",
                     isActive

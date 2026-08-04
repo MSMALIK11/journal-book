@@ -12,7 +12,7 @@ export async function GET() {
     await connectDB()
 
     return NextResponse.json({ status: "ok" })
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 503 })
+  } catch {
+    return NextResponse.json({ status: "unavailable" }, { status: 503 })
   }
 }

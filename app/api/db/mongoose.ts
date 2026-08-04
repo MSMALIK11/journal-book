@@ -1,11 +1,5 @@
 import mongoose from "mongoose"
 
-const MONGODB_URI =  'mongodb+srv://MERNDB:merndb7300@cluster0.ysqqg.mongodb.net/trading-book?retryWrites=true&w=majority';
-
-if (!MONGODB_URI) {
-  throw new Error("Please define the MONGODB_URI environment variable inside .env")
-}
-
 let cached = (global as any).mongoose
 
 if (!cached) {
@@ -13,6 +7,11 @@ if (!cached) {
 }
 
 async function connectDB() {
+  const mongoUri = process.env.MONGODB_URI
+  if (!mongoUri) {
+    throw new Error("MONGODB_URI is not configured")
+  }
+
   if (cached.conn) {
     return cached.conn
   }
@@ -22,7 +21,7 @@ async function connectDB() {
       bufferCommands: false,
     }
 
-    cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
+    cached.promise = mongoose.connect(mongoUri, opts).then((mongoose) => {
       return mongoose
     })
   }

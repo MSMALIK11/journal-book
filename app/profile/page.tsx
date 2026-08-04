@@ -1,5 +1,6 @@
 import { Sidebar } from "@/components/layout/sidebar"
 import { ProfileSetup } from "@/components/profile/profile-setup"
+import { TradingViewSyncSettings } from "@/components/sync/tradingview-sync-settings"
 
 export default function ProfilePage() {
   return (
@@ -11,6 +12,7 @@ export default function ProfilePage() {
             <h1 className="text-3xl font-bold">Profile Settings</h1>
             <p className="text-muted-foreground">Manage your profile and trading preferences</p>
           </div>
+          <TradingViewSyncSettings />
           <ProfileSetup />
         </div>
       </div>

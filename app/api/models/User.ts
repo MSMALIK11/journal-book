@@ -10,6 +10,11 @@ export interface IUser {
   risk_profile?: 'Low' | 'Moderate' | 'High';
   timezone?: string;
   theme?: string;
+  sync_api_key?: string;
+  sync_last_heartbeat?: Date;
+  sync_poll_interval_seconds?: number;
+  sync_refresh_requested_at?: Date;
+  sync_refresh_last_result?: Record<string, unknown>;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -21,10 +26,13 @@ const UserSchema = new Schema<IUser>(
       required: true,
       unique: true,
       lowercase: true,
+      trim: true,
+      maxlength: 254,
     },
     password: {
       type: String,
       required: true,
+      select: false,
     },
     name: String,
     mobile: String,
@@ -44,13 +52,35 @@ const UserSchema = new Schema<IUser>(
       type: String,
       default: 'light',
     },
+    sync_api_key: {
+      type: String,
+      index: true,
+      sparse: true,
+    },
+    sync_last_heartbeat: {
+      type: Date,
+    },
+    sync_poll_interval_seconds: {
+      type: Number,
+      default: 30,
+    },
+    sync_refresh_requested_at: {
+      type: Date,
+    },
+    sync_refresh_last_result: {
+      type: Schema.Types.Mixed,
+    },
   },
   {
     timestamps: true,
   }
 );
 
-// ✅ Prevent model overwrite in development (HMR safe)
-const User: Model<IUser> = models?.User || model<IUser>('User', UserSchema);
+// Re-register in dev so new schema fields (sync_refresh_*) are picked up after HMR.
+if (process.env.NODE_ENV !== "production" && models.User) {
+  delete models.User
+}
+
+const User: Model<IUser> = models.User || model<IUser>("User", UserSchema)
 
 export default User;

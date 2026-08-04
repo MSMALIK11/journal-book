@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Journal Book Sync</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        width: 320px;
+        margin: 0;
+        padding: 16px;
+        background: #0d1117;
+        color: #f0f6fc;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 12px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 8px;
+        font-size: 13px;
+      }
+      .row span:last-child {
+        max-width: 180px;
+        text-align: right;
+        word-break: break-word;
+      }
+      button {
+        width: 100%;
+        margin-top: 8px;
+        padding: 10px;
+        border: 0;
+        border-radius: 8px;
+        background: #238636;
+        color: white;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      button.secondary {
+        background: #21262d;
+        border: 1px solid #30363d;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .error {
+        color: #f85149;
+        font-size: 12px;
+        margin-top: 8px;
+      }
+      a {
+        color: #58a6ff;
+        font-size: 12px;
+      }
+      .hint {
+        color: #8b949e;
+        font-size: 11px;
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Journal Book Sync</h1>
+    <div class="row"><span class="muted">API</span><span id="apiUrl">—</span></div>
+    <div class="row"><span class="muted">Token</span><span id="tokenStatus">—</span></div>
+    <div class="row"><span class="muted">Last sync</span><span id="lastSync">—</span></div>
+    <div class="row"><span class="muted">Session imported</span><span id="sessionImported">0</span></div>
+    <div class="row"><span class="muted">Status</span><span id="importStatus">Ready</span></div>
+    <button id="refreshNew">Refresh — add new trades</button>
+    <p class="hint">Checks journal for existing trades, only syncs new ones.</p>
+    <button id="importAll" class="secondary">Import all (full backtest)</button>
+    <button id="testScrape" class="secondary">Test scrape</button>
+    <p id="error" class="error"></p>
+    <p><a id="dashboardLink" href="#" target="_blank">Open Live Sync dashboard</a></p>
+    <script src="../lib/sync-client.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

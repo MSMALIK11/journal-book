@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { format } from "date-fns"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
@@ -8,68 +8,76 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Edit, Trash2, Search } from "lucide-react"
+import { Loader2, Search, Trash2 } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import { authFetch } from "@/lib/client-auth"
+import { useActiveAccount } from "@/hooks/use-active-account"
 
-// ✅ Mock trades data
-const MOCK_TRADES = [
-  {
-    id: "1",
-    entry_date: "2025-08-01",
-    instrument: "NIFTY",
-    trade_type: "Buy",
-    entry_price: 20000,
-    exit_price: 20150,
-    quantity: 1,
-    net_pnl: 150,
-    strategy: "Breakout",
-    emotion_tag: "Confident",
-  },
-  {
-    id: "2",
-    entry_date: "2025-08-02",
-    instrument: "BANKNIFTY",
-    trade_type: "Sell",
-    entry_price: 44000,
-    exit_price: 43800,
-    quantity: 2,
-    net_pnl: 400,
-    strategy: "Reversal",
-    emotion_tag: "Calm",
-  },
-  {
-    id: "3",
-    entry_date: "2025-08-03",
-    instrument: "RELIANCE",
-    trade_type: "Buy",
-    entry_price: 2600,
-    exit_price: 2550,
-    quantity: 10,
-    net_pnl: -500,
-    strategy: "Scalping",
-    emotion_tag: "Fearful",
-  },
-  // Add more mock trades here as needed
-]
+type Trade = {
+  id: string
+  entry_date: string
+  instrument: string
+  trade_type: "Buy" | "Sell"
+  entry_price: number
+  exit_price?: number | null
+  quantity: number
+  quantity_mode?: "lots" | "units"
+  net_pnl?: number | null
+  strategy?: string
+  emotion_tag?: string
+}
+
+const currency = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+})
 
 export function TradeHistory() {
-  const [trades, setTrades] = useState<any[]>([])
-  const [filteredTrades, setFilteredTrades] = useState<any[]>([])
+  const { toast } = useToast()
+  const { activeAccountId, switchVersion } = useActiveAccount()
+  const [trades, setTrades] = useState<Trade[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [filterType, setFilterType] = useState("all")
   const [filterStrategy, setFilterStrategy] = useState("all")
   const [currentPage, setCurrentPage] = useState(1)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const tradesPerPage = 10
 
   useEffect(() => {
-    setTrades(MOCK_TRADES)
-  }, [])
+    if (!activeAccountId) return
+    const controller = new AbortController()
 
-  useEffect(() => {
-    filterTrades()
-  }, [trades, searchTerm, filterType, filterStrategy])
+    async function loadTrades() {
+      try {
+        setLoading(true)
+        setError("")
+        const response = await authFetch("/api/trades?limit=1000", {
+          signal: controller.signal,
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || "Unable to load trade history")
+        setTrades(data.trades ?? [])
+      } catch (requestError) {
+        if (controller.signal.aborted) return
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Unable to load trade history",
+        )
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
 
-  const filterTrades = () => {
+    loadTrades()
+    return () => controller.abort()
+  }, [activeAccountId, switchVersion])
+
+  const filteredTrades = useMemo(() => {
     let filtered = trades
 
     if (searchTerm) {
@@ -92,22 +100,54 @@ export function TradeHistory() {
       filtered = filtered.filter((trade) => trade.strategy === filterStrategy)
     }
 
-    setFilteredTrades(filtered)
-    setCurrentPage(1)
-  }
+    return filtered
+  }, [trades, searchTerm, filterType, filterStrategy])
 
-  const deleteTrade = (tradeId: string) => {
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchTerm, filterType, filterStrategy])
+
+  const deleteTrade = async (tradeId: string) => {
     if (!confirm("Are you sure you want to delete this trade?")) return
-    const updated = trades.filter((trade) => trade.id !== tradeId)
-    setTrades(updated)
+    setDeletingId(tradeId)
+
+    try {
+      const response = await authFetch(`/api/trades/${tradeId}`, {
+        method: "DELETE",
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Unable to delete trade")
+
+      setTrades((current) => current.filter((trade) => trade.id !== tradeId))
+      toast({
+        title: "Trade deleted",
+        description: "The trade was permanently removed from your journal.",
+      })
+    } catch (deleteError) {
+      toast({
+        title: "Could not delete trade",
+        description:
+          deleteError instanceof Error ? deleteError.message : "Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setDeletingId(null)
+    }
   }
 
   const paginatedTrades = filteredTrades.slice((currentPage - 1) * tradesPerPage, currentPage * tradesPerPage)
   const totalPages = Math.ceil(filteredTrades.length / tradesPerPage)
-  const strategies = [...new Set(trades.map((trade) => trade.strategy).filter(Boolean))]
+  const strategies = Array.from(
+    new Set(trades.map((trade) => trade.strategy).filter((strategy): strategy is string => Boolean(strategy))),
+  )
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-500">
+          {error}
+        </div>
+      )}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -165,7 +205,7 @@ export function TradeHistory() {
                   <TableHead>Type</TableHead>
                   <TableHead>Entry</TableHead>
                   <TableHead>Exit</TableHead>
-                  <TableHead>Qty</TableHead>
+                  <TableHead>Size</TableHead>
                   <TableHead>P&L</TableHead>
                   <TableHead>Strategy</TableHead>
                   <TableHead>Emotion</TableHead>
@@ -173,20 +213,39 @@ export function TradeHistory() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {paginatedTrades.map((trade) => (
+                {loading ? (
+                  <TableRow>
+                    <TableCell colSpan={10} className="h-32 text-center">
+                      <Loader2 className="mx-auto h-5 w-5 animate-spin text-primary" />
+                      <p className="mt-2 text-sm text-muted-foreground">Loading your trades...</p>
+                    </TableCell>
+                  </TableRow>
+                ) : paginatedTrades.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={10} className="h-32 text-center text-muted-foreground">
+                      {trades.length === 0
+                        ? "No trades recorded yet."
+                        : "No trades match these filters."}
+                    </TableCell>
+                  </TableRow>
+                ) : paginatedTrades.map((trade) => (
                   <TableRow key={trade.id}>
-                    <TableCell>{format(new Date(trade.entry_date), "dd/MM/yyyy")}</TableCell>
+                    <TableCell>
+                      {format(new Date(`${trade.entry_date.slice(0, 10)}T00:00:00`), "dd/MM/yyyy")}
+                    </TableCell>
                     <TableCell className="font-medium">{trade.instrument}</TableCell>
                     <TableCell>
                       <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>{trade.trade_type}</Badge>
                     </TableCell>
-                    <TableCell>₹{trade.entry_price}</TableCell>
-                    <TableCell>{trade.exit_price ? `₹${trade.exit_price}` : "-"}</TableCell>
-                    <TableCell>{trade.quantity}</TableCell>
+                    <TableCell>{currency.format(trade.entry_price)}</TableCell>
+                    <TableCell>{trade.exit_price ? currency.format(trade.exit_price) : "—"}</TableCell>
                     <TableCell>
-                      {trade.net_pnl !== null ? (
+                      {trade.quantity} {trade.quantity_mode === "lots" ? "lots" : "units"}
+                    </TableCell>
+                    <TableCell>
+                      {typeof trade.net_pnl === "number" ? (
                         <span className={trade.net_pnl >= 0 ? "text-green-600" : "text-red-600"}>
-                          ₹{trade.net_pnl.toFixed(2)}
+                          {currency.format(trade.net_pnl)}
                         </span>
                       ) : (
                         "-"
@@ -196,11 +255,18 @@ export function TradeHistory() {
                     <TableCell>{trade.emotion_tag && <Badge variant="outline">{trade.emotion_tag}</Badge>}</TableCell>
                     <TableCell>
                       <div className="flex gap-2">
-                        <Button size="sm" variant="outline">
-                          <Edit className="h-4 w-4" />
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => deleteTrade(trade.id)}>
-                          <Trash2 className="h-4 w-4" />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => deleteTrade(trade.id)}
+                          disabled={deletingId === trade.id}
+                          aria-label={`Delete ${trade.instrument} trade`}
+                        >
+                          {deletingId === trade.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
                         </Button>
                       </div>
                     </TableCell>

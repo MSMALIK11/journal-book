@@ -1,8 +1,6 @@
 import { ReactNode } from "react"
+import { ActiveAccountProvider } from "@/hooks/use-active-account"
 import { Sidebar } from "./sidebar"
-// import { MarketTicker } from "../IndexTicker"
-// import IndianIndex from "../analytics/nse-market-tracker"
-
 
 interface SiteLayoutProps {
   children: ReactNode
@@ -10,18 +8,15 @@ interface SiteLayoutProps {
 
 export default function SideLayout({ children }: SiteLayoutProps) {
   return (
-     <div className="flex min-h-screen w-full">
-      {/* Sidebar (fixed width) */}
-      <div className="lg:w-64">
+    <ActiveAccountProvider>
+      <div className="flex min-h-screen w-full">
+        <div className="hidden w-64 shrink-0 lg:block" aria-hidden />
         <Sidebar />
-      </div>
 
-      {/* Main content (takes rest of the space) */}
-      <main className="flex-1 p-6">
-   
-        {/* <IndianIndex /> */}
-        {children}
-      </main>
-    </div>
+        <main className="min-w-0 flex-1 overflow-auto px-4 pb-8 pt-20 sm:px-5 lg:px-6 lg:pb-10 lg:pt-6">
+          {children}
+        </main>
+      </div>
+    </ActiveAccountProvider>
   )
 }

@@ -1,282 +1,472 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
-  format,
-  startOfMonth,
-  endOfMonth,
+  addMonths,
   eachDayOfInterval,
-  isSameMonth,
+  endOfMonth,
+  endOfWeek,
+  format,
   isSameDay,
+  isSameMonth,
+  isToday,
+  isValid,
+  parseISO,
+  startOfMonth,
+  startOfWeek,
+  subMonths,
 } from "date-fns"
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+  ArrowDownRight,
+  ArrowUpRight,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Minus,
+  Target,
+  TrendingDown,
+  TrendingUp,
+} from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { ChevronLeft, ChevronRight } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { authFetch } from "@/lib/client-auth"
+import { useActiveAccount } from "@/hooks/use-active-account"
+import { formatHoldDuration, getTradeHoldTimeMs } from "@/lib/trading/analytics"
 import { cn } from "@/lib/utils"
 
-// Mock trade data
-const mockTrades = [
-  {
-    id: "1",
-    user_id: "mock-user",
-    instrument: "NIFTY",
-    trade_type: "Buy",
-    entry_date: "2025-08-02",
-    entry_price: 19800,
-    exit_price: 19950,
-    quantity: 2,
-    net_pnl: 300,
-    strategy: "Breakout",
-  },
-  {
-    id: "2",
-    user_id: "mock-user",
-    instrument: "BANKNIFTY",
-    trade_type: "Sell",
-    entry_date: "2025-08-02",
-    entry_price: 44500,
-    exit_price: 44300,
-    quantity: 1,
-    net_pnl: 200,
-    strategy: "Reversal",
-  },
-  {
-    id: "3",
-    user_id: "mock-user",
-    instrument: "FINNIFTY",
-    trade_type: "Buy",
-    entry_date: "2025-08-01",
-    entry_price: 20300,
-    exit_price: 20200,
-    quantity: 1,
-    net_pnl: -100,
-    strategy: "Trend",
-  },
-  {
-    id: "4",
-    user_id: "mock-user",
-    instrument: "NIFTY",
-    trade_type: "Sell",
-    entry_date: "2025-08-03",
-    entry_price: 19800,
-    exit_price: 19900,
-    quantity: 1,
-    net_pnl: -100,
-    strategy: "Scalping",
-  },
-]
+type Trade = {
+  id: string
+  instrument: string
+  trade_type: "Buy" | "Sell"
+  entry_date: string
+  exit_date?: string | null
+  entry_price: number
+  exit_price?: number
+  quantity: number
+  net_pnl: number | null
+  strategy?: string
+}
+
+const currency = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 0,
+})
+
+function tradeDateKey(entryDate: string) {
+  const parsed = parseISO(entryDate)
+  if (!isValid(parsed)) return null
+  return format(parsed, "yyyy-MM-dd")
+}
+
+function formatDayLabel(dateKey: string) {
+  const parsed = parseISO(`${dateKey}T12:00:00`)
+  if (!isValid(parsed)) return "—"
+  return format(parsed, "EEE, MMM d")
+}
 
 export function TradingCalendar() {
   const [currentDate, setCurrentDate] = useState(new Date())
-  const [trades, setTrades] = useState<any[]>([])
-  const [dailyPnL, setDailyPnL] = useState<Record<string, number>>({})
+  const [trades, setTrades] = useState<Trade[]>([])
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
-  const [selectedTrades, setSelectedTrades] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const { activeAccountId, switchVersion } = useActiveAccount()
 
   useEffect(() => {
-    loadTrades()
-  }, [currentDate])
+    if (!activeAccountId) return
+    const controller = new AbortController()
 
-  const loadTrades = async () => {
-    setLoading(true)
-    // Simulate delay
-    setTimeout(() => {
+    async function loadTrades() {
+      setLoading(true)
+      setError("")
       const monthStart = format(startOfMonth(currentDate), "yyyy-MM-dd")
       const monthEnd = format(endOfMonth(currentDate), "yyyy-MM-dd")
 
-      const filtered = mockTrades.filter(
-        (trade) => trade.entry_date >= monthStart && trade.entry_date <= monthEnd,
-      )
+      try {
+        const response = await authFetch(
+          `/api/trades?limit=1000&startDate=${monthStart}&endDate=${monthEnd}`,
+          { signal: controller.signal },
+        )
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || "Unable to load calendar trades")
 
-      setTrades(filtered)
+        setTrades(data.trades ?? [])
+        setSelectedDate(null)
+      } catch (requestError) {
+        if (controller.signal.aborted) return
+        setTrades([])
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Unable to load calendar trades",
+        )
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
 
-      const pnlByDate = filtered.reduce((acc, trade) => {
-        const date = trade.entry_date
-        if (!acc[date]) acc[date] = 0
-        if (trade.net_pnl) acc[date] += trade.net_pnl
+    loadTrades()
+
+    return () => controller.abort()
+  }, [currentDate, activeAccountId, switchVersion])
+
+  const days = useMemo(
+    () =>
+      eachDayOfInterval({
+        start: startOfWeek(startOfMonth(currentDate), { weekStartsOn: 1 }),
+        end: endOfWeek(endOfMonth(currentDate), { weekStartsOn: 1 }),
+      }),
+    [currentDate],
+  )
+
+  const tradesByDate = useMemo(
+    () =>
+      trades.reduce<Record<string, Trade[]>>((acc, trade) => {
+        const key = tradeDateKey(trade.entry_date)
+        if (!key) return acc
+        ;(acc[key] ??= []).push(trade)
         return acc
-      }, {} as Record<string, number>)
+      }, {}),
+    [trades],
+  )
 
-      setDailyPnL(pnlByDate)
-      setLoading(false)
-    }, 500)
-  }
+  const completedTrades = trades.filter((trade) => typeof trade.net_pnl === "number")
+  const totalPnL = completedTrades.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0)
+  const winningTrades = completedTrades.filter((trade) => (trade.net_pnl ?? 0) > 0).length
+  const losingTrades = completedTrades.filter((trade) => (trade.net_pnl ?? 0) < 0).length
+  const breakEvenTrades = completedTrades.length - winningTrades - losingTrades
+  const winRate = completedTrades.length ? (winningTrades / completedTrades.length) * 100 : 0
 
-  const handleDateClick = (date: Date) => {
-    setSelectedDate(date)
-    const dateStr = format(date, "yyyy-MM-dd")
-    const dayTrades = trades.filter((trade) => trade.entry_date === dateStr)
-    setSelectedTrades(dayTrades)
-  }
+  const dailyResults = Object.entries(tradesByDate).map(([date, dayTrades]) => ({
+    date,
+    pnl: dayTrades.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0),
+  }))
+  const bestDay = dailyResults.reduce<(typeof dailyResults)[number] | null>(
+    (best, day) => (!best || day.pnl > best.pnl ? day : best),
+    null,
+  )
+  const worstDay = dailyResults.reduce<(typeof dailyResults)[number] | null>(
+    (worst, day) => (!worst || day.pnl < worst.pnl ? day : worst),
+    null,
+  )
 
-  const navigateMonth = (direction: "prev" | "next") => {
-    setCurrentDate((prev) => {
-      const newDate = new Date(prev)
-      newDate.setMonth(prev.getMonth() + (direction === "next" ? 1 : -1))
-      return newDate
-    })
-  }
+  const selectedTrades = selectedDate
+    ? tradesByDate[format(selectedDate, "yyyy-MM-dd")] ?? []
+    : []
+  const selectedPnL = selectedTrades.reduce(
+    (total, trade) => total + (trade.net_pnl ?? 0),
+    0,
+  )
 
-  const days = eachDayOfInterval({
-    start: startOfMonth(currentDate),
-    end: endOfMonth(currentDate),
-  })
-
-  const getDayPnL = (date: Date) => {
-    const dateStr = format(date, "yyyy-MM-dd")
-    return dailyPnL[dateStr] || 0
-  }
-
-  const getDayColor = (date: Date) => {
-    const pnl = getDayPnL(date)
-    if (pnl > 0) return "bg-green-100 text-green-800 border-green-200"
-    if (pnl < 0) return "bg-red-100 text-red-800 border-red-200"
-    return "bg-gray-50 text-gray-600 border-gray-200"
-  }
-
-  if (loading) {
-    return <div className="flex justify-center p-8">Loading calendar...</div>
-  }
+  const stats = [
+    {
+      label: "Net P&L",
+      value: currency.format(totalPnL),
+      detail: `${completedTrades.length} closed trades`,
+      icon: totalPnL >= 0 ? TrendingUp : TrendingDown,
+      positive: totalPnL >= 0,
+    },
+    {
+      label: "Best day",
+      value: bestDay ? currency.format(bestDay.pnl) : "—",
+      detail: bestDay ? formatDayLabel(bestDay.date) : "No trades yet",
+      icon: ArrowUpRight,
+      positive: true,
+    },
+    {
+      label: "Lowest day",
+      value: worstDay ? currency.format(worstDay.pnl) : "—",
+      detail: worstDay ? formatDayLabel(worstDay.date) : "No trades yet",
+      icon: ArrowDownRight,
+      positive: false,
+    },
+    {
+      label: "Win rate",
+      value: `${winRate.toFixed(0)}%`,
+      detail: `${winningTrades}W · ${breakEvenTrades}B · ${losingTrades}L`,
+      icon: Target,
+      positive: winRate >= 50,
+    },
+  ]
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle>{format(currentDate, "MMMM yyyy")}</CardTitle>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="icon" onClick={() => navigateMonth("prev")}>
-                    <ChevronLeft className="h-4 w-4" />
-                  </Button>
-                  <Button variant="outline" size="icon" onClick={() => navigateMonth("next")}>
-                    <ChevronRight className="h-4 w-4" />
-                  </Button>
+    <div className="space-y-5">
+      {error && (
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-500">
+          {error}
+        </div>
+      )}
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {stats.map((stat) => {
+          const Icon = stat.icon
+          return (
+            <div
+              key={stat.label}
+              className="group relative overflow-hidden rounded-2xl border border-border/60 bg-card p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
+            >
+              <div
+                className={cn(
+                  "absolute inset-x-0 top-0 h-0.5",
+                  stat.positive ? "bg-emerald-500" : "bg-rose-500",
+                )}
+              />
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                    {stat.label}
+                  </p>
+                  <p
+                    className={cn(
+                      "mt-2 text-2xl font-semibold tracking-tight",
+                      stat.value !== "—" &&
+                        (stat.positive ? "text-emerald-500" : "text-rose-500"),
+                    )}
+                  >
+                    {stat.value}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">{stat.detail}</p>
+                </div>
+                <div
+                  className={cn(
+                    "rounded-xl p-2.5",
+                    stat.positive
+                      ? "bg-emerald-500/10 text-emerald-500"
+                      : "bg-rose-500/10 text-rose-500",
+                  )}
+                >
+                  <Icon className="h-4 w-4" />
                 </div>
               </div>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-7 gap-2 mb-4">
-                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
-                  <div key={day} className="text-center text-sm font-medium text-muted-foreground p-2">
-                    {day}
-                  </div>
-                ))}
-              </div>
+            </div>
+          )
+        })}
+      </div>
 
-              <div className="grid grid-cols-7 gap-2">
-                {days.map((day) => {
-                  const pnl = getDayPnL(day)
-                  const hasTrades = pnl !== 0
-                  const isSelected = selectedDate && isSameDay(day, selectedDate)
+      <div className="overflow-hidden rounded-3xl border border-border/60 bg-card shadow-sm">
+        <div className="flex flex-col gap-4 border-b border-border/60 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-primary/10 p-2.5 text-primary">
+              <CalendarDays className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="font-semibold">Monthly performance</p>
+              <p className="text-xs text-muted-foreground">Select a day to review its trades</p>
+            </div>
+          </div>
 
-                  return (
-                    <button
-                      key={day.toISOString()}
-                      onClick={() => handleDateClick(day)}
-                      className={cn(
-                        "p-2 text-sm border rounded-lg transition-colors min-h-[60px] flex flex-col items-center justify-center",
-                        getDayColor(day),
-                        isSelected && "ring-2 ring-primary",
-                        !isSameMonth(day, currentDate) && "opacity-50",
-                        hasTrades && "cursor-pointer hover:opacity-80",
-                      )}
-                    >
-                      <span className="font-medium">{format(day, "d")}</span>
-                      {hasTrades && <span className="text-xs font-bold">₹{pnl.toFixed(0)}</span>}
-                    </button>
-                  )
-                })}
-              </div>
-
-              <div className="flex items-center justify-center gap-4 mt-4 text-sm">
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 bg-green-100 border border-green-200 rounded"></div>
-                  <span>Profit</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 bg-red-100 border border-red-200 rounded"></div>
-                  <span>Loss</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 bg-gray-50 border border-gray-200 rounded"></div>
-                  <span>No Trades</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-border/60 bg-muted/40 p-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 rounded-lg"
+              aria-label="Previous month"
+              onClick={() => {
+                setLoading(true)
+                setCurrentDate((date) => subMonths(date, 1))
+              }}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <p className="min-w-36 text-center text-sm font-semibold">
+              {format(currentDate, "MMMM yyyy")}
+            </p>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 rounded-lg"
+              aria-label="Next month"
+              onClick={() => {
+                setLoading(true)
+                setCurrentDate((date) => addMonths(date, 1))
+              }}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
-        <div>
-          <Card>
-            <CardHeader>
-              <CardTitle>{selectedDate ? format(selectedDate, "dd MMM yyyy") : "Select a Date"}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {selectedDate && selectedTrades.length > 0 ? (
-                <div className="space-y-4">
-                  <div className="text-center p-4 bg-muted rounded-lg">
-                    <div className="text-sm text-muted-foreground">Daily P&L</div>
-                    <div
-                      className={cn(
-                        "text-2xl font-bold",
-                        getDayPnL(selectedDate) >= 0 ? "text-green-600" : "text-red-600",
-                      )}
-                    >
-                      ₹{getDayPnL(selectedDate).toFixed(2)}
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <h4 className="font-medium">Trades ({selectedTrades.length})</h4>
-                    {selectedTrades.map((trade) => (
-                      <div key={trade.id} className="p-3 border rounded-lg space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium">{trade.instrument}</span>
-                          <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>
-                            {trade.trade_type}
-                          </Badge>
-                        </div>
-                        <div className="text-sm text-muted-foreground">
-                          {trade.quantity} @ ₹{trade.entry_price}
-                          {trade.exit_price && ` → ₹${trade.exit_price}`}
-                        </div>
-                        {trade.net_pnl !== null && (
-                          <div
-                            className={cn(
-                              "text-sm font-medium",
-                              trade.net_pnl >= 0 ? "text-green-600" : "text-red-600",
-                            )}
-                          >
-                            P&L: ₹{trade.net_pnl.toFixed(2)}
-                          </div>
-                        )}
-                        {trade.strategy && (
-                          <Badge variant="outline" className="text-xs">
-                            {trade.strategy}
-                          </Badge>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+        <div className="overflow-x-auto">
+          <div className={cn("min-w-[760px] transition-opacity", loading && "opacity-50")}>
+            <div className="grid grid-cols-7 border-b border-border/60 bg-muted/30">
+              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => (
+                <div
+                  key={day}
+                  className="px-3 py-3 text-center text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground"
+                >
+                  {day}
                 </div>
-              ) : selectedDate ? (
-                <div className="text-center text-muted-foreground py-8">No trades on this date</div>
-              ) : (
-                <div className="text-center text-muted-foreground py-8">Click on a date to view trades</div>
-              )}
-            </CardContent>
-          </Card>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-7">
+              {days.map((day, index) => {
+                const dateKey = format(day, "yyyy-MM-dd")
+                const dayTrades = tradesByDate[dateKey] ?? []
+                const pnl = dayTrades.reduce(
+                  (total, trade) => total + (trade.net_pnl ?? 0),
+                  0,
+                )
+                const hasTrades = dayTrades.length > 0
+                const isSelected = selectedDate && isSameDay(day, selectedDate)
+                const inMonth = isSameMonth(day, currentDate)
+
+                return (
+                  <button
+                    key={dateKey}
+                    type="button"
+                    disabled={!inMonth}
+                    onClick={() => setSelectedDate(day)}
+                    className={cn(
+                      "group relative min-h-28 border-b border-r border-border/60 p-3 text-left transition-colors",
+                      index % 7 === 6 && "border-r-0",
+                      !inMonth && "bg-muted/20 text-muted-foreground/30",
+                      inMonth && !hasTrades && "bg-card hover:bg-muted/40",
+                      hasTrades && pnl > 0 && "bg-emerald-500/[0.08] hover:bg-emerald-500/[0.14]",
+                      hasTrades && pnl < 0 && "bg-rose-500/[0.08] hover:bg-rose-500/[0.14]",
+                      hasTrades && pnl === 0 && "bg-amber-500/[0.08] hover:bg-amber-500/[0.14]",
+                      isSelected && "z-10 ring-2 ring-inset ring-primary",
+                    )}
+                  >
+                    <div className="flex items-start justify-between">
+                      <span
+                        className={cn(
+                          "flex h-7 min-w-7 items-center justify-center rounded-lg px-1.5 text-xs font-semibold",
+                          isToday(day) && "bg-primary text-primary-foreground",
+                          !isToday(day) && inMonth && "text-foreground",
+                        )}
+                      >
+                        {format(day, "d")}
+                      </span>
+                      {hasTrades && (
+                        <span
+                          className={cn(
+                            "h-2 w-2 rounded-full",
+                            pnl > 0 ? "bg-emerald-500" : pnl < 0 ? "bg-rose-500" : "bg-amber-500",
+                          )}
+                        />
+                      )}
+                    </div>
+
+                    {hasTrades && (
+                      <div className="mt-4">
+                        <p
+                          className={cn(
+                            "text-sm font-semibold",
+                            pnl > 0 ? "text-emerald-500" : pnl < 0 ? "text-rose-500" : "text-amber-500",
+                          )}
+                        >
+                          {pnl > 0 && "+"}
+                          {currency.format(pnl)}
+                        </p>
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {dayTrades.length} {dayTrades.length === 1 ? "trade" : "trades"}
+                        </p>
+                      </div>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
+          {[
+            ["bg-emerald-500", "Profitable"],
+            ["bg-rose-500", "Loss"],
+            ["bg-amber-500", "Break-even"],
+          ].map(([color, label]) => (
+            <div key={label} className="flex items-center gap-2">
+              <span className={cn("h-2 w-2 rounded-full", color)} />
+              {label}
+            </div>
+          ))}
         </div>
       </div>
+
+      {selectedDate && (
+        <div className="rounded-2xl border border-border/60 bg-card p-5 shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-border/60 pb-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-semibold">{format(selectedDate, "EEEE, MMMM d")}</p>
+              <p className="text-sm text-muted-foreground">
+                {selectedTrades.length
+                  ? `${selectedTrades.length} ${selectedTrades.length === 1 ? "trade" : "trades"} recorded`
+                  : "No trades recorded"}
+              </p>
+            </div>
+            {selectedTrades.length > 0 && (
+              <div
+                className={cn(
+                  "flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold",
+                  selectedPnL > 0
+                    ? "bg-emerald-500/10 text-emerald-500"
+                    : selectedPnL < 0
+                      ? "bg-rose-500/10 text-rose-500"
+                      : "bg-amber-500/10 text-amber-500",
+                )}
+              >
+                {selectedPnL > 0 ? (
+                  <TrendingUp className="h-4 w-4" />
+                ) : selectedPnL < 0 ? (
+                  <TrendingDown className="h-4 w-4" />
+                ) : (
+                  <Minus className="h-4 w-4" />
+                )}
+                {selectedPnL > 0 && "+"}
+                {currency.format(selectedPnL)}
+              </div>
+            )}
+          </div>
+
+          {selectedTrades.length > 0 && (
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {selectedTrades.map((trade) => {
+                const holdMs = getTradeHoldTimeMs(trade)
+                return (
+                <div key={trade.id} className="rounded-xl border border-border/60 bg-muted/20 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="font-semibold">{trade.instrument}</p>
+                    <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>
+                      {trade.trade_type}
+                    </Badge>
+                  </div>
+                  <div className="mt-3 flex items-end justify-between gap-3">
+                    <div>
+                      <p className="text-xs text-muted-foreground">
+                        {trade.quantity} qty · {currency.format(trade.entry_price)}
+                        {trade.exit_price ? ` → ${currency.format(trade.exit_price)}` : ""}
+                      </p>
+                      {trade.strategy && (
+                        <p className="mt-1 text-xs text-muted-foreground">{trade.strategy}</p>
+                      )}
+                      {holdMs !== null && (
+                        <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                          <Clock className="h-3 w-3" />
+                          Hold {formatHoldDuration(holdMs)}
+                        </p>
+                      )}
+                    </div>
+                    {trade.net_pnl !== null && (
+                      <p
+                        className={cn(
+                          "text-sm font-semibold",
+                          trade.net_pnl >= 0 ? "text-emerald-500" : "text-rose-500",
+                        )}
+                      >
+                        {trade.net_pnl > 0 && "+"}
+                        {currency.format(trade.net_pnl)}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )})}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

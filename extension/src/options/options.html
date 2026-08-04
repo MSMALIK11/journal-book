@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Journal Book Sync Options</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 560px;
+        margin: 24px auto;
+        padding: 0 16px;
+        color: #1f2328;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-top: 16px;
+        margin-bottom: 6px;
+      }
+      .hint {
+        font-size: 13px;
+        color: #656d76;
+        margin-top: 4px;
+        font-weight: 400;
+      }
+      input,
+      select {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #d0d7de;
+        border-radius: 8px;
+        box-sizing: border-box;
+      }
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .checkbox-row input {
+        width: auto;
+      }
+      button {
+        margin-top: 20px;
+        margin-right: 8px;
+        padding: 10px 16px;
+        border: 0;
+        border-radius: 8px;
+        background: #0969da;
+        color: white;
+        cursor: pointer;
+      }
+      .saved {
+        margin-top: 12px;
+        color: #1a7f37;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Journal Book Sync Settings</h1>
+    <p>Generate a sync key in journal-book Profile settings, then paste it here.</p>
+
+    <label for="apiUrl">Journal Book API URL</label>
+    <input id="apiUrl" placeholder="http://localhost:3000" />
+
+    <label for="syncToken">Sync API Key</label>
+    <input id="syncToken" placeholder="jb_sync_..." />
+
+    <label for="assetType">Default asset type</label>
+    <select id="assetType">
+      <option value="crypto">Crypto</option>
+      <option value="forex">Forex</option>
+      <option value="metal">Metal</option>
+      <option value="commodity">Commodity</option>
+      <option value="index">Index</option>
+      <option value="stock">Stock</option>
+    </select>
+
+    <label for="pollIntervalSeconds">Connection poll interval</label>
+    <select id="pollIntervalSeconds">
+      <option value="15">Every 15 seconds (recommended)</option>
+      <option value="30">Every 30 seconds</option>
+      <option value="60">Every 60 seconds</option>
+      <option value="120">Every 2 minutes</option>
+      <option value="0">Off — manual sync only</option>
+    </select>
+    <p class="hint">
+      Keeps Live Sync showing &quot;Extension connected&quot; while a TradingView chart tab is open.
+    </p>
+
+    <div class="checkbox-row">
+      <input id="autoSyncTrades" type="checkbox" />
+      <label for="autoSyncTrades" style="margin: 0">Auto-sync new trades on each poll</label>
+    </div>
+    <p class="hint">When enabled, each poll also imports new trades from Strategy Tester (same as Refresh).</p>
+
+    <button id="save">Save settings</button>
+    <button id="test" type="button">Test connection</button>
+    <p id="saved" class="saved"></p>
+
+    <script src="options.js"></script>
+  </body>
+</html>

@@ -1,290 +1,487 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useMemo, useState } from "react"
+import useSWR from "swr"
+import { format, subDays } from "date-fns"
+import Link from "next/link"
 import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle
-} from "@/components/ui/card"
+  AlertTriangle,
+  BarChart3,
+  Clock,
+  Target,
+  TrendingDown,
+  TrendingUp,
+} from "lucide-react"
+import { AvoidInsights } from "@/components/analytics/avoid-insights"
+import { EquityChart } from "@/components/analytics/equity-chart"
+import { StreaksRecords } from "@/components/analytics/streaks-records"
+import { TimeAnalysisCharts } from "@/components/analytics/time-analysis-charts"
+import { WeeklyProfitLoss } from "@/components/analytics/weekly-profit-loss"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line
-} from "recharts"
-import { TrendingUp, TrendingDown, Target, AlertTriangle } from "lucide-react"
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { authFetch } from "@/lib/client-auth"
+import { useActiveAccount } from "@/hooks/use-active-account"
+import { formatHoldDuration, type AnalyticsResult } from "@/lib/trading/analytics"
 
-const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#8884D8"]
+const currency = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 2,
+})
 
-// 🧪 Mock Trade Data
-const mockTrades = [
-  { user_id: "123", net_pnl: 500, strategy: "Breakout", emotion_tag: "Confident", entry_date: "2025-08-01" },
-  { user_id: "123", net_pnl: -300, strategy: "Reversal", emotion_tag: "Greedy", entry_date: "2025-08-01" },
-  { user_id: "123", net_pnl: 700, strategy: "Breakout", emotion_tag: "Confident", entry_date: "2025-08-02" },
-  { user_id: "123", net_pnl: -100, strategy: "Scalping", emotion_tag: "Fearful", entry_date: "2025-08-02" },
-  { user_id: "123", net_pnl: 0, strategy: "Reversal", emotion_tag: "Calm", entry_date: "2025-08-03" },
-  { user_id: "123", net_pnl: 400, strategy: "Breakout", emotion_tag: "Confident", entry_date: "2025-08-03" },
-  { user_id: "123", net_pnl: -200, strategy: "Scalping", emotion_tag: "Greedy", entry_date: "2025-08-04" },
-]
+type SourceFilter = "all" | "tradingview" | "manual"
+type RangePreset = "7d" | "30d" | "90d" | "all"
+
+const fetcher = async (url: string) => {
+  const response = await authFetch(url)
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.error || "Request failed")
+  return data as AnalyticsResult
+}
+
+function rangeToDates(preset: RangePreset): { startDate?: string; endDate?: string } {
+  if (preset === "all") return {}
+  const days = preset === "7d" ? 7 : preset === "30d" ? 30 : 90
+  return {
+    startDate: format(subDays(new Date(), days), "yyyy-MM-dd"),
+    endDate: format(new Date(), "yyyy-MM-dd"),
+  }
+}
 
 export function AnalyticsDashboard() {
-  const [analytics, setAnalytics] = useState<any>({})
-  const [loading, setLoading] = useState(true)
+  const { activeAccountId, switchVersion } = useActiveAccount()
+  const [source, setSource] = useState<SourceFilter>("all")
+  const [range, setRange] = useState<RangePreset>("all")
+  const [strategy, setStrategy] = useState("all")
 
-  useEffect(() => {
-    calculateAnalytics(mockTrades)
-    setLoading(false)
-  }, [])
+  const query = useMemo(() => {
+    const params = new URLSearchParams({ source })
+    if (strategy !== "all") params.set("strategy", strategy)
+    const { startDate, endDate } = rangeToDates(range)
+    if (startDate) params.set("startDate", startDate)
+    if (endDate) params.set("endDate", endDate)
+    return `/api/analytics?${params.toString()}`
+  }, [source, range, strategy])
 
-  const calculateAnalytics = (tradesData: any[]) => {
-    const completedTrades = tradesData.filter((trade) => trade.net_pnl !== null)
-    const profitableTrades = completedTrades.filter((trade) => trade.net_pnl > 0)
-    const losingTrades = completedTrades.filter((trade) => trade.net_pnl < 0)
+  const { data, error, isLoading } = useSWR<AnalyticsResult>(
+    activeAccountId ? [query, activeAccountId, switchVersion] : null,
+    ([url]) => fetcher(url),
+    { keepPreviousData: false },
+  )
 
-    const totalPnL = completedTrades.reduce((sum, trade) => sum + trade.net_pnl, 0)
-    const totalProfit = profitableTrades.reduce((sum, trade) => sum + trade.net_pnl, 0)
-    const totalLoss = Math.abs(losingTrades.reduce((sum, trade) => sum + trade.net_pnl, 0))
+  const strategies = data?.strategies ?? []
 
-    const winRate = completedTrades.length > 0 ? (profitableTrades.length / completedTrades.length) * 100 : 0
-    const avgRR = totalLoss > 0 ? totalProfit / totalLoss : 0
-
-    const strategyStats = completedTrades.reduce((acc, trade) => {
-      const strategy = trade.strategy || "Unknown"
-      if (!acc[strategy]) acc[strategy] = { count: 0, pnl: 0 }
-      acc[strategy].count++
-      acc[strategy].pnl += trade.net_pnl
-      return acc
-    }, {})
-
-    const strategyData = Object.entries(strategyStats).map(([name, stats]: [string, any]) => ({
-      name, count: stats.count, pnl: stats.pnl,
-    }))
-
-    const emotionStats = completedTrades.reduce((acc, trade) => {
-      const emotion = trade.emotion_tag || "Unknown"
-      if (!acc[emotion]) acc[emotion] = { count: 0, pnl: 0 }
-      acc[emotion].count++
-      acc[emotion].pnl += trade.net_pnl
-      return acc
-    }, {})
-
-    const emotionData = Object.entries(emotionStats).map(([name, stats]: [string, any]) => ({
-      name, count: stats.count, pnl: stats.pnl,
-    }))
-
-    const dailyPnL = completedTrades.reduce((acc, trade) => {
-      const date = trade.entry_date
-      if (!acc[date]) acc[date] = 0
-      acc[date] += trade.net_pnl
-      return acc
-    }, {})
-
-    const dailyData = Object.entries(dailyPnL)
-      .map(([date, pnl]: [string, any]) => ({ date, pnl }))
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-
-    const bestDay = Math.max(...(Object.values(dailyPnL) as number[]))
-    const worstDay = Math.min(...(Object.values(dailyPnL) as number[]))
-
-    let maxDrawdown = 0
-    let peak = 0
-    let runningPnL = 0
-
-    dailyData.forEach((day) => {
-      runningPnL += day.pnl
-      if (runningPnL > peak) peak = runningPnL
-      const drawdown = peak - runningPnL
-      if (drawdown > maxDrawdown) maxDrawdown = drawdown
-    })
-
-    setAnalytics({
-      totalTrades: completedTrades.length,
-      winRate,
-      avgRR,
-      totalPnL,
-      totalProfit,
-      totalLoss,
-      bestDay,
-      worstDay,
-      maxDrawdown,
-      strategyData,
-      emotionData,
-      dailyData,
-      mostProfitableStrategy: strategyData.reduce((best, current) => (current.pnl > best.pnl ? current : best), {
-        name: "None", pnl: 0,
-      }),
-    })
+  if (isLoading && !data) {
+    return (
+      <div className="flex justify-center p-12 text-muted-foreground">
+        Loading analytics...
+      </div>
+    )
   }
 
-  if (loading) return <div className="flex justify-center p-8">Loading analytics...</div>
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="py-12 text-center text-destructive">
+          Failed to load analytics. Please try again.
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (!data?.overview || data.overview.closedTrades === 0) {
+    return (
+      <div className="space-y-6">
+        <FilterBar
+          source={source}
+          setSource={setSource}
+          range={range}
+          setRange={setRange}
+          strategy={strategy}
+          setStrategy={setStrategy}
+          strategies={strategies}
+          timezone={data?.timezone}
+        />
+        <Card>
+          <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+            <BarChart3 className="h-12 w-12 text-muted-foreground" />
+            <div>
+              <p className="font-medium">No closed trades for this filter</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Import trades from Live Sync to see backtest analytics, or add manual journal entries.
+              </p>
+            </div>
+            <Button asChild variant="outline">
+              <Link href="/live-sync">Go to Live Sync</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  const overview = data.overview
+
+  const pf =
+    overview.profitFactor === Infinity
+      ? "∞"
+      : overview.profitFactor.toFixed(2)
 
   return (
     <div className="space-y-6">
-      {/* Key Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <FilterBar
+        source={source}
+        setSource={setSource}
+        range={range}
+        setRange={setRange}
+        strategy={strategy}
+        setStrategy={setStrategy}
+        strategies={strategies}
+        timezone={data.timezone}
+      />
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <KpiCard
+          title="Net P&L"
+          value={currency.format(overview.netPnl)}
+          subtitle={`${overview.closedTrades} closed trades`}
+          positive={overview.netPnl >= 0}
+          icon={overview.netPnl >= 0 ? TrendingUp : TrendingDown}
+        />
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Win Rate</CardTitle>
             <Target className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{analytics.winRate?.toFixed(1)}%</div>
-            <Progress value={analytics.winRate} className="mt-2" />
+            <div className="text-2xl font-bold">{overview.winRate.toFixed(1)}%</div>
+            <Progress value={overview.winRate} className="mt-2" />
           </CardContent>
         </Card>
+        <KpiCard
+          title="Profit Factor"
+          value={pf}
+          subtitle={`Expectancy ${currency.format(overview.expectancy)}`}
+        />
+        <KpiCard
+          title="Max Drawdown"
+          value={currency.format(overview.maxDrawdown)}
+          subtitle={`${overview.maxDrawdownPct.toFixed(1)}% from peak`}
+          negative
+          icon={AlertTriangle}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+        <KpiCard title="Avg Win" value={currency.format(overview.avgWin)} subtitle={`${overview.wins} wins`} positive />
+        <KpiCard title="Avg Loss" value={currency.format(overview.avgLoss)} subtitle={`${overview.losses} losses`} negative />
+        <KpiCard title="Commission" value={currency.format(overview.totalCommission)} subtitle="Total fees" />
+        <KpiCard
+          title="Avg Return"
+          value={`${overview.avgReturnPct >= 0 ? "+" : ""}${overview.avgReturnPct.toFixed(2)}%`}
+          subtitle="Per trade (when available)"
+        />
+        <KpiCard
+          title="Avg Trades / Day"
+          value={overview.avgTradesPerDay.toFixed(1)}
+          subtitle={
+            overview.tradingDays > 0
+              ? `${overview.tradingDays} active days · min ${overview.minTradesPerDay} · max ${overview.maxTradesPerDay}`
+              : "No trading days yet"
+          }
+          icon={BarChart3}
+        />
+        <KpiCard
+          title="Avg Hold Time"
+          value={formatHoldDuration(overview.avgHoldTimeMs)}
+          subtitle={
+            overview.holdTimeTrades > 0
+              ? `${overview.holdTimeTrades} trades · Wins ${formatHoldDuration(overview.avgHoldTimeWinMs)} · Losses ${formatHoldDuration(overview.avgHoldTimeLossMs)}`
+              : "Re-import from extension to backfill exit times"
+          }
+          icon={Clock}
+        />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <StreaksRecords records={data.records} />
 
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total P&L</CardTitle>
-            {analytics.totalPnL >= 0 ? (
-              <TrendingUp className="h-4 w-4 text-green-600" />
-            ) : (
-              <TrendingDown className="h-4 w-4 text-red-600" />
+          <CardHeader>
+            <CardTitle>Long vs Short</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="flex justify-between">
+              <span>Long ({overview.longTrades})</span>
+              <span className={overview.longPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>
+                {currency.format(overview.longPnl)}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span>Short ({overview.shortTrades})</span>
+              <span className={overview.shortPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>
+                {currency.format(overview.shortPnl)}
+              </span>
+            </div>
+            {overview.bestMonth && (
+              <div className="flex justify-between border-t pt-3">
+                <span>Best month</span>
+                <Badge variant="outline">
+                  {overview.bestMonth.month} · {currency.format(overview.bestMonth.pnl)}
+                </Badge>
+              </div>
             )}
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${analytics.totalPnL >= 0 ? "text-green-600" : "text-red-600"}`}>
-              ₹{analytics.totalPnL?.toFixed(2)}
-            </div>
-            <p className="text-xs text-muted-foreground">{analytics.totalTrades} completed trades</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Avg R:R Ratio</CardTitle>
-            <Target className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{analytics.avgRR?.toFixed(2)}</div>
-            <p className="text-xs text-muted-foreground">Risk to Reward</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Max Drawdown</CardTitle>
-            <AlertTriangle className="h-4 w-4 text-red-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-red-600">₹{analytics.maxDrawdown?.toFixed(2)}</div>
-            <p className="text-xs text-muted-foreground">Maximum loss from peak</p>
+            {overview.worstMonth && (
+              <div className="flex justify-between">
+                <span>Worst month</span>
+                <Badge variant="outline">
+                  {overview.worstMonth.month} · {currency.format(overview.worstMonth.pnl)}
+                </Badge>
+              </div>
+            )}
+            {overview.openTrades > 0 && (
+              <p className="text-muted-foreground">{overview.openTrades} open trades excluded</p>
+            )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Performance Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Best & Worst Days</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex justify-between items-center">
-              <span className="text-sm font-medium">Best Trading Day</span>
-              <Badge className="bg-green-100 text-green-800">₹{analytics.bestDay?.toFixed(2)}</Badge>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-sm font-medium">Worst Trading Day</span>
-              <Badge variant="destructive">₹{analytics.worstDay?.toFixed(2)}</Badge>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-sm font-medium">Most Profitable Strategy</span>
-              <Badge variant="outline">{analytics.mostProfitableStrategy?.name}</Badge>
-            </div>
-          </CardContent>
-        </Card>
+      <EquityChart
+        equityCurve={data.equityCurve}
+        maxDrawdown={overview.maxDrawdown}
+        maxDrawdownPct={overview.maxDrawdownPct}
+      />
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Profit vs Loss</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <span className="text-sm font-medium">Total Profit</span>
-                <span className="text-green-600 font-bold">₹{analytics.totalProfit?.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-sm font-medium">Total Loss</span>
-                <span className="text-red-600 font-bold">₹{analytics.totalLoss?.toFixed(2)}</span>
-              </div>
-              <div className="pt-2 border-t">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium">Net P&L</span>
-                  <span className={`font-bold ${analytics.totalPnL >= 0 ? "text-green-600" : "text-red-600"}`}>
-                    ₹{analytics.totalPnL?.toFixed(2)}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+      <div>
+        <h2 className="mb-4 text-lg font-semibold">Time analysis</h2>
+        <TimeAnalysisCharts
+          byHour={data.byHour}
+          byWeekday={data.byWeekday}
+          byMonth={data.byMonth}
+          bySession={data.bySession}
+        />
       </div>
 
-      {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Strategy Performance</CardTitle>
-            <CardDescription>P&L by trading strategy</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={analytics.strategyData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip formatter={(value) => [`₹${value}`, "P&L"]} />
-                <Bar dataKey="pnl" fill="#8884d8" />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Emotion Analysis</CardTitle>
-            <CardDescription>Trade count by emotion</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={analytics.emotionData}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                  dataKey="count"
-                >
-                  {analytics.emotionData?.map((entry: any, index: number) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+      <div>
+        <h2 className="mb-4 text-lg font-semibold">Trading insights</h2>
+        <AvoidInsights
+          avoidHours={data.avoid.hours}
+          avoidDays={data.avoid.days}
+          avoidSessions={data.avoid.sessions}
+          bestHours={data.avoid.bestHours}
+          bestDays={data.avoid.bestDays}
+          bestSessions={data.avoid.bestSessions}
+        />
       </div>
 
-      {/* Daily P&L Chart */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Daily P&L Trend</CardTitle>
-          <CardDescription>Your trading performance over time</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={400}>
-            <LineChart data={analytics.dailyData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis />
-              <Tooltip formatter={(value) => [`₹${value}`, "P&L"]} />
-              <Line type="monotone" dataKey="pnl" stroke="#8884d8" strokeWidth={2} dot={{ fill: "#8884d8" }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
+      <StrategyDeepDive
+        byStrategy={data.byStrategy}
+        bySignal={data.bySignal}
+        byInstrument={data.byInstrument}
+      />
+
+      <WeeklyProfitLoss byWeek={data.byWeek} />
     </div>
+  )
+}
+
+function FilterBar({
+  source,
+  setSource,
+  range,
+  setRange,
+  strategy,
+  setStrategy,
+  strategies,
+  timezone,
+}: {
+  source: SourceFilter
+  setSource: (v: SourceFilter) => void
+  range: RangePreset
+  setRange: (v: RangePreset) => void
+  strategy: string
+  setStrategy: (v: string) => void
+  strategies: string[]
+  timezone?: string
+}) {
+  return (
+    <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+      <Tabs value={source} onValueChange={(v) => setSource(v as SourceFilter)}>
+        <TabsList>
+          <TabsTrigger value="all">All</TabsTrigger>
+          <TabsTrigger value="tradingview">TradingView</TabsTrigger>
+          <TabsTrigger value="manual">Manual</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Select value={range} onValueChange={(v) => setRange(v as RangePreset)}>
+          <SelectTrigger className="w-[130px]">
+            <SelectValue placeholder="Range" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="7d">Last 7 days</SelectItem>
+            <SelectItem value="30d">Last 30 days</SelectItem>
+            <SelectItem value="90d">Last 90 days</SelectItem>
+            <SelectItem value="all">All time</SelectItem>
+          </SelectContent>
+        </Select>
+
+        {strategies.length > 0 && (
+          <Select value={strategy} onValueChange={setStrategy}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="Strategy" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All strategies</SelectItem>
+              {strategies.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
+        {timezone && (
+          <Badge variant="outline" className="text-xs">
+            Times in {timezone.replace(/_/g, " ")}
+          </Badge>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function KpiCard({
+  title,
+  value,
+  subtitle,
+  positive,
+  negative,
+  icon: Icon,
+}: {
+  title: string
+  value: string
+  subtitle?: string
+  positive?: boolean
+  negative?: boolean
+  icon?: React.ComponentType<{ className?: string }>
+}) {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+        {Icon && <Icon className={`h-4 w-4 ${negative ? "text-rose-500" : "text-muted-foreground"}`} />}
+      </CardHeader>
+      <CardContent>
+        <div
+          className={`text-2xl font-bold ${
+            positive ? "text-emerald-600" : negative ? "text-rose-600" : ""
+          }`}
+        >
+          {value}
+        </div>
+        {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
+function StrategyDeepDive({
+  byStrategy,
+  bySignal,
+  byInstrument,
+}: {
+  byStrategy: AnalyticsResult["byStrategy"]
+  bySignal: AnalyticsResult["bySignal"]
+  byInstrument: AnalyticsResult["byInstrument"]
+}) {
+  if (byStrategy.length <= 1 && bySignal.length <= 1 && byInstrument.length <= 1) return null
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-semibold">Strategy deep dive</h2>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {byStrategy.length > 1 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">By strategy</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <BucketTable rows={byStrategy} />
+            </CardContent>
+          </Card>
+        )}
+        {bySignal.length > 0 && bySignal.some((s) => s.key !== "—") && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">By signal</CardTitle>
+              <CardDescription>Entry signals from backtest</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <BucketTable rows={bySignal} />
+            </CardContent>
+          </Card>
+        )}
+        {byInstrument.length > 0 && (
+          <Card className="lg:col-span-2">
+            <CardHeader>
+              <CardTitle className="text-base">By instrument</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <BucketTable rows={byInstrument.slice(0, 10)} />
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function BucketTable({ rows }: { rows: AnalyticsResult["byStrategy"] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Name</TableHead>
+          <TableHead className="text-right">Trades</TableHead>
+          <TableHead className="text-right">Win %</TableHead>
+          <TableHead className="text-right">Net P&amp;L</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((row) => (
+          <TableRow key={row.key}>
+            <TableCell className="font-medium">{row.label}</TableCell>
+            <TableCell className="text-right">{row.trades}</TableCell>
+            <TableCell className="text-right">{row.winRate.toFixed(1)}%</TableCell>
+            <TableCell
+              className={`text-right ${row.netPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}
+            >
+              {currency.format(row.netPnl)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   )
 }

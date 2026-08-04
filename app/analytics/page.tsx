@@ -9,7 +9,9 @@ export default function AnalyticsPage() {
         <div className="space-y-6">
           <div>
             <h1 className="text-3xl font-bold">Analytics Dashboard</h1>
-            <p className="text-muted-foreground">Analyze your trading performance and patterns</p>
+            <p className="text-muted-foreground">
+              Backtest and performance insights — filter by All, TradingView, or Manual trades
+            </p>
           </div>
           <AnalyticsDashboard />
         </div>

@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Journal Book - TradingView Sync",
+  "version": "1.12.6",
+  "description": "Sync TradingView Strategy Tester trades to journal-book",
+  "permissions": ["storage", "tabs", "scripting", "alarms"],
+  "host_permissions": [
+    "https://*.tradingview.com/*",
+    "https://tradingview.com/*",
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*"
+  ],
+  "background": {
+    "service_worker": "src/background/poller.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.tradingview.com/*", "https://tradingview.com/*"],
+      "js": ["src/content/tv-poller.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.tradingview.com/*", "https://tradingview.com/*"],
+      "js": ["src/content/main-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": ["http://localhost:3000/*", "http://127.0.0.1:3000/*"],
+      "js": ["src/content/journal-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "Journal Book Sync"
+  },
+  "options_page": "src/options/options.html"
+}
