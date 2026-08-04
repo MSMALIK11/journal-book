@@ -3,6 +3,7 @@ import connectDB from "@/app/api/db/mongoose"
 import Trade from "@/app/api/models/Trade"
 import { resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
+import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { formatAccount, getUserAccounts } from "@/lib/trading-accounts-server"
 import { publishTradesUpdated } from "@/lib/sync-events"
@@ -31,8 +32,14 @@ function mergeSyncedTrade(
   existing.strategy = mapped.strategy
   existing.signal = mapped.signal
 
-  if (mapped.exit_date) existing.exit_date = mapped.exit_date
-  if (mapped.exit_price != null) existing.exit_price = mapped.exit_price
+  if (mapped.exit_date) {
+    existing.exit_date = mapped.exit_date
+    if (mapped.exit_price != null) existing.exit_price = mapped.exit_price
+  } else {
+    existing.set("exit_date", null)
+    existing.set("exit_price", null)
+  }
+
   if (typeof mapped.net_pnl === "number") existing.net_pnl = mapped.net_pnl
   if (typeof mapped.return_pct === "number") existing.return_pct = mapped.return_pct
   if (typeof mapped.commission === "number") existing.commission = mapped.commission
@@ -45,12 +52,16 @@ function syncedTradeChanged(
 ): boolean {
   if (shouldMigrateExternalId(existing, mapped)) return true
   if (existing.entry_date?.getTime() !== mapped.entry_date.getTime()) return true
+  if (Boolean(mapped.exit_date) !== Boolean(existing.exit_date)) return true
   if (mapped.exit_date && existing.exit_date?.getTime() !== mapped.exit_date.getTime()) return true
   if (mapped.exit_date && !existing.exit_date) return true
+  if (!mapped.exit_date && existing.exit_date) return true
   if (mapped.exit_price != null && existing.exit_price !== mapped.exit_price) return true
+  if (!mapped.exit_date && existing.exit_price != null) return true
   if (typeof mapped.net_pnl === "number" && existing.net_pnl !== mapped.net_pnl) return true
   if (typeof mapped.return_pct === "number" && existing.return_pct !== mapped.return_pct) return true
   if (typeof mapped.commission === "number" && existing.commission !== mapped.commission) return true
+  if (mapped.signal && existing.signal !== mapped.signal) return true
   return false
 }
 
@@ -199,6 +210,7 @@ export async function GET(request: NextRequest) {
       id: trade._id.toString(),
       entry_date: trade.entry_date?.toISOString(),
       exit_date: trade.exit_date?.toISOString() || null,
+      is_open: isOpenSyncedTrade(trade),
     }))
 
     const resolvedAccount = instrument

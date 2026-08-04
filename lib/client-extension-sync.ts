@@ -129,6 +129,10 @@ export function formatExtensionSyncSummary(result: ExtensionSyncResult | null | 
   }
   if (result.error) return String(result.error)
   if (result.message === "No new trades") return "No new trades on TradingView"
+  if (result.message === "Open trade already up to date") return "Open trade already up to date"
+  if (result.message?.includes("updated") || result.message?.includes("synced")) {
+    return String(result.message)
+  }
 
   const parts: string[] = []
   if (result.imported) parts.push(`${result.imported} new`)

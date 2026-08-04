@@ -40,9 +40,16 @@ JBSync.tradeKnownOnServer = function tradeKnownOnServer(trade, knownIds) {
   return knownIds.has(`tv:${JBSync.strategySlug(trade.strategy || "")}:${trade.tradeNumber}`)
 }
 
-JBSync.fetchKnownExternalIds = async function fetchKnownExternalIds(config, instrument) {
+JBSync.isOpenTrade = function isOpenTrade(trade) {
+  if (!trade.exit) return true
+  const exitSig = (trade.exit.signal || "").trim().toLowerCase()
+  const entrySig = (trade.entry?.signal || "").trim().toLowerCase()
+  if (exitSig === "open" || entrySig === "open") return true
+  return false
+}
+
+JBSync.fetchKnownTradeSnapshot = async function fetchKnownTradeSnapshot(config) {
   const params = new URLSearchParams({ limit: "10000" })
-  if (instrument) params.set("instrument", instrument)
 
   const response = await fetch(`${config.apiUrl}/api/sync/trades?${params}`, {
     headers: {
@@ -52,11 +59,34 @@ JBSync.fetchKnownExternalIds = async function fetchKnownExternalIds(config, inst
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || "Failed to load existing trades")
+
   const ids = new Set()
+  const openIds = new Set()
   for (const trade of data.trades || []) {
-    if (trade.external_id) ids.add(trade.external_id)
+    if (!trade.external_id) continue
+    ids.add(trade.external_id)
+    if (trade.is_open) openIds.add(trade.external_id)
   }
-  return ids
+  return { ids, openIds }
+}
+
+JBSync.tradeNeedsRefresh = function tradeNeedsRefresh(trade, snapshot, latestTradeNumber) {
+  if (latestTradeNumber != null && trade.tradeNumber === latestTradeNumber) return true
+
+  const extId = JBSync.buildExternalId(trade)
+  const legacyId = `tv:${JBSync.strategySlug(trade.strategy || "")}:${trade.tradeNumber}`
+  const known = snapshot.ids.has(extId) || snapshot.ids.has(legacyId)
+
+  if (!known) return true
+  if (JBSync.isOpenTrade(trade)) return true
+  if (snapshot.openIds.has(extId) || snapshot.openIds.has(legacyId)) return true
+  return false
+}
+
+/** @deprecated Use fetchKnownTradeSnapshot */
+JBSync.fetchKnownExternalIds = async function fetchKnownExternalIds(config, instrument) {
+  const snapshot = await JBSync.fetchKnownTradeSnapshot(config, instrument)
+  return snapshot.ids
 }
 
 JBSync.isTradingViewUrl = function isTradingViewUrl(url) {
@@ -346,17 +376,26 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
     throw new Error(result?.error || "No trades found on TradingView")
   }
 
-  const knownIds = await JBSync.fetchKnownExternalIds(config, result.instrument)
-  const newOrUpdated = result.trades.filter((trade) => {
-    if (!JBSync.tradeKnownOnServer(trade, knownIds)) return true
-    if (trade.entry && !trade.exit) return true
-    return false
-  })
+  const snapshot = await JBSync.fetchKnownTradeSnapshot(config)
+  const latestTradeNumber = Math.max(...result.trades.map((trade) => trade.tradeNumber))
+  const newOrUpdated = result.trades.filter((trade) =>
+    JBSync.tradeNeedsRefresh(trade, snapshot, latestTradeNumber),
+  )
 
   let syncResult = { imported: 0, updated: 0, skipped: 0, deduped: 0, byAccount: {} }
 
   if (newOrUpdated.length) {
     syncResult = await JBSync.syncTrades(newOrUpdated, config)
+    if (syncResult.imported === 0 && syncResult.updated === 0 && syncResult.skipped > 0) {
+      const latest = result.trades.find((trade) => trade.tradeNumber === latestTradeNumber)
+      syncResult.message = JBSync.isOpenTrade(latest || {})
+        ? "Open trade already up to date"
+        : "No new trades"
+    } else if (syncResult.updated > 0 && !syncResult.imported) {
+      syncResult.message = `${syncResult.updated} trade(s) updated`
+    } else if (syncResult.imported > 0) {
+      syncResult.message = `${syncResult.imported} new trade(s) synced`
+    }
   } else {
     syncResult.message = "No new trades"
   }

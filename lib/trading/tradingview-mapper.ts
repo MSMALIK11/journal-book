@@ -1,5 +1,6 @@
 import type { AssetType } from "@/lib/instruments"
 import { ASSET_TYPE_DEFAULTS, getQuantityMode, INSTRUMENTS } from "@/lib/instruments"
+import { isOpenTvTrade } from "@/lib/trading/tradingview-open"
 import {
   buildExternalId,
   parseTradingViewDatetime,
@@ -56,9 +57,10 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
     trade.tradeNumber,
   )
   const tags = [trade.entry.signal, trade.exit?.signal].filter(Boolean) as string[]
+  const open = isOpenTvTrade(trade)
 
   const entryDate = parseTradingViewDate(trade.entry.datetime)
-  const exitDate = trade.exit ? parseTradingViewDate(trade.exit.datetime) : undefined
+  const exitDate = !open && trade.exit ? parseTradingViewDate(trade.exit.datetime) : undefined
   const { entry_date, exit_date } = normalizeTradeDates(entryDate, exitDate)
 
   return {
@@ -70,7 +72,7 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
     trade_type: trade.direction === "long" ? ("Buy" as const) : ("Sell" as const),
     order_type: "Futures" as const,
     entry_price: trade.entry.price,
-    exit_price: trade.exit?.price,
+    exit_price: open ? undefined : trade.exit?.price,
     quantity: trade.entry.size ?? 1,
     asset_type: instrument.assetType,
     quantity_mode: getQuantityMode(instrument.assetType),
@@ -87,7 +89,7 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
     net_pnl: trade.netPnl,
     return_pct: trade.returnPct,
     commission: trade.commission,
-    signal: trade.exit?.signal || trade.entry.signal || undefined,
+    signal: open ? "Open" : trade.exit?.signal || trade.entry.signal || undefined,
     strategy: trade.strategy || undefined,
     source: "tradingview" as const,
     external_id,

@@ -1,5 +1,5 @@
 /* global JBSync */
-const VERSION = "1.12.6"
+const VERSION = "1.12.8"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
 
