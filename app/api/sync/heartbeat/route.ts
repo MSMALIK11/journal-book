@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({}))
     const pollIntervalSeconds = Math.min(
-      300,
+      1800,
       Math.max(0, Number(body.pollIntervalSeconds) || 30),
     )
 
@@ -59,6 +59,7 @@ export async function GET(request: NextRequest) {
       {
         connected: Boolean(connected),
         last_heartbeat: lastHeartbeat,
+        poll_interval_seconds: pollIntervalSeconds,
       },
       { headers: { "Cache-Control": "no-store" } },
     )

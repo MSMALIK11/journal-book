@@ -21,7 +21,7 @@
     const trade = {
       tradeNumber,
       direction,
-      instrument: item.symbol || item.instrument || instrument,
+      instrument: instrument || item.symbol || item.instrument,
       strategy: item.strategy || strategy,
       entry: null,
       exit: null,
@@ -126,9 +126,22 @@
   }
 
   function getInstrument() {
+    if (window.__JB_CHART_SYMBOL__) {
+      return String(window.__JB_CHART_SYMBOL__).replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+    }
+    const url = location.href
+    const symbolParam = url.match(/symbol=([^&]+)/i)
+    if (symbolParam) {
+      const decoded = decodeURIComponent(symbolParam[1])
+      const pair = decoded.split(":").pop() || decoded
+      return pair.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+    }
     const fromTitle = (document.title || "").split(",")[0]?.trim()
+    if (/gold/i.test(fromTitle || "")) return "XAUUSD"
+    if (/silver/i.test(fromTitle || "")) return "XAGUSD"
+    if (/oil|crude|wti/i.test(fromTitle || "")) return "USOIL"
     if (fromTitle) return fromTitle.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
-    return "BTCUSDT"
+    return "UNKNOWN"
   }
 
   const captured = window.__JB_CAPTURED_TRADES__ || []

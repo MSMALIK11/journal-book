@@ -252,7 +252,7 @@ export function TradingCalendar() {
             </div>
             <div>
               <p className="font-semibold">Monthly performance</p>
-              <p className="text-xs text-muted-foreground">Select a day to review its trades</p>
+              <p className="text-xs text-muted-foreground">Select a day to review its trades.</p>
             </div>
           </div>
 
@@ -425,6 +425,9 @@ export function TradingCalendar() {
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {selectedTrades.map((trade) => {
                 const holdMs = getTradeHoldTimeMs(trade)
+                const startedAt = trade.entry_date ? parseISO(trade.entry_date) : null
+                const startedLabel =
+                  startedAt && isValid(startedAt) ? format(startedAt, "HH:mm") : null
                 return (
                 <div key={trade.id} className="rounded-xl border border-border/60 bg-muted/20 p-4">
                   <div className="flex items-center justify-between gap-3">
@@ -442,10 +445,15 @@ export function TradingCalendar() {
                       {trade.strategy && (
                         <p className="mt-1 text-xs text-muted-foreground">{trade.strategy}</p>
                       )}
-                      {holdMs !== null && (
+                      {startedLabel && (
                         <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
                           <Clock className="h-3 w-3" />
-                          Hold {formatHoldDuration(holdMs)}
+                          Started {startedLabel}
+                          {holdMs !== null ? (
+                            <> · Completed in {formatHoldDuration(holdMs)}</>
+                          ) : (
+                            <> · Open</>
+                          )}
                         </p>
                       )}
                     </div>

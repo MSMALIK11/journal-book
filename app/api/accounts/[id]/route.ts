@@ -36,8 +36,9 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     }
 
     const symbolsChanged = parsed.data.symbols !== undefined
+    const nameChanged = parsed.data.name !== undefined
 
-    if (parsed.data.name !== undefined) account.name = parsed.data.name
+    if (nameChanged) account.name = parsed.data.name
     if (symbolsChanged) {
       account.symbols = await normalizeAccountSymbols(parsed.data.symbols)
     }
@@ -50,7 +51,8 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     await account.save()
 
-    const { moved } = symbolsChanged ? await reconcileTradeAccounts(session.sub) : { moved: 0 }
+    const { moved } =
+      symbolsChanged || nameChanged ? await reconcileTradeAccounts(session.sub) : { moved: 0 }
 
     return NextResponse.json({
       account: formatAccount(account.toObject()),
@@ -86,7 +88,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
     }
 
     const wasDefault = account.isDefault
-    await Trade.deleteMany({ userId: session.sub, accountId: id })
+    const deleteResult = await Trade.deleteMany({ userId: session.sub, accountId: id })
     await account.deleteOne()
 
     if (wasDefault) {
@@ -98,7 +100,11 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
     }
 
     const { accountId } = await getAccountContext(request, session.sub)
-    const response = NextResponse.json({ success: true, activeAccountId: accountId })
+    const response = NextResponse.json({
+      success: true,
+      activeAccountId: accountId,
+      tradesDeleted: deleteResult.deletedCount ?? 0,
+    })
     if (request.cookies.get(ACTIVE_ACCOUNT_COOKIE)?.value === id) {
       response.cookies.set(ACTIVE_ACCOUNT_COOKIE, accountId, activeAccountCookieOptions)
     }

@@ -77,7 +77,7 @@
         const existing = trades.get(tradeNumber) || {
           tradeNumber,
           direction,
-          instrument: item.symbol || item.instrument || "BTCUSDT",
+          instrument: window.__JB_CHART_SYMBOL__ || item.symbol || item.instrument || "UNKNOWN",
           strategy: item.strategy || "TradingView Strategy",
           entry: null,
           exit: null,

@@ -51,9 +51,10 @@ type Props = {
   byWeekday: BucketStats[]
   byMonth: BucketStats[]
   bySession: BucketStats[]
+  hideMonthly?: boolean
 }
 
-export function TimeAnalysisCharts({ byHour, byWeekday, byMonth, bySession }: Props) {
+export function TimeAnalysisCharts({ byHour, byWeekday, byMonth, bySession, hideMonthly = false }: Props) {
   const hourData = byHour.map((b) => ({
     ...b,
     fill: b.netPnl >= 0 ? "hsl(142 76% 36%)" : "hsl(0 84% 60%)",
@@ -71,10 +72,16 @@ export function TimeAnalysisCharts({ byHour, byWeekday, byMonth, bySession }: Pr
 
   const sessionData = bySession
     .filter((b) => b.trades > 0)
-    .map((b) => ({
-      ...b,
-      fill: b.netPnl >= 0 ? "hsl(142 76% 36%)" : "hsl(0 84% 60%)",
-    }))
+    .map((b) => {
+      const [name, time] = b.label.includes(" · ") ? b.label.split(" · ") : [b.label, ""]
+      return {
+        ...b,
+        name,
+        time,
+        chartLabel: name,
+        fill: b.netPnl >= 0 ? "hsl(142 76% 36%)" : "hsl(0 84% 60%)",
+      }
+    })
 
   return (
     <div className="space-y-6">
@@ -124,7 +131,8 @@ export function TimeAnalysisCharts({ byHour, byWeekday, byMonth, bySession }: Pr
         </Card>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className={hideMonthly ? "grid gap-6" : "grid gap-6 lg:grid-cols-2"}>
+        {!hideMonthly ? (
         <Card>
           <CardHeader>
             <CardTitle>Monthly P&amp;L</CardTitle>
@@ -168,25 +176,27 @@ export function TimeAnalysisCharts({ byHour, byWeekday, byMonth, bySession }: Pr
             </ChartContainer>
           </CardContent>
         </Card>
+        ) : null}
 
         <Card>
           <CardHeader>
             <CardTitle>Session breakdown</CardTitle>
-            <CardDescription>Asia / London / New York / Overlap</CardDescription>
+            <CardDescription>Pre Asia → Asia → London → NY → Dead Zone</CardDescription>
           </CardHeader>
           <CardContent>
-            <ChartContainer config={pnlConfig} className="h-[280px] w-full">
-              <BarChart data={sessionData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <ChartContainer config={pnlConfig} className="h-[320px] w-full">
+              <BarChart data={sessionData} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
                 <CartesianGrid vertical={false} />
                 <XAxis
-                  dataKey="label"
+                  dataKey="chartLabel"
                   tickLine={false}
                   axisLine={false}
                   tickMargin={8}
                   interval={0}
-                  angle={-12}
+                  angle={-35}
                   textAnchor="end"
-                  height={56}
+                  height={72}
+                  tick={{ fontSize: 10 }}
                 />
                 <YAxis tickLine={false} axisLine={false} tickFormatter={(v) => currency.format(v)} width={64} />
                 <ChartTooltip content={<BucketTooltip />} />

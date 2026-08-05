@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from "next/server"
 import connectDB from "@/app/api/db/mongoose"
-import Trade from "@/app/api/models/Trade"
 import User from "@/app/api/models/User"
-import { computeAnalytics } from "@/lib/trading/analytics"
+import { computeAnalytics, computePeriodComparison } from "@/lib/trading/analytics"
+import {
+  ANALYTICS_TRADE_SELECT,
+  buildTradeQuery,
+  fetchClosedTrades,
+  previousPeriodDates,
+  validateDateRange,
+} from "@/lib/trading/trade-query"
 import { getAccountContext } from "@/lib/active-account"
 import { getSession } from "@/lib/session"
 
@@ -21,46 +27,35 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate")
     const endDate = searchParams.get("endDate")
 
-    const query: Record<string, unknown> = {
-      userId: session.sub,
-      accountId,
-      net_pnl: { $exists: true, $ne: null },
-    }
-
-    if (source === "tradingview" || source === "manual") {
-      query.source = source
-    } else if (source === "all") {
-      // include manual and tradingview; legacy trades without source count as manual
-    }
-
-    if (strategy && strategy !== "all") query.strategy = strategy
-    if (instrument && instrument !== "all") query.instrument = instrument
-
-    if (startDate || endDate) {
-      const datePattern = /^\d{4}-\d{2}-\d{2}$/
-      if (
-        (startDate && !datePattern.test(startDate)) ||
-        (endDate && !datePattern.test(endDate))
-      ) {
-        return NextResponse.json({ error: "Invalid calendar date range" }, { status: 400 })
-      }
-      query.entry_date = {}
-      if (startDate) (query.entry_date as Record<string, Date>).$gte = new Date(`${startDate}T00:00:00.000Z`)
-      if (endDate) (query.entry_date as Record<string, Date>).$lte = new Date(`${endDate}T23:59:59.999Z`)
-    }
+    const dateError = validateDateRange(startDate, endDate)
+    if (dateError) return NextResponse.json({ error: dateError }, { status: 400 })
 
     const user = await User.findById(session.sub).select("timezone").lean()
     const timezone = user?.timezone || "Asia/Karachi"
 
-    const trades = await Trade.find(query)
-      .select(
-        "entry_date exit_date net_pnl return_pct commission strategy instrument trade_type signal source",
-      )
-      .sort({ entry_date: 1 })
-      .limit(10000)
-      .lean()
+    const queryParams = { source, strategy, instrument, startDate, endDate }
+    const query = buildTradeQuery(session.sub, accountId, queryParams)
 
+    const trades = await fetchClosedTrades(query, ANALYTICS_TRADE_SELECT)
     const analytics = computeAnalytics(trades, { timezone })
+
+    if (startDate && endDate) {
+      const previous = previousPeriodDates(startDate, endDate)
+      const previousTrades = await fetchClosedTrades(
+        buildTradeQuery(session.sub, accountId, {
+          ...queryParams,
+          startDate: previous.startDate,
+          endDate: previous.endDate,
+        }),
+        ANALYTICS_TRADE_SELECT,
+      )
+      const previousAnalytics = computeAnalytics(previousTrades, { timezone })
+      analytics.comparison = computePeriodComparison(
+        analytics.overview,
+        previousAnalytics.overview,
+        previous.label,
+      )
+    }
 
     return NextResponse.json(analytics, {
       headers: { "Cache-Control": "no-store" },

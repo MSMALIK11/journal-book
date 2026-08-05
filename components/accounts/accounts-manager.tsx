@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { useActiveAccount, type TradingAccountSummary } from "@/hooks/use-active-account"
+import { useActiveAccount, revalidateAccountScopedData, type TradingAccountSummary } from "@/hooks/use-active-account"
 import { authFetch } from "@/lib/client-auth"
 import { useToast } from "@/hooks/use-toast"
 
@@ -92,8 +92,16 @@ function AccountRow({ account, onChanged }: { account: TradingAccountSummary; on
       const response = await authFetch(`/api/accounts/${account.id}`, { method: "DELETE" })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Unable to delete")
-      toast({ title: "Account deleted" })
+      const deletedTrades = data.tradesDeleted ?? 0
+      toast({
+        title: "Account deleted",
+        description:
+          deletedTrades > 0
+            ? `${account.name} and ${deletedTrades} trade record(s) removed.`
+            : `${account.name} removed.`,
+      })
       onChanged()
+      await revalidateAccountScopedData()
     } catch (error) {
       toast({
         title: "Delete failed",
@@ -135,7 +143,11 @@ function AccountRow({ account, onChanged }: { account: TradingAccountSummary; on
                   <AlertDialogHeader>
                     <AlertDialogTitle>Delete {account.name}?</AlertDialogTitle>
                     <AlertDialogDescription>
-                      This permanently deletes all trades in this account. This cannot be undone.
+                      This permanently deletes the account
+                      {(account.tradeCount ?? 0) > 0
+                        ? ` and all ${account.tradeCount} trade record(s) in it`
+                        : ""}
+                      . This cannot be undone.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
@@ -148,7 +160,8 @@ function AccountRow({ account, onChanged }: { account: TradingAccountSummary; on
           </div>
         </div>
         <CardDescription>
-          Synced trades matching these symbols go here. Unmatched symbols use your default account.
+          {account.tradeCount ?? 0} trade{(account.tradeCount ?? 0) === 1 ? "" : "s"} · Synced trades
+          matching these symbols go here. Unmatched symbols use your default account.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -252,8 +265,8 @@ export function AccountsManager() {
         <CardHeader>
           <CardTitle>Add account</CardTitle>
           <CardDescription>
-            Create separate portfolios for BTC, Gold, or any symbol. Extension sync auto-routes by symbol.
-            Existing trades can be reassigned after you set symbols.
+            Each synced symbol gets its own portfolio automatically (BTC, XAUUSD, USOIL, etc.).
+            Import from the extension — new symbols appear in the sidebar. Use Reassign for older trades.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

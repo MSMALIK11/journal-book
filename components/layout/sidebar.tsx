@@ -3,7 +3,7 @@
 import { useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, Calendar, FileText, Home, PlusCircle, Settings, TrendingUp, LogOut, Menu, X, Calculator, Radio } from "lucide-react"
+import { BarChart3, Calendar, FileText, Home, Microscope, PlusCircle, Settings, TrendingUp, LogOut, Menu, X, Calculator, Radio } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { signOut } from "@/lib/client-auth"
@@ -17,6 +17,7 @@ const navigation = [
   { name: "Trade History", href: "/trades", icon: FileText },
   { name: "Strategy", href: "/strategy", icon: FileText },
   { name: "Analytics", href: "/analytics", icon: BarChart3, description: "Backtest & performance insights" },
+  { name: "Research", href: "/research", icon: Microscope, description: "Patterns & trading style" },
   { name: "Calendar", href: "/calendar", icon: Calendar },
   { name: "Reports", href: "/reports", icon: TrendingUp },
   { name: "Settings", href: "/settings", icon: Settings },

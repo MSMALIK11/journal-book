@@ -15,6 +15,22 @@ export interface IUser {
   sync_poll_interval_seconds?: number;
   sync_refresh_requested_at?: Date;
   sync_refresh_last_result?: Record<string, unknown>;
+  alertPreferences?: {
+    dailyDigest?: boolean;
+    weakHours?: boolean;
+    weakDays?: boolean;
+    weakSessions?: boolean;
+    edgeAlerts?: boolean;
+    streakWarnings?: boolean;
+    seasonAlerts?: boolean;
+    instrumentSession?: boolean;
+    todaySummary?: boolean;
+    behaviorAlerts?: boolean;
+    researchAlerts?: boolean;
+    deadZoneAlerts?: boolean;
+    overlapAlerts?: boolean;
+    keySessionAlerts?: boolean;
+  };
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -69,6 +85,10 @@ const UserSchema = new Schema<IUser>(
     },
     sync_refresh_last_result: {
       type: Schema.Types.Mixed,
+    },
+    alertPreferences: {
+      type: Schema.Types.Mixed,
+      default: {},
     },
   },
   {

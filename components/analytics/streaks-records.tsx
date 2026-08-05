@@ -1,6 +1,6 @@
 "use client"
 
-import { Calendar, Clock, Flame, Hourglass, TrendingDown, Trophy } from "lucide-react"
+import { Calendar, Clock, Flame, TrendingDown, Trophy } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatHoldDuration, type AnalyticsRecords } from "@/lib/trading/analytics"
 import { cn } from "@/lib/utils"
@@ -106,18 +106,9 @@ export function StreaksRecords({ records }: Props) {
             )}
           </RecordTile>
 
-          <RecordTile icon={Clock} label="Time backtesting" iconClassName="text-muted-foreground">
+          <RecordTile icon={Clock} label="Total time in trades" iconClassName="text-muted-foreground">
             <p className="text-xl font-bold">{formatHoldDuration(records.backtestTimeMs)}</p>
-            <p className="text-xs text-muted-foreground">Total time in open trades</p>
-          </RecordTile>
-
-          <RecordTile icon={Hourglass} label="Avg hold time" iconClassName="text-violet-500">
-            <p className="text-xl font-bold">{formatHoldDuration(records.avgHoldTimeMs)}</p>
-            <p className="text-xs text-muted-foreground">
-              {records.holdTimeTrades > 0
-                ? `Per trade · Wins ${formatHoldDuration(records.avgHoldTimeWinMs)} · Losses ${formatHoldDuration(records.avgHoldTimeLossMs)}`
-                : "Needs entry & exit times"}
-            </p>
+            <p className="text-xs text-muted-foreground">Sum of all trade durations</p>
           </RecordTile>
         </div>
       </CardContent>

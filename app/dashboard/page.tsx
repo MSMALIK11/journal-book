@@ -12,7 +12,6 @@ import {
   TrendingUp,
 } from "lucide-react"
 import { DashboardCalendar } from "@/components/calendar/dashboard-calendar"
-import { ThemeToggle } from "@/components/theme-toggle"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -176,7 +175,6 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <ThemeToggle />
           <Button asChild>
             <Link href="/trades/new">
               <PlusCircle className="mr-2 h-4 w-4" />

@@ -1,4 +1,9 @@
-import { classifySession, getZonedParts, normalizeWeekday, SESSION_LABELS, WEEKDAY_ORDER } from "@/lib/trading/sessions"
+import { classifySession, getZonedParts, normalizeWeekday, SESSION_DETAIL_LABELS, SESSION_LABELS, SESSION_ORDER, WEEKDAY_ORDER } from "@/lib/trading/sessions"
+import {
+  computeZoneThresholds,
+  rankAvoidBuckets,
+  rankBestBuckets,
+} from "@/lib/trading/zone-thresholds"
 
 export const MIN_BUCKET_TRADES = 5
 
@@ -71,6 +76,20 @@ export type AnalyticsRecords = {
   holdTimeTrades: number
 }
 
+export type PnlDistributionBucket = {
+  bucket: string
+  label: string
+  count: number
+  netPnl: number
+}
+
+export type PeriodComparison = {
+  netPnlDelta: number
+  winRateDelta: number
+  closedTradesDelta: number
+  label: string
+}
+
 export type AnalyticsResult = {
   overview: {
     totalTrades: number
@@ -126,8 +145,11 @@ export type AnalyticsResult = {
   bySignal: BucketStats[]
   byInstrument: BucketStats[]
   strategies: string[]
+  instruments: string[]
   timezone: string
   records: AnalyticsRecords
+  pnlDistribution: PnlDistributionBucket[]
+  comparison: PeriodComparison | null
 }
 
 function toDate(value: Date | string | null | undefined): Date | null {
@@ -211,6 +233,47 @@ function buildWeeklyBucket(key: string, label: string, pnls: number[]): WeeklyBu
   return { ...base, grossProfit, grossLoss }
 }
 
+function computePnlDistribution(closed: Array<AnalyticsTrade & { net_pnl: number }>): PnlDistributionBucket[] {
+  const definitions = [
+    { label: "< -$250", min: Number.NEGATIVE_INFINITY, max: -250 },
+    { label: "-$250 to -$100", min: -250, max: -100 },
+    { label: "-$100 to -$50", min: -100, max: -50 },
+    { label: "-$50 to $0", min: -50, max: 0 },
+    { label: "$0 to $50", min: 0, max: 50 },
+    { label: "$50 to $100", min: 50, max: 100 },
+    { label: "$100 to $250", min: 100, max: 250 },
+    { label: "> $250", min: 250, max: Number.POSITIVE_INFINITY },
+  ]
+
+  return definitions.map((def, index) => {
+    const matching = closed.filter((trade) => {
+      if (def.min === Number.NEGATIVE_INFINITY) return trade.net_pnl < def.max
+      if (def.max === Number.POSITIVE_INFINITY) return trade.net_pnl >= def.min
+      return trade.net_pnl >= def.min && trade.net_pnl < def.max
+    })
+    return {
+      bucket: String(index),
+      label: def.label,
+      count: matching.length,
+      netPnl: matching.reduce((sum, trade) => sum + trade.net_pnl, 0),
+    }
+  })
+}
+
+export function computePeriodComparison(
+  current: AnalyticsResult["overview"],
+  previous: AnalyticsResult["overview"] | null,
+  label: string,
+): PeriodComparison | null {
+  if (!previous || previous.closedTrades === 0) return null
+  return {
+    netPnlDelta: current.netPnl - previous.netPnl,
+    winRateDelta: current.winRate - previous.winRate,
+    closedTradesDelta: current.closedTrades - previous.closedTrades,
+    label,
+  }
+}
+
 function sortByExitDate(closed: Array<AnalyticsTrade & { net_pnl: number }>) {
   return [...closed].sort((a, b) => {
     const da = toDate(a.exit_date) ?? toDate(a.entry_date)!
@@ -280,39 +343,6 @@ function buildBucket(key: string, label: string, pnls: number[]): BucketStats {
   }
 }
 
-function rankAvoid(buckets: BucketStats[], minTrades: number): AvoidInsight[] {
-  return buckets
-    .filter((b) => b.trades >= minTrades && (b.netPnl < 0 || b.winRate < 40))
-    .sort((a, b) => a.netPnl - b.netPnl)
-    .map((b) => ({
-      key: b.key,
-      label: b.label,
-      trades: b.trades,
-      winRate: b.winRate,
-      netPnl: b.netPnl,
-      reason:
-        b.netPnl < 0 && b.winRate < 40
-          ? "Negative P&L and low win rate"
-          : b.netPnl < 0
-            ? "Negative P&L"
-            : "Win rate below 40%",
-    }))
-}
-
-function rankBest(buckets: BucketStats[], minTrades: number): AvoidInsight[] {
-  return buckets
-    .filter((b) => b.trades >= minTrades && b.netPnl > 0)
-    .sort((a, b) => b.netPnl - a.netPnl)
-    .slice(0, 5)
-    .map((b) => ({
-      key: b.key,
-      label: b.label,
-      trades: b.trades,
-      winRate: b.winRate,
-      netPnl: b.netPnl,
-      reason: "Strong positive expectancy",
-    }))
-}
 
 function computeEquityCurve(
   closed: Array<AnalyticsTrade & { net_pnl: number }>,
@@ -385,8 +415,8 @@ export function computeAnalytics(
     const entry = toDate(trade.entry_date)
     if (!entry) continue
 
-    const { hour, weekday, month, day } = getZonedParts(entry, timezone)
-    const session = classifySession(hour)
+    const { hour, minute, weekday, month, day } = getZonedParts(entry, timezone)
+    const session = classifySession(hour, minute)
     const wd = normalizeWeekday(weekday)
 
     const push = (map: Map<string | number, number[]>, key: string | number, pnl: number) => {
@@ -431,9 +461,8 @@ export function computeAnalytics(
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([weekKey, pnls]) => buildWeeklyBucket(weekKey, formatWeekLabel(weekKey), pnls))
 
-  const sessionKeys = ["Asia", "London", "NewYork", "Overlap", "Other"] as const
-  const bySession = sessionKeys.map((s) =>
-    buildBucket(s, SESSION_LABELS[s], sessionMap.get(s) ?? []),
+  const bySession = SESSION_ORDER.map((s) =>
+    buildBucket(s, SESSION_DETAIL_LABELS[s], sessionMap.get(s) ?? []),
   )
 
   const byStrategy = [...strategyMap.entries()]
@@ -472,6 +501,7 @@ export function computeAnalytics(
   })[0]
 
   const strategies = [...new Set(trades.map((t) => t.strategy?.trim()).filter(Boolean))] as string[]
+  const instruments = [...new Set(trades.map((t) => t.instrument?.trim()).filter(Boolean))] as string[]
 
   const holdTimes = closed
     .map(getHoldTimeMs)
@@ -492,6 +522,8 @@ export function computeAnalytics(
   const avgTradesPerDay = tradingDays ? closed.length / tradingDays : 0
   const minTradesPerDay = tradingDays ? Math.min(...tradesPerDayCounts) : 0
   const maxTradesPerDay = tradingDays ? Math.max(...tradesPerDayCounts) : 0
+  const accountWinRate = closed.length ? (wins.length / closed.length) * 100 : 0
+  const zoneThresholds = computeZoneThresholds({ winRate: accountWinRate })
 
   return {
     overview: {
@@ -501,7 +533,7 @@ export function computeAnalytics(
       wins: wins.length,
       losses: losses.length,
       breakEven: breakEven.length,
-      winRate: closed.length ? (wins.length / closed.length) * 100 : 0,
+      winRate: accountWinRate,
       netPnl,
       grossProfit,
       grossLoss,
@@ -545,17 +577,18 @@ export function computeAnalytics(
     byWeek,
     bySession,
     avoid: {
-      hours: rankAvoid(byHour, minTrades),
-      days: rankAvoid(byWeekday, minTrades),
-      sessions: rankAvoid(bySession, minTrades),
-      bestHours: rankBest(byHour, minTrades),
-      bestDays: rankBest(byWeekday, minTrades),
-      bestSessions: rankBest(bySession, minTrades),
+      hours: rankAvoidBuckets(byHour, minTrades, zoneThresholds),
+      days: rankAvoidBuckets(byWeekday, minTrades, zoneThresholds),
+      sessions: rankAvoidBuckets(bySession, minTrades, zoneThresholds),
+      bestHours: rankBestBuckets(byHour, minTrades),
+      bestDays: rankBestBuckets(byWeekday, minTrades),
+      bestSessions: rankBestBuckets(bySession, minTrades),
     },
     byStrategy,
     bySignal,
     byInstrument,
     strategies,
+    instruments,
     timezone,
     records: {
       currentStreak: streaks.currentStreak,
@@ -581,5 +614,7 @@ export function computeAnalytics(
       avgHoldTimeLossMs: averageMs(lossHoldTimes),
       holdTimeTrades: holdTimes.length,
     },
+    pnlDistribution: computePnlDistribution(closed),
+    comparison: null,
   }
 }

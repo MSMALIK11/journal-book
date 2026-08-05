@@ -23,9 +23,15 @@ export const tradingViewTradeSchema = z.object({
     .default("crypto"),
 })
 
-export const tradingViewSyncSchema = z.object({
-  trades: z.array(tradingViewTradeSchema).min(1).max(10000),
-})
+export const tradingViewSyncSchema = z
+  .object({
+    chartSymbol: z.string().trim().min(1).max(40).optional(),
+    trades: z.array(tradingViewTradeSchema).max(10000).default([]),
+  })
+  .refine((data) => data.trades.length > 0 || Boolean(data.chartSymbol), {
+    message: "Provide trades or chartSymbol",
+    path: ["trades"],
+  })
 
 export type TradingViewTradeInput = z.infer<typeof tradingViewTradeSchema>
 

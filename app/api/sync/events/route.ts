@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
 
       send({ type: "connected", accountId, at: new Date().toISOString() })
 
-      unsubscribe = subscribeSyncEvents(session.sub, accountId, (event) => {
+      unsubscribe = subscribeSyncEvents(session.sub, (event) => {
         send(event)
       })
 

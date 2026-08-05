@@ -54,9 +54,20 @@ async function saveRefreshResult(syncResult, result) {
   const { sessionImported = 0 } = await chrome.storage.local.get("sessionImported")
   const accountMsg = JBSync.formatByAccountMessage(syncResult.byAccount)
   const dedupedMsg = syncResult.deduped > 0 ? ` · removed ${syncResult.deduped} duplicate(s)` : ""
+  const createdMsg =
+    syncResult.accountsCreated?.length > 0
+      ? ` · new account(s): ${syncResult.accountsCreated.join(", ")}`
+      : ""
+  const accountHint =
+    syncResult.byAccount && Object.keys(syncResult.byAccount).length
+      ? ` · check sidebar account: ${Object.values(syncResult.byAccount)
+          .map((entry) => entry?.name)
+          .filter(Boolean)
+          .join(", ")}`
+      : ""
   const msg =
     syncResult.message ||
-    `Added ${syncResult.imported} new, updated ${syncResult.updated}, skipped ${syncResult.skipped}${accountMsg}${dedupedMsg}`
+    `Added ${syncResult.imported} new, updated ${syncResult.updated}, skipped ${syncResult.skipped}${accountMsg}${createdMsg}${accountHint}${dedupedMsg}`
 
   await chrome.storage.local.set({
     lastSyncAt: new Date().toISOString(),
@@ -85,12 +96,12 @@ document.getElementById("testScrape").addEventListener("click", async () => {
     const debug = result?.debug || {}
 
     if (count) {
-      statusEl.textContent = `Found ${count} trades`
+      statusEl.textContent = `Found ${count} trades · ${debug.chartSymbol || result.instrument || "?"}`
       statusEl.style.color = "#1a7f37"
       errorEl.textContent = JSON.stringify(debug)
       errorEl.style.color = "#8b949e"
     } else {
-      statusEl.textContent = result?.error || "0 trades found"
+      statusEl.textContent = result?.error || `0 trades · ${debug.chartSymbol || "?"}`
       statusEl.style.color = "#f85149"
       errorEl.textContent = JSON.stringify(debug)
     }
@@ -159,7 +170,7 @@ document.getElementById("importAll").addEventListener("click", async () => {
     if (!result?.trades?.length) throw new Error(result?.error || "No trades found")
 
     statusEl.textContent = `Syncing ${result.trades.length} trades...`
-    const syncResult = await JBSync.syncTrades(result.trades, config)
+    const syncResult = await JBSync.syncTrades(result.trades, config, result.instrument)
     const msg = await saveRefreshResult(syncResult, result)
 
     statusEl.textContent = msg

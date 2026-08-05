@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import useSWR from "swr"
 import { format, isToday, parseISO } from "date-fns"
-import { BarChart3, Download, Radio, RefreshCw, Trash2, TrendingDown, TrendingUp, Wifi, WifiOff, Zap } from "lucide-react"
+import { BarChart3, Download, Radio, Trash2, TrendingDown, TrendingUp, Wifi, WifiOff, Zap } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,13 +21,15 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { authFetch } from "@/lib/client-auth"
-import {
-  formatExtensionSyncSummary,
-  requestExtensionSync,
-} from "@/lib/client-extension-sync"
 import { buildCsv, downloadCsv } from "@/lib/export-csv"
 import { useActiveAccount } from "@/hooks/use-active-account"
+import { useLiveSyncAutoRefresh } from "@/hooks/use-live-sync-auto-refresh"
 import { useToast } from "@/hooks/use-toast"
+import {
+  DEFAULT_LIVE_SYNC_POLL_SECONDS,
+  formatLiveSyncPollLabel,
+  getLiveSyncPollSeconds,
+} from "@/lib/live-sync-settings"
 
 type SyncTrade = {
   id: string
@@ -66,20 +68,20 @@ const fetcher = async (url: string) => {
 
 export function LiveSyncDashboard() {
   const { toast } = useToast()
-  const { activeAccount, activeAccountId, switchVersion } = useActiveAccount()
+  const { activeAccount, activeAccountId, switchVersion, refresh } = useActiveAccount()
   const seenTradeIds = useRef<Set<string>>(new Set())
   const initialized = useRef(false)
   const [clearOpen, setClearOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
   const [bridgeReady, setBridgeReady] = useState(false)
+  const [pollSeconds, setPollSeconds] = useState(DEFAULT_LIVE_SYNC_POLL_SECONDS)
 
   const { data: tradesData, isLoading: tradesLoading, mutate } = useSWR<{ trades: SyncTrade[] }>(
     activeAccountId ? ["/api/trades?source=tradingview&limit=5000", activeAccountId, switchVersion] : null,
     ([url]) => fetcher(url),
   )
 
-  const { data: statusData, mutate: mutateStatus } = useSWR<SyncStatus>(
+  const { data: statusData, error: statusError, mutate: mutateStatus } = useSWR<SyncStatus>(
     "/api/sync/heartbeat",
     fetcher,
     { refreshInterval: 10_000 },
@@ -87,7 +89,23 @@ export function LiveSyncDashboard() {
 
   const [sseConnected, setSseConnected] = useState(false)
 
+  useEffect(() => {
+    const updatePoll = () => setPollSeconds(getLiveSyncPollSeconds())
+    updatePoll()
+    window.addEventListener("jb-live-sync-settings-changed", updatePoll)
+    return () => window.removeEventListener("jb-live-sync-settings-changed", updatePoll)
+  }, [])
+
   const trades = tradesData?.trades ?? []
+
+  useLiveSyncAutoRefresh({
+    enabled: Boolean(activeAccountId),
+    pollSeconds,
+    onComplete: () => {
+      void mutate()
+      void mutateStatus()
+    },
+  })
 
   useEffect(() => {
     seenTradeIds.current = new Set()
@@ -157,9 +175,12 @@ export function LiveSyncDashboard() {
           if (data.type === "connected") {
             setSseConnected(true)
           }
-          if (data.type === "trades_updated" && data.accountId === activeAccountId) {
-            void mutate()
-            void mutateStatus()
+          if (data.type === "trades_updated") {
+            void refresh()
+            if (data.accountId === activeAccountId) {
+              void mutate()
+              void mutateStatus()
+            }
           }
         } catch {
           // ignore malformed events
@@ -179,7 +200,7 @@ export function LiveSyncDashboard() {
       es?.close()
       if (reconnectTimer) clearTimeout(reconnectTimer)
     }
-  }, [mutate, mutateStatus, activeAccountId])
+  }, [mutate, mutateStatus, activeAccountId, refresh])
 
   useEffect(() => {
     if (!trades.length) return
@@ -220,43 +241,6 @@ export function LiveSyncDashboard() {
       lastTradeTime: lastTrade ? format(parseISO(lastTrade.entry_date), "MMM d, HH:mm") : "—",
     }
   }, [trades])
-
-  async function handleRefresh() {
-    setRefreshing(true)
-    try {
-      const syncResult = await requestExtensionSync({
-        queueRefresh: async () => {
-          const response = await authFetch("/api/sync/request-refresh", { method: "POST" })
-          const data = await response.json().catch(() => ({}))
-          if (!response.ok) throw new Error(data.error || "Could not queue sync")
-          if (!data.pending && data.ok !== true) throw new Error("Sync request was not queued — try again")
-          return new Date(data.at || Date.now()).getTime()
-        },
-        fetchRefreshStatus: async () => {
-          const response = await authFetch("/api/sync/refresh-status")
-          const data = await response.json()
-          if (!response.ok) throw new Error(data.error || "Could not read sync status")
-          return data
-        },
-      })
-
-      await Promise.all([mutate(), mutateStatus()])
-
-      toast({
-        title: "Refreshed",
-        description: formatExtensionSyncSummary(syncResult),
-      })
-    } catch (error) {
-      await Promise.all([mutate(), mutateStatus()])
-      toast({
-        title: "Refresh failed",
-        description: error instanceof Error ? error.message : "Could not reload trades",
-        variant: "destructive",
-      })
-    } finally {
-      setRefreshing(false)
-    }
-  }
 
   async function handleExportCsv() {
     if (!trades.length) return
@@ -356,6 +340,11 @@ export function LiveSyncDashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-1 text-sm text-muted-foreground">
+            {statusError ? (
+              <p className="text-xs text-rose-500">
+                {statusError instanceof Error ? statusError.message : "Unable to read extension status"}
+              </p>
+            ) : null}
             <p>
               Last heartbeat:{" "}
               {statusData?.last_heartbeat
@@ -432,20 +421,25 @@ export function LiveSyncDashboard() {
                 Live trade feed
               </CardTitle>
               <CardDescription>
-                Live updates when the extension syncs new trades. Refresh pulls new trades from TradingView via the extension.
+                Trades sync automatically from TradingView while this page is open. Change interval
+                in{" "}
+                <Link href="/settings" className="text-primary underline-offset-4 hover:underline">
+                  Settings
+                </Link>
+                .
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1"
-                disabled={refreshing || tradesLoading}
-                onClick={() => void handleRefresh()}
-              >
-                <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
-                Refresh
-              </Button>
+              {pollSeconds > 0 ? (
+                <Badge variant="outline" className="gap-1 text-primary">
+                  <Radio className="h-3 w-3" />
+                  {formatLiveSyncPollLabel(pollSeconds)}
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-muted-foreground">
+                  Auto-sync off
+                </Badge>
+              )}
               <Badge
                 variant="outline"
                 className={`gap-1 ${sseConnected ? "text-emerald-600" : "text-muted-foreground"}`}

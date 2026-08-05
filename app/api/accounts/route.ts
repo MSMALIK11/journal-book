@@ -4,6 +4,7 @@ import TradingAccount from "@/app/api/models/TradingAccount"
 import { getAccountContext, ACTIVE_ACCOUNT_COOKIE, activeAccountCookieOptions } from "@/lib/active-account"
 import { getSession } from "@/lib/session"
 import {
+  ensureAccountsFromExistingTrades,
   ensureDefaultTradingAccount,
   formatAccount,
   getAccountTradeCounts,
@@ -17,6 +18,9 @@ export async function GET(request: NextRequest) {
   try {
     const session = await getSession(request)
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+    await connectDB()
+    await ensureAccountsFromExistingTrades(session.sub)
 
     const accounts = await getUserAccounts(session.sub)
     const { accountId } = await getAccountContext(request, session.sub)

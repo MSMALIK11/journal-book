@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import connectDB from "@/app/api/db/mongoose"
 import Trade from "@/app/api/models/Trade"
-import { resolveAccountForInstrument } from "@/lib/trading/account-match"
+import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
-import { formatAccount, getUserAccounts } from "@/lib/trading-accounts-server"
-import { publishTradesUpdated } from "@/lib/sync-events"
+import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
+import { publishAccountsUpdated, publishTradesUpdated } from "@/lib/sync-events"
 import { withSyncCors } from "@/lib/sync-cors"
 import { getSyncAuth } from "@/lib/sync-auth"
 import { touchSyncHeartbeat } from "@/lib/sync-heartbeat"
@@ -90,7 +90,51 @@ export async function POST(request: NextRequest) {
 
     await connectDB()
 
-    const accounts = await getUserAccounts(auth.userId)
+    let accounts = await getUserAccounts(auth.userId)
+    const newAccounts: { id: string; name: string }[] = []
+    const seenAccountIds = new Set<string>()
+
+    function trackNewAccount(account: { _id?: unknown; name: string }, created: boolean) {
+      if (!created) return
+      const id = String(account._id)
+      if (seenAccountIds.has(id)) return
+      seenAccountIds.add(id)
+      newAccounts.push({ id, name: account.name })
+    }
+
+    if (parsed.data.chartSymbol) {
+      const chartSymbol = canonicalInstrumentSymbol(parsed.data.chartSymbol)
+      const ensured = await resolveOrCreateAccountForInstrument(auth.userId, chartSymbol, accounts)
+      accounts = ensured.accounts
+      trackNewAccount(ensured.account, ensured.created)
+    }
+
+    const chartSymbolOverride = parsed.data.chartSymbol
+      ? canonicalInstrumentSymbol(parsed.data.chartSymbol)
+      : null
+
+    if (parsed.data.trades.length === 0) {
+      if (newAccounts.length) {
+        publishAccountsUpdated(auth.userId, {
+          created: newAccounts,
+          primaryAccountId: newAccounts[newAccounts.length - 1]?.id,
+        })
+      }
+      await touchSyncHeartbeat(auth.userId)
+      return withSyncCors(
+        request,
+        NextResponse.json({
+          imported: 0,
+          updated: 0,
+          skipped: 0,
+          deduped: 0,
+          reassigned: 0,
+          accountsCreated: newAccounts.map((account) => account.name),
+          newAccounts,
+          byAccount: {},
+        }),
+      )
+    }
 
     let imported = 0
     let updated = 0
@@ -99,9 +143,18 @@ export async function POST(request: NextRequest) {
     const touchedAccounts = new Set<string>()
 
     for (const tvTrade of parsed.data.trades) {
-      const targetAccount = resolveAccountForInstrument(accounts, tvTrade.instrument)
+      const symbol = chartSymbolOverride || canonicalInstrumentSymbol(tvTrade.instrument)
+      const resolved = await resolveOrCreateAccountForInstrument(
+        auth.userId,
+        symbol,
+        accounts,
+      )
+      accounts = resolved.accounts
+      trackNewAccount(resolved.account, resolved.created)
+
+      const targetAccount = resolved.account
       const accountId = String(targetAccount._id)
-      const mapped = mapTradingViewTrade(tvTrade, auth.userId, accountId)
+      const mapped = mapTradingViewTrade({ ...tvTrade, instrument: symbol }, auth.userId, accountId)
       const existing = await findExistingSyncedTrade(
         auth.userId,
         accountId,
@@ -147,6 +200,20 @@ export async function POST(request: NextRequest) {
 
     const deduped = await dedupeSyncedTradesByExternalId(auth.userId)
 
+    const { moved: reassigned, accountIds: reassignedAccountIds } = await reconcileTradeAccounts(
+      auth.userId,
+    )
+    for (const accountId of reassignedAccountIds) {
+      touchedAccounts.add(accountId)
+    }
+
+    if (newAccounts.length) {
+      publishAccountsUpdated(auth.userId, {
+        created: newAccounts,
+        primaryAccountId: newAccounts[newAccounts.length - 1]?.id,
+      })
+    }
+
     for (const accountId of touchedAccounts) {
       const stats = byAccount[accountId]
       if (stats.imported > 0 || stats.updated > 0) {
@@ -154,6 +221,7 @@ export async function POST(request: NextRequest) {
           imported: stats.imported,
           updated: stats.updated,
           skipped: stats.skipped,
+          accountName: stats.name,
         })
       }
     }
@@ -168,7 +236,24 @@ export async function POST(request: NextRequest) {
 
     return withSyncCors(
       request,
-      NextResponse.json({ imported, updated, skipped, deduped, byAccount: byAccountSummary }),
+      NextResponse.json({
+        imported,
+        updated,
+        skipped,
+        deduped,
+        reassigned,
+        accountsCreated: newAccounts.map((account) => account.name),
+        newAccounts,
+        switchToAccountId:
+          newAccounts.length > 0
+            ? newAccounts[newAccounts.length - 1].id
+            : imported > 0 || updated > 0
+              ? Object.entries(byAccountSummary).sort(
+                  (a, b) => b[1].imported + b[1].updated - (a[1].imported + a[1].updated),
+                )[0]?.[0]
+              : undefined,
+        byAccount: byAccountSummary,
+      }),
     )
   } catch (error) {
     console.error("Failed to sync trades:", error)

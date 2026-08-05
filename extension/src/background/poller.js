@@ -1,9 +1,9 @@
 /* global JBSync */
-const VERSION = "1.12.8"
+const VERSION = "1.13.6"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
 
-importScripts("../lib/sync-client.js")
+importScripts("../lib/symbol-utils.js", "../lib/sync-client.js")
 
 let pollInFlight = false
 let refreshInFlight = false
@@ -20,9 +20,24 @@ async function injectJournalBridge(tabId) {
 }
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== "complete" || !tab.url) return
-  if (!JOURNAL_URL.test(tab.url)) return
-  void injectJournalBridge(tabId)
+  if (changeInfo.status === "complete" && tab.url && JOURNAL_URL.test(tab.url)) {
+    void injectJournalBridge(tabId)
+  }
+  if (tab.url && JBSync.isTradingViewChartTab(tab) && (changeInfo.status === "complete" || changeInfo.url)) {
+    void JBSync.rememberTvChartTab(tabId)
+  }
+})
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  void JBSync.rememberTvChartTab(tabId)
+})
+
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return
+  void (async () => {
+    const [tab] = await chrome.tabs.query({ active: true, windowId })
+    if (tab?.id) await JBSync.rememberTvChartTab(tab.id)
+  })()
 })
 
 async function runRefreshCheck() {

@@ -40,18 +40,36 @@ async function jbMainScrape() {
   }
 
   function getInstrumentSymbol() {
+    if (window.__JB_CHART_SYMBOL__) {
+      return String(window.__JB_CHART_SYMBOL__).replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+    }
+
+    const legend = document.querySelector('[data-name="legend-source-title"]')
+    if (legend?.textContent?.trim()) {
+      const text = legend.textContent.trim()
+      if (/gold/i.test(text)) return "XAUUSD"
+      if (/silver/i.test(text)) return "XAGUSD"
+      if (/oil|crude|wti/i.test(text)) return "USOIL"
+      const decoded = text.replace(/%3A/gi, ":")
+      const pair = decoded.includes(":") ? decoded.split(":").pop() : decoded
+      return pair.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+    }
+
     const url = location.href
     const symbolParam = url.match(/symbol=([^&]+)/i)
     if (symbolParam) {
-      const decoded = decodeURIComponent(symbolParam[1])
+      const decoded = decodeURIComponent(symbolParam[1]).replace(/%3A/gi, ":")
       const pair = decoded.split(":").pop() || decoded
       return pair.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
     }
-    const fromTitle = (document.title || "").split(",")[0]?.trim()
+
+    const fromTitle = (document.title || "").split(",")[0]?.trim() || ""
+    if (/gold/i.test(fromTitle)) return "XAUUSD"
+    if (/silver/i.test(fromTitle)) return "XAGUSD"
+    if (/oil|crude|wti/i.test(fromTitle)) return "USOIL"
     if (fromTitle) return fromTitle.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
-    const el = document.querySelector('[data-name="legend-source-title"]')
-    if (el?.textContent?.trim()) return el.textContent.trim().replace(/[^A-Za-z0-9]/g, "").toUpperCase()
-    return "BTCUSDT"
+
+    return "UNKNOWN"
   }
 
   function clickListOfTradesTab(root) {
@@ -308,7 +326,7 @@ async function jbMainScrape() {
 jbMainScrape().catch((err) => ({
   trades: [],
   strategy: "TradingView Strategy",
-  instrument: "BTCUSDT",
+  instrument: window.__JB_CHART_SYMBOL__ || "UNKNOWN",
   frameUrl: location.href,
   debug: { scraperCrash: true, message: String(err?.message || err) },
   error: String(err?.message || err),

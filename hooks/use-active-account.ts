@@ -59,6 +59,8 @@ function revalidateAccountScopedData() {
   )
 }
 
+export { revalidateAccountScopedData }
+
 export function ActiveAccountProvider({ children }: { children: ReactNode }) {
   const { data, error, isLoading, mutate } = useSWR<AccountsResponse>("/api/accounts", fetcher)
   const [switchVersion, setSwitchVersion] = useState(0)

@@ -1,5 +1,6 @@
 import type { AssetType } from "@/lib/instruments"
 import { ASSET_TYPE_DEFAULTS, getQuantityMode, INSTRUMENTS } from "@/lib/instruments"
+import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
 import { isOpenTvTrade } from "@/lib/trading/tradingview-open"
 import {
   buildExternalId,
@@ -8,7 +9,7 @@ import {
 } from "@/lib/validations/tradingview-sync"
 
 function resolveInstrumentSpec(instrument: string, assetType: AssetType) {
-  const normalized = instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+  const normalized = canonicalInstrumentSymbol(instrument)
   const configured = INSTRUMENTS[normalized]
 
   if (configured) {

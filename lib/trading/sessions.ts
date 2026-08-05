@@ -1,20 +1,131 @@
-export type TradingSession = "Asia" | "London" | "NewYork" | "Overlap" | "Other"
+export type TradingSession =
+  | "PreAsia"
+  | "AsiaOpen"
+  | "AsiaMid"
+  | "AsiaClose"
+  | "PreLondon"
+  | "LondonOpen"
+  | "LondonMid"
+  | "LondonNyOverlap"
+  | "NewYorkOpen"
+  | "NewYorkMid"
+  | "NewYorkClose"
+  | "DeadZone"
 
-export const SESSION_LABELS: Record<TradingSession, string> = {
-  Asia: "Asia (00–08)",
-  London: "London (08–16)",
-  NewYork: "New York (13–21)",
-  Overlap: "London/NY Overlap (13–16)",
-  Other: "Other hours",
+export type SessionDef = {
+  key: TradingSession
+  label: string
+  shortLabel: string
+  timeRange: string
+  /** Minutes from midnight, start inclusive */
+  start: number
+  /** Minutes from midnight, end exclusive (may wrap past midnight) */
+  end: number
+  /** 5 = key session (London Open, Overlap, NY Open) */
+  tier?: 5
 }
 
-/** Classify hour (0–23 in user timezone) into primary session. Overlap takes precedence. */
-export function classifySession(hour: number): TradingSession {
-  if (hour >= 13 && hour < 16) return "Overlap"
-  if (hour >= 0 && hour < 8) return "Asia"
-  if (hour >= 8 && hour < 16) return "London"
-  if (hour >= 13 && hour < 21) return "NewYork"
-  return "Other"
+function hm(h: number, m: number): number {
+  return h * 60 + m
+}
+
+/** Session windows in user local time (matches your trading clock). */
+export const TRADING_SESSIONS: SessionDef[] = [
+  { key: "DeadZone", label: "Dead Zone", shortLabel: "Dead Zone", timeRange: "02:30 – 03:30", start: hm(2, 30), end: hm(3, 30) },
+  { key: "PreAsia", label: "Pre Asia", shortLabel: "Pre Asia", timeRange: "03:30 – 05:30", start: hm(3, 30), end: hm(5, 30) },
+  { key: "AsiaOpen", label: "Asia Open", shortLabel: "Asia Open", timeRange: "05:30 – 08:00", start: hm(5, 30), end: hm(8, 0) },
+  { key: "AsiaMid", label: "Asia", shortLabel: "Asia", timeRange: "08:00 – 11:00", start: hm(8, 0), end: hm(11, 0) },
+  { key: "AsiaClose", label: "Asia Close", shortLabel: "Asia Close", timeRange: "11:00 – 13:30", start: hm(11, 0), end: hm(13, 30) },
+  { key: "PreLondon", label: "Pre London", shortLabel: "Pre London", timeRange: "13:30 – 15:00", start: hm(13, 30), end: hm(15, 0) },
+  { key: "LondonOpen", label: "London Open", shortLabel: "London Open", timeRange: "15:00 – 17:00", start: hm(15, 0), end: hm(17, 0), tier: 5 },
+  { key: "LondonMid", label: "London", shortLabel: "London", timeRange: "17:00 – 18:30", start: hm(17, 0), end: hm(18, 30) },
+  { key: "NewYorkOpen", label: "New York Open", shortLabel: "New York Open", timeRange: "18:30 – 20:30", start: hm(18, 30), end: hm(20, 30), tier: 5 },
+  { key: "LondonNyOverlap", label: "London + NY Overlap", shortLabel: "Overlap", timeRange: "20:30 – 21:30", start: hm(18, 30), end: hm(21, 30), tier: 5 },
+  { key: "NewYorkMid", label: "New York", shortLabel: "New York", timeRange: "20:30 – 23:30", start: hm(20, 30), end: hm(23, 30) },
+  { key: "NewYorkClose", label: "New York Close", shortLabel: "New York Close", timeRange: "23:30 – 02:30", start: hm(23, 30), end: hm(2, 30) },
+]
+
+/** Chronological order for charts and timelines. */
+export const SESSION_ORDER: TradingSession[] = TRADING_SESSIONS.map((s) => s.key)
+
+/**
+ * Classification order — NY Open before Overlap so 18:30–20:30 maps to NY Open,
+ * 20:30–21:30 maps to London + NY Overlap.
+ */
+export const SESSION_CLASSIFY_ORDER: TradingSession[] = [
+  "DeadZone",
+  "PreAsia",
+  "AsiaOpen",
+  "AsiaMid",
+  "AsiaClose",
+  "PreLondon",
+  "LondonOpen",
+  "LondonMid",
+  "NewYorkOpen",
+  "LondonNyOverlap",
+  "NewYorkMid",
+  "NewYorkClose",
+]
+
+export const SESSION_LABELS: Record<TradingSession, string> = Object.fromEntries(
+  TRADING_SESSIONS.map((s) => [s.key, s.label]),
+) as Record<TradingSession, string>
+
+/** Chart / tooltip — name + time on two readable parts */
+export const SESSION_DETAIL_LABELS: Record<TradingSession, string> = Object.fromEntries(
+  TRADING_SESSIONS.map((s) => [s.key, `${s.label} · ${s.timeRange}`]),
+) as Record<TradingSession, string>
+
+export const SESSION_SHORT_LABELS: Record<TradingSession, string> = Object.fromEntries(
+  TRADING_SESSIONS.map((s) => [s.key, s.shortLabel]),
+) as Record<TradingSession, string>
+
+const SESSION_BY_KEY = new Map(TRADING_SESSIONS.map((s) => [s.key, s]))
+
+export function getSessionDef(key: TradingSession): SessionDef {
+  return SESSION_BY_KEY.get(key)!
+}
+
+export function isPremiumSession(key: TradingSession): boolean {
+  return getSessionDef(key).tier === 5
+}
+
+export function isOverlapSession(key: TradingSession): boolean {
+  return key === "LondonNyOverlap"
+}
+
+export function formatSessionDisplay(key: TradingSession) {
+  const def = getSessionDef(key)
+  return {
+    name: def.shortLabel,
+    fullName: def.label,
+    time: def.timeRange,
+    tier: def.tier,
+    isOverlap: isOverlapSession(key),
+  }
+}
+
+/** London + NY overlap window 18:30 – 21:30 (shows overlap badge alongside NY Open). */
+export function isOverlapWindow(hour: number, minute = 0): boolean {
+  const minutes = hour * 60 + minute
+  return minutes >= hm(18, 30) && minutes < hm(21, 30)
+}
+
+function isMinuteInRange(minutes: number, start: number, end: number): boolean {
+  if (start === end) return false
+  if (start < end) return minutes >= start && minutes < end
+  return minutes >= start || minutes < end
+}
+
+export function classifySession(hour: number, minute = 0): TradingSession {
+  const minutes = hour * 60 + minute
+
+  for (const key of SESSION_CLASSIFY_ORDER) {
+    const def = getSessionDef(key)
+    if (isMinuteInRange(minutes, def.start, def.end)) return key
+  }
+
+  return "DeadZone"
 }
 
 export function getZonedParts(date: Date, timezone: string) {
@@ -24,6 +135,7 @@ export function getZonedParts(date: Date, timezone: string) {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
+    minute: "2-digit",
     hour12: false,
     weekday: "short",
   })
@@ -33,12 +145,17 @@ export function getZonedParts(date: Date, timezone: string) {
     parts.find((p) => p.type === type)?.value ?? ""
 
   const hour = Number.parseInt(get("hour"), 10)
+  const minute = Number.parseInt(get("minute"), 10)
   const weekday = get("weekday")
   const month = get("year") + "-" + get("month")
   const day = get("year") + "-" + get("month") + "-" + get("day")
+  const safeHour = Number.isFinite(hour) ? hour : 0
+  const safeMinute = Number.isFinite(minute) ? minute : 0
 
   return {
-    hour: Number.isFinite(hour) ? hour : 0,
+    hour: safeHour,
+    minute: safeMinute,
+    timeMinutes: safeHour * 60 + safeMinute,
     weekday,
     month,
     day,

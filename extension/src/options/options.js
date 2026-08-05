@@ -1,5 +1,15 @@
 const fields = ["apiUrl", "syncToken", "assetType", "pollIntervalSeconds", "autoSyncTrades"]
 
+function formatPollLabel(seconds) {
+  if (seconds <= 0) return null
+  if (seconds < 60) return `${seconds} seconds`
+  const minutes = seconds / 60
+  if (seconds % 60 === 0) {
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`
+  }
+  return `${seconds} seconds`
+}
+
 async function loadOptions() {
   const stored = await chrome.storage.sync.get(fields)
   for (const field of fields) {
@@ -49,7 +59,7 @@ document.getElementById("save").addEventListener("click", async () => {
     await chrome.storage.sync.set(payload)
     await testConnection(payload)
     savedEl.textContent = payload.pollIntervalSeconds
-      ? `Settings saved. Poll every ${payload.pollIntervalSeconds}s.`
+      ? `Settings saved. Poll every ${formatPollLabel(payload.pollIntervalSeconds)}.`
       : "Settings saved. Manual sync only (polling off)."
     savedEl.style.color = "#1a7f37"
   } catch (error) {

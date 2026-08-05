@@ -3,7 +3,14 @@ import "server-only"
 import connectDB from "@/app/api/db/mongoose"
 import Trade from "@/app/api/models/Trade"
 import TradingAccount from "@/app/api/models/TradingAccount"
-import { normalizeSymbolList, resolveAccountForInstrument } from "@/lib/trading/account-match"
+import {
+  normalizeSymbolList,
+  resolveAccountForInstrument,
+  normalizeSymbol,
+  canonicalInstrumentSymbol,
+  accountNameForInstrument,
+  findAccountForInstrument,
+} from "@/lib/trading/account-match"
 
 export async function createDefaultTradingAccount(userId: string) {
   await connectDB()
@@ -82,10 +89,90 @@ export async function normalizeAccountSymbols(symbols: string[]) {
   return normalizeSymbolList(symbols)
 }
 
+/** Use existing symbol account, or create one (never leaves synced symbol on Main). */
+export async function resolveOrCreateAccountForInstrument(
+  userId: string,
+  instrument: string,
+  accounts: Awaited<ReturnType<typeof getUserAccounts>>,
+) {
+  const existing = findAccountForInstrument(accounts, instrument)
+  if (existing) {
+    return { account: existing, created: false as const, accounts }
+  }
+
+  const normalized = canonicalInstrumentSymbol(instrument)
+  if (!normalized) {
+    const fallback = accounts.find((a) => a.isDefault) ?? accounts[0]
+    return { account: fallback, created: false as const, accounts }
+  }
+
+  const name = accountNameForInstrument(instrument)
+  const canonical = canonicalInstrumentSymbol(instrument)
+  const byName = accounts.find(
+    (account) =>
+      !account.isDefault &&
+      (normalizeSymbol(account.name) === normalizeSymbol(name) ||
+        normalizeSymbol(account.name) === normalizeSymbol(canonical)),
+  )
+
+  if (byName) {
+    const symbols = normalizeSymbolList([...(byName.symbols || []), canonical])
+    if (symbols.length !== (byName.symbols || []).length) {
+      await TradingAccount.updateOne({ _id: byName._id }, { $set: { symbols } })
+      byName.symbols = symbols
+    }
+    return { account: byName, created: false as const, accounts }
+  }
+
+  const account = await TradingAccount.create({
+    userId,
+    name,
+    symbols: normalizeSymbolList([canonical]),
+    isDefault: false,
+  })
+  const accountObj = account.toObject()
+  return {
+    account: accountObj,
+    created: true as const,
+    accounts: [...accounts, accountObj],
+  }
+}
+
+/** Auto-create a portfolio per synced symbol (e.g. XAUUSD → Gold account). */
+export async function ensureAccountsForInstruments(userId: string, instruments: string[]) {
+  await connectDB()
+  await ensureDefaultTradingAccount(userId)
+
+  let accounts = await TradingAccount.find({ userId }).sort({ isDefault: -1, name: 1 }).lean()
+  const created: string[] = []
+  const unique = [
+    ...new Set(instruments.map((instrument) => canonicalInstrumentSymbol(instrument)).filter(Boolean)),
+  ]
+
+  for (const instrument of unique) {
+    const result = await resolveOrCreateAccountForInstrument(userId, instrument, accounts)
+    accounts = result.accounts
+    if (result.created) created.push(result.account.name)
+  }
+
+  return { created, accounts }
+}
+
+/** Create missing symbol accounts for trades already in the database. */
+export async function ensureAccountsFromExistingTrades(userId: string) {
+  const instruments = await Trade.distinct("instrument", { userId })
+  if (!instruments.length) return { created: [] as string[] }
+  const result = await ensureAccountsForInstruments(userId, instruments)
+  if (result.created.length) {
+    await reconcileTradeAccounts(userId)
+  }
+  return result
+}
+
 /** Move trades to the account their instrument matches (e.g. BTCUSDT → BTC account). */
 export async function reconcileTradeAccounts(userId: string) {
   await connectDB()
-  const accounts = await TradingAccount.find({ userId }).lean()
+  let accounts = await TradingAccount.find({ userId }).lean()
   if (!accounts.length) return { moved: 0, accountIds: [] as string[] }
 
   const trades = await Trade.find({ userId })
@@ -93,7 +180,13 @@ export async function reconcileTradeAccounts(userId: string) {
   const accountIds = new Set<string>()
 
   for (const trade of trades) {
-    const target = resolveAccountForInstrument(accounts, trade.instrument)
+    const resolved = await resolveOrCreateAccountForInstrument(
+      userId,
+      canonicalInstrumentSymbol(trade.instrument),
+      accounts,
+    )
+    accounts = resolved.accounts
+    const target = resolved.account
     const targetId = String(target._id)
     if (trade.accountId === targetId) continue
 
