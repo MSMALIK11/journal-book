@@ -13,6 +13,7 @@ import {
   type BucketStats,
   type PeriodComparison,
 } from "@/lib/trading/analytics"
+import { computeAvoidanceImpact, type AvoidanceImpact } from "@/lib/trading/avoidance-impact"
 
 export type ResearchTrade = {
   entry_date: Date | string
@@ -96,6 +97,9 @@ export type BehaviorStats = {
   lossDayRecoverySamples: number
 }
 
+export type { AvoidanceImpact, AvoidanceScenario, MistakeBucket, PerformanceSnapshot } from "@/lib/trading/avoidance-impact"
+export type { PeriodComparison } from "@/lib/trading/analytics"
+
 export type ResearchRecommendation = {
   type: "edge" | "leak"
   title: string
@@ -120,6 +124,7 @@ export type ResearchResult = {
     hasManualJournalData: boolean
   }
   recommendations: ResearchRecommendation[]
+  whatIf: AvoidanceImpact | null
   strategies: string[]
   instruments: string[]
   timezone: string
@@ -720,6 +725,7 @@ export function computeResearchInsights(
     behavior,
     timezone,
   )
+  const whatIf = computeAvoidanceImpact(closed, { timezone })
 
   return {
     styleProfile,
@@ -732,6 +738,7 @@ export function computeResearchInsights(
     behavior,
     journal,
     recommendations,
+    whatIf,
     strategies,
     instruments,
     timezone,

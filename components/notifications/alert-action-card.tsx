@@ -7,6 +7,7 @@ import type { AlertItem } from "@/components/notifications/alert-list"
 type AlertActionCardProps = {
   alert: AlertItem | null
   loading?: boolean
+  className?: string
 }
 
 function SeverityIcon({ severity }: { severity: AlertItem["severity"] }) {
@@ -29,10 +30,10 @@ const SEVERITY_BORDER: Record<AlertItem["severity"], string> = {
   info: "border-sky-500/20 bg-sky-500/5",
 }
 
-export function AlertActionCard({ alert, loading }: AlertActionCardProps) {
+export function AlertActionCard({ alert, loading, className }: AlertActionCardProps) {
   if (loading) {
     return (
-      <div className="mx-3 mt-3 rounded-lg border border-dashed px-3 py-4">
+      <div className={cn("mx-3 mt-3 rounded-lg border border-dashed px-3 py-4", className)}>
         <p className="text-xs text-muted-foreground text-center">Loading recommendation...</p>
       </div>
     )
@@ -40,8 +41,8 @@ export function AlertActionCard({ alert, loading }: AlertActionCardProps) {
 
   if (!alert) {
     return (
-      <div className="mx-3 mt-3 rounded-lg border border-dashed px-3 py-4">
-        <p className="text-xs text-muted-foreground text-center">No actionable alert right now.</p>
+      <div className={cn("mx-3 mt-3 rounded-lg border border-dashed px-3 py-4", className)}>
+        <p className="text-xs text-muted-foreground text-center">No actionable insight right now.</p>
       </div>
     )
   }
@@ -51,10 +52,11 @@ export function AlertActionCard({ alert, loading }: AlertActionCardProps) {
       className={cn(
         "mx-3 mt-3 rounded-lg border px-3 py-3",
         SEVERITY_BORDER[alert.severity],
+        className,
       )}
     >
       <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground mb-1.5">
-        Top recommendation
+        Next best action
       </p>
       <div className="flex items-start gap-2.5">
         <SeverityIcon severity={alert.severity} />

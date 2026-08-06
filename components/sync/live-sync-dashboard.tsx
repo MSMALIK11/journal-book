@@ -1,10 +1,22 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import useSWR from "swr"
 import { format, isToday, parseISO } from "date-fns"
-import { BarChart3, Download, Radio, Trash2, TrendingDown, TrendingUp, Wifi, WifiOff, Zap } from "lucide-react"
+import {
+  BarChart3,
+  ChevronDown,
+  Download,
+  Loader2,
+  Radio,
+  Trash2,
+  TrendingDown,
+  TrendingUp,
+  Wifi,
+  WifiOff,
+  Zap,
+} from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,10 +31,18 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { authFetch } from "@/lib/client-auth"
-import { buildCsv, downloadCsv } from "@/lib/export-csv"
 import { useActiveAccount } from "@/hooks/use-active-account"
+import { useTradeSyncEvent, useTradeSyncConnection } from "@/hooks/use-trade-sync-event"
 import { useLiveSyncAutoRefresh } from "@/hooks/use-live-sync-auto-refresh"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -30,7 +50,6 @@ import {
   formatLiveSyncPollLabel,
   getLiveSyncPollSeconds,
 } from "@/lib/live-sync-settings"
-
 type SyncTrade = {
   id: string
   instrument: string
@@ -87,7 +106,12 @@ export function LiveSyncDashboard() {
     { refreshInterval: 10_000 },
   )
 
-  const [sseConnected, setSseConnected] = useState(false)
+  const refreshSyncedViews = useCallback(() => {
+    void mutate()
+    void mutateStatus()
+  }, [mutate, mutateStatus])
+
+  const sseConnected = useTradeSyncConnection()
 
   useEffect(() => {
     const updatePoll = () => setPollSeconds(getLiveSyncPollSeconds())
@@ -98,12 +122,11 @@ export function LiveSyncDashboard() {
 
   const trades = tradesData?.trades ?? []
 
-  useLiveSyncAutoRefresh({
+  const { isSyncing } = useLiveSyncAutoRefresh({
     enabled: Boolean(activeAccountId),
     pollSeconds,
     onComplete: () => {
-      void mutate()
-      void mutateStatus()
+      refreshSyncedViews()
     },
   })
 
@@ -154,53 +177,17 @@ export function LiveSyncDashboard() {
     }
   }, [])
 
-  useEffect(() => {
-    if (!activeAccountId) return
+  const onTradeSync = useCallback(
+    (data: { type?: string; imported?: number; updated?: number }) => {
+      if (data.type !== "trades_updated") return
+      if (!(data.imported || data.updated)) return
+      void refresh()
+      refreshSyncedViews()
+    },
+    [refresh, refreshSyncedViews],
+  )
 
-    let es: EventSource | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-
-    function connect() {
-      es = new EventSource("/api/sync/events")
-      setSseConnected(false)
-
-      es.onmessage = (message) => {
-        try {
-          const data = JSON.parse(message.data) as {
-            type?: string
-            imported?: number
-            updated?: number
-            accountId?: string
-          }
-          if (data.type === "connected") {
-            setSseConnected(true)
-          }
-          if (data.type === "trades_updated") {
-            void refresh()
-            if (data.accountId === activeAccountId) {
-              void mutate()
-              void mutateStatus()
-            }
-          }
-        } catch {
-          // ignore malformed events
-        }
-      }
-
-      es.onerror = () => {
-        setSseConnected(false)
-        es?.close()
-        reconnectTimer = setTimeout(connect, 5000)
-      }
-    }
-
-    connect()
-
-    return () => {
-      es?.close()
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-    }
-  }, [mutate, mutateStatus, activeAccountId, refresh])
+  useTradeSyncEvent(onTradeSync)
 
   useEffect(() => {
     if (!trades.length) return
@@ -242,49 +229,62 @@ export function LiveSyncDashboard() {
     }
   }, [trades])
 
-  async function handleExportCsv() {
-    if (!trades.length) return
+  /** Months that actually have trades — from first data month → current */
+  const availableExportMonths = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const trade of trades) {
+      try {
+        const monthKey = format(parseISO(trade.entry_date), "yyyy-MM")
+        counts.set(monthKey, (counts.get(monthKey) || 0) + 1)
+      } catch {
+        // skip bad dates
+      }
+    }
 
-    const headers = [
-      "Instrument",
-      "Direction",
-      "Strategy",
-      "Signal",
-      "Entry Date",
-      "Entry Price",
-      "Exit Date",
-      "Exit Price",
-      "Quantity",
-      "Net P&L",
-      "Return %",
-      "Commission",
-      "External ID",
-    ]
+    return [...counts.entries()]
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([monthKey, count]) => {
+        const [year, month] = monthKey.split("-").map(Number)
+        const label = format(new Date(year, month - 1, 1), "MMM yyyy")
+        return { monthKey, count, label }
+      })
+  }, [trades])
 
-    const rows = trades.map((trade) => [
-      trade.instrument,
-      trade.trade_type === "Buy" ? "Long" : "Short",
-      trade.strategy ?? "",
-      trade.signal ?? "",
-      trade.entry_date,
-      trade.entry_price,
-      trade.exit_date ?? "",
-      trade.exit_price ?? "",
-      trade.quantity,
-      trade.net_pnl ?? "",
-      trade.return_pct ?? "",
-      trade.commission ?? "",
-      trade.external_id ?? "",
-    ])
+  async function handleSaveToLiveSyncFolder(
+    scope: "today" | "month" | "all",
+    monthKey?: string,
+  ) {
+    const symbol =
+      activeAccount?.symbols?.[0] ||
+      activeAccount?.name ||
+      trades[0]?.instrument ||
+      "TRADES"
 
-    const csv = buildCsv(headers, rows)
-    const stamp = format(new Date(), "yyyy-MM-dd")
-    downloadCsv(`tradingview-trades-${stamp}.csv`, csv)
+    try {
+      const response = await authFetch("/api/export/live-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope,
+          symbol,
+          accountId: activeAccountId || undefined,
+          monthKey: scope === "month" ? monthKey : undefined,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Save failed")
 
-    toast({
-      title: "CSV exported",
-      description: `${trades.length} trade(s) downloaded.`,
-    })
+      toast({
+        title: `Saved ${data.fileName || "CSV"}`,
+        description: data.absolutePath || data.message || "~/TradingJournal/",
+      })
+    } catch (error) {
+      toast({
+        title: "Could not save to TradingJournal folder",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      })
+    }
   }
 
   async function handleClearAll() {
@@ -321,6 +321,7 @@ export function LiveSyncDashboard() {
           Viewing account: <span className="font-medium text-foreground">{activeAccount.name}</span>
         </p>
       ) : null}
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
@@ -420,16 +421,14 @@ export function LiveSyncDashboard() {
                 <Radio className="h-4 w-4" />
                 Live trade feed
               </CardTitle>
-              <CardDescription>
-                Trades sync automatically from TradingView while this page is open. Change interval
-                in{" "}
-                <Link href="/settings" className="text-primary underline-offset-4 hover:underline">
-                  Settings
-                </Link>
-                .
-              </CardDescription>
             </div>
             <div className="flex items-center gap-2">
+              {isSyncing ? (
+                <Badge variant="outline" className="gap-1 text-amber-600">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Syncing
+                </Badge>
+              ) : null}
               {pollSeconds > 0 ? (
                 <Badge variant="outline" className="gap-1 text-primary">
                   <Radio className="h-3 w-3" />
@@ -448,16 +447,62 @@ export function LiveSyncDashboard() {
                 {sseConnected ? "Live" : "Connecting…"}
               </Badge>
               {trades.length > 0 && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-1"
-                  disabled={tradesLoading}
-                  onClick={() => handleExportCsv()}
-                >
-                  <Download className="h-3 w-3" />
-                  Export CSV
-                </Button>
+                <div className="inline-flex rounded-md shadow-sm">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1 rounded-r-none border-r-0"
+                    disabled={tradesLoading}
+                    onClick={() => void handleSaveToLiveSyncFolder("today")}
+                  >
+                    <Download className="h-3 w-3" />
+                    Save to TradingJournal
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-l-none px-2"
+                        disabled={tradesLoading}
+                        aria-label="Export options"
+                      >
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-[14rem]">
+                      <DropdownMenuItem onClick={() => void handleSaveToLiveSyncFolder("today")}>
+                        Today
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => void handleSaveToLiveSyncFolder("all")}>
+                        All trades
+                      </DropdownMenuItem>
+                      {availableExportMonths.length > 0 ? (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuLabel className="text-xs text-muted-foreground font-normal">
+                            Months with data
+                          </DropdownMenuLabel>
+                          {availableExportMonths.map((month) => (
+                            <DropdownMenuItem
+                              key={month.monthKey}
+                              onClick={() =>
+                                void handleSaveToLiveSyncFolder("month", month.monthKey)
+                              }
+                            >
+                              <span className="flex w-full items-center justify-between gap-3">
+                                <span>{month.label}</span>
+                                <span className="text-xs text-muted-foreground">
+                                  {month.count}
+                                </span>
+                              </span>
+                            </DropdownMenuItem>
+                          ))}
+                        </>
+                      ) : null}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               )}
               {trades.length > 0 && (
                 <Button asChild variant="secondary" size="sm" className="gap-1">

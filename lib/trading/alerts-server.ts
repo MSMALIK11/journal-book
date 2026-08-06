@@ -12,6 +12,7 @@ import {
   type AlertPreferences,
   type TradingAlertPayload,
 } from "@/lib/trading/alerts"
+import { buildCoachingVerdict } from "@/lib/trading/coaching-verdict"
 import { getCurrentMomentZones } from "@/lib/trading/trade-zones"
 import { getZonedParts } from "@/lib/trading/sessions"
 import {
@@ -222,6 +223,7 @@ export async function getAlertsForAccount(
   ])
 
   const zones = getCurrentMomentZones(trades, { timezone, instrumentLabel })
+  const verdict = buildCoachingVerdict(allPayloads, zones)
 
   return {
     active,
@@ -229,6 +231,8 @@ export async function getAlertsForAccount(
     history: stored.map(formatAlert),
     unreadCount,
     zones,
+    verdict,
+    timezone,
   }
 }
 

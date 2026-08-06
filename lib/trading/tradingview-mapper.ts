@@ -41,12 +41,6 @@ function parseTradingViewDate(value: string) {
   return parseTradingViewDatetime(value)
 }
 
-function normalizeTradeDates(entryDate: Date, exitDate?: Date) {
-  if (!exitDate || exitDate.getTime() >= entryDate.getTime()) {
-    return { entry_date: entryDate, exit_date: exitDate }
-  }
-  return { entry_date: exitDate, exit_date: entryDate }
-}
 
 export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string, accountId: string) {
   const instrument = resolveInstrumentSpec(trade.instrument, trade.assetType)
@@ -62,7 +56,18 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
 
   const entryDate = parseTradingViewDate(trade.entry.datetime)
   const exitDate = !open && trade.exit ? parseTradingViewDate(trade.exit.datetime) : undefined
-  const { entry_date, exit_date } = normalizeTradeDates(entryDate, exitDate)
+
+  let entry_date = entryDate
+  let exit_date = exitDate
+  let entry_price = trade.entry.price
+  let exit_price = open ? undefined : trade.exit?.price
+
+  if (exitDate && trade.exit && exitDate.getTime() < entryDate.getTime()) {
+    entry_date = exitDate
+    exit_date = entryDate
+    entry_price = trade.exit.price
+    exit_price = trade.entry.price
+  }
 
   return {
     userId,
@@ -72,8 +77,8 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
     exit_date,
     trade_type: trade.direction === "long" ? ("Buy" as const) : ("Sell" as const),
     order_type: "Futures" as const,
-    entry_price: trade.entry.price,
-    exit_price: open ? undefined : trade.exit?.price,
+    entry_price,
+    exit_price,
     quantity: trade.entry.size ?? 1,
     asset_type: instrument.assetType,
     quantity_mode: getQuantityMode(instrument.assetType),

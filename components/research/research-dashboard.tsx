@@ -10,6 +10,7 @@ import { MarketPatterns } from "@/components/research/market-patterns"
 import { ResearchDashboardSkeleton } from "@/components/research/research-dashboard-skeleton"
 import { ResearchInsights } from "@/components/research/research-insights"
 import { StyleProfileCard } from "@/components/research/style-profile"
+import { WhatIfTab } from "@/components/research/what-if-tab"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -27,7 +28,7 @@ import type { PeriodComparison, ResearchResult } from "@/lib/trading/research"
 
 type SourceFilter = "all" | "tradingview" | "manual"
 type RangePreset = "7d" | "30d" | "90d" | "all"
-type ResearchTab = "style" | "market" | "behavior" | "insights"
+type ResearchTab = "style" | "market" | "behavior" | "insights" | "whatif"
 
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -148,6 +149,7 @@ export function ResearchDashboard() {
           <TabsTrigger value="market">Market</TabsTrigger>
           <TabsTrigger value="behavior">Behavior</TabsTrigger>
           <TabsTrigger value="insights">Insights</TabsTrigger>
+          <TabsTrigger value="whatif">What if</TabsTrigger>
         </TabsList>
 
         <TabsContent value="style" className="mt-6">
@@ -167,6 +169,10 @@ export function ResearchDashboard() {
 
         <TabsContent value="insights" className="mt-6">
           <ResearchInsights recommendations={data.recommendations} />
+        </TabsContent>
+
+        <TabsContent value="whatif" className="mt-6">
+          <WhatIfTab whatIf={data.whatIf} />
         </TabsContent>
       </Tabs>
     </div>

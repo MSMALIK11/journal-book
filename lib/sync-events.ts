@@ -1,10 +1,21 @@
+export type ImportedTradeSnapshot = {
+  id: string
+  instrument: string
+  trade_type: string
+  entry_date: string
+  entry_price: number
+  signal?: string | null
+}
+
 export type TradesUpdatedEvent = {
   type: "trades_updated"
+  eventId?: string
   accountId: string
   accountName?: string
   imported: number
   updated: number
   skipped: number
+  latestTrade?: ImportedTradeSnapshot
 }
 
 export type AccountsUpdatedEvent = {
@@ -48,7 +59,10 @@ export function subscribeSyncEvents(userId: string, listener: SyncListener) {
 export function publishTradesUpdated(
   userId: string,
   accountId: string,
-  payload: Pick<TradesUpdatedEvent, "imported" | "updated" | "skipped" | "accountName">,
+  payload: Pick<
+    TradesUpdatedEvent,
+    "eventId" | "imported" | "updated" | "skipped" | "accountName" | "latestTrade"
+  >,
 ) {
   const event: TradesUpdatedEvent = { type: "trades_updated", accountId, ...payload }
   for (const listener of getListenerMap().get(userListenerKey(userId)) ?? []) {

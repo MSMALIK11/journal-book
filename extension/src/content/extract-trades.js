@@ -144,17 +144,36 @@
     return "UNKNOWN"
   }
 
-  const captured = window.__JB_CAPTURED_TRADES__ || []
-  const fromMemory = extractFromMemory(getInstrument(), "TradingView Strategy")
+  function sameInstrument(a, b) {
+    const left = String(a || "")
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase()
+    const right = String(b || "")
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase()
+    if (!left || !right || left === "UNKNOWN" || right === "UNKNOWN") return true
+    return left === right
+  }
+
+  const instrument = getInstrument()
+  const captured = (window.__JB_CAPTURED_TRADES__ || []).filter((t) => sameInstrument(t.instrument, instrument))
+  const fromMemory = extractFromMemory(instrument, "TradingView Strategy").filter((t) =>
+    sameInstrument(t.instrument, instrument),
+  )
   const merged = new Map()
 
   for (const t of [...captured, ...fromMemory]) {
-    const trade = normalizeTrade(t, getInstrument(), "TradingView Strategy")
+    const trade = normalizeTrade(t, instrument, "TradingView Strategy")
     if (trade) merged.set(trade.tradeNumber, trade)
   }
 
   return {
     trades: [...merged.values()],
-    debug: { capturedCount: captured.length, memoryCount: fromMemory.length, method: "main-world" },
+    debug: {
+      capturedCount: captured.length,
+      memoryCount: fromMemory.length,
+      method: "main-world",
+      instrument,
+    },
   }
 })()

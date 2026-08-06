@@ -23,15 +23,32 @@ export const tradingViewTradeSchema = z.object({
     .default("crypto"),
 })
 
+const reconcileOpenHintSchema = z.object({
+  externalId: z.string().trim().min(1).max(200).optional(),
+  entryDatetime: z.string().trim().min(1).optional(),
+  direction: z.enum(["long", "short"]).optional(),
+  tradeNumber: z.number().int().positive().optional(),
+})
+
 export const tradingViewSyncSchema = z
   .object({
     chartSymbol: z.string().trim().min(1).max(40).optional(),
     trades: z.array(tradingViewTradeSchema).max(10000).default([]),
+    /** Currently open trades on TV for this chart — journal opens not in this list are removed. */
+    reconcileOpens: z
+      .object({
+        instrument: z.string().trim().min(1).max(40),
+        opens: z.array(reconcileOpenHintSchema).max(500).default([]),
+      })
+      .optional(),
   })
-  .refine((data) => data.trades.length > 0 || Boolean(data.chartSymbol), {
-    message: "Provide trades or chartSymbol",
-    path: ["trades"],
-  })
+  .refine(
+    (data) => data.trades.length > 0 || Boolean(data.chartSymbol) || Boolean(data.reconcileOpens),
+    {
+      message: "Provide trades, chartSymbol, or reconcileOpens",
+      path: ["trades"],
+    },
+  )
 
 export type TradingViewTradeInput = z.infer<typeof tradingViewTradeSchema>
 

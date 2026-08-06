@@ -6,6 +6,7 @@ import { resolveInstrumentForUser } from "@/lib/instruments-server"
 import { getAccountContext } from "@/lib/active-account"
 import { getSession } from "@/lib/session"
 import { calculateProfit } from "@/lib/trading/calculator"
+import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
 import { tradeSchema } from "@/lib/validations/trade"
 
 export async function GET(request: NextRequest) {
@@ -74,6 +75,7 @@ export async function GET(request: NextRequest) {
         t.source === "tradingview"
           ? t.exit_date?.toISOString() || null
           : t.exit_date?.toISOString().split("T")[0] || null,
+      is_open: t.source === "tradingview" ? isOpenSyncedTrade(t) : !t.exit_date,
     }))
 
     return NextResponse.json({

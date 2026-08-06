@@ -1,19 +1,20 @@
 "use client"
 
-import { useCallback, useEffect, useRef } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { authFetch } from "@/lib/client-auth"
 import { requestExtensionSync } from "@/lib/client-extension-sync"
 
 type Options = {
   enabled: boolean
   pollSeconds: number
-  onComplete?: () => void
+  onComplete?: (result: import("@/lib/client-extension-sync").ExtensionSyncResult | null) => void
 }
 
 export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Options) {
   const inFlightRef = useRef(false)
   const pollSecondsRef = useRef(pollSeconds)
   const mountedRef = useRef(false)
+  const [isSyncing, setIsSyncing] = useState(false)
 
   useEffect(() => {
     pollSecondsRef.current = pollSeconds
@@ -22,8 +23,9 @@ export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Opt
   const runSync = useCallback(async () => {
     if (inFlightRef.current) return
     inFlightRef.current = true
+    setIsSyncing(true)
     try {
-      await requestExtensionSync({
+      const result = await requestExtensionSync({
         queueRefresh: async () => {
           const response = await authFetch("/api/sync/request-refresh", { method: "POST" })
           const data = await response.json().catch(() => ({}))
@@ -37,11 +39,12 @@ export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Opt
           return data
         },
       })
-      onComplete?.()
+      onComplete?.(result)
     } catch {
       // Silent background sync — next poll will retry.
     } finally {
       inFlightRef.current = false
+      setIsSyncing(false)
     }
   }, [onComplete])
 
@@ -79,4 +82,6 @@ export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Opt
       window.clearTimeout(timer)
     }
   }, [enabled, pollSeconds, runSync])
+
+  return { isSyncing }
 }

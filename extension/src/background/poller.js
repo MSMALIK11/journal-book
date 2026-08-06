@@ -1,12 +1,15 @@
 /* global JBSync */
-const VERSION = "1.13.6"
+const VERSION = "1.14.1"
 const HEARTBEAT_ALARM = "jb-heartbeat"
+const CAPTURE_SYNC_DEBOUNCE_MS = 1200
 const JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
 
 importScripts("../lib/symbol-utils.js", "../lib/sync-client.js")
 
-let pollInFlight = false
+let syncInFlight = false
 let refreshInFlight = false
+let captureSyncTimer = null
+let captureSyncPending = false
 
 async function injectJournalBridge(tabId) {
   try {
@@ -71,26 +74,59 @@ async function sendHeartbeatIfConfigured() {
   await runRefreshCheck()
 }
 
-async function handlePollTick(autoSync) {
-  if (pollInFlight) return
-  pollInFlight = true
+async function runAutoSync(source) {
+  if (syncInFlight) {
+    if (source === "capture") captureSyncPending = true
+    return null
+  }
+
+  syncInFlight = true
   try {
     const config = await JBSync.getConfig()
-    if (!config.syncToken) return
+    if (!config.syncToken) return null
+    if (!config.autoSyncTrades) return null
 
     await JBSync.sendHeartbeat(config)
     await JBSync.maybeRunRequestedRefresh(config).catch(() => {})
 
-    if (autoSync) {
-      const tab = await JBSync.getTradingViewTab()
-      if (!tab?.id) return
-      await JBSync.refreshNewTrades(config).catch(() => {})
-    }
+    const tab = await JBSync.getTradingViewTab()
+    if (!tab?.id) return null
+
+    return await JBSync.refreshNewTrades(config)
   } catch (error) {
-    console.warn("Poll tick failed:", error?.message || error)
+    console.warn(`${source} sync failed:`, error?.message || error)
+    return null
   } finally {
-    pollInFlight = false
+    syncInFlight = false
+    if (captureSyncPending) {
+      captureSyncPending = false
+      scheduleCaptureSync()
+    }
   }
+}
+
+async function handlePollTick(autoSync) {
+  if (!autoSync) {
+    try {
+      const config = await JBSync.getConfig()
+      if (!config.syncToken) return
+      await JBSync.sendHeartbeat(config)
+      await JBSync.maybeRunRequestedRefresh(config).catch(() => {})
+    } catch (error) {
+      console.warn("Poll heartbeat failed:", error?.message || error)
+    }
+    return
+  }
+
+  await runAutoSync("poll")
+}
+
+function scheduleCaptureSync() {
+  if (captureSyncTimer) clearTimeout(captureSyncTimer)
+  captureSyncTimer = setTimeout(() => {
+    captureSyncTimer = null
+    void runAutoSync("capture")
+  }, CAPTURE_SYNC_DEBOUNCE_MS)
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -144,6 +180,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "POLL_TICK") {
     void handlePollTick(Boolean(message.autoSync))
+    sendResponse({ ok: true })
+    return false
+  }
+
+  if (message.type === "TRADE_CAPTURED") {
+    scheduleCaptureSync()
     sendResponse({ ok: true })
     return false
   }

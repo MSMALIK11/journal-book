@@ -114,14 +114,139 @@
     return [...trades.values()]
   }
 
+  function tradeFingerprint(trade) {
+    const entry = trade.entry || {}
+    const exit = trade.exit || {}
+    return [
+      trade.tradeNumber,
+      entry.datetime || "",
+      entry.price ?? "",
+      entry.signal || "",
+      exit.datetime || "",
+      exit.price ?? "",
+      exit.signal || "",
+      trade.netPnl ?? "",
+    ].join("|")
+  }
+
+  function isOpenCapturedTrade(trade) {
+    if (!trade?.exit) return true
+    const sig = String(trade.exit.signal || "")
+      .trim()
+      .toLowerCase()
+    if (sig === "open") return true
+    if (String(trade.entry?.signal || "")
+      .trim()
+      .toLowerCase() === "open") return true
+    return false
+  }
+
+  function mergeTradeRecord(before, incoming) {
+    const entry =
+      incoming.entry?.price && incoming.entry?.datetime ? incoming.entry : before?.entry || incoming.entry
+    const exit =
+      incoming.exit && (incoming.exit.price != null || incoming.exit.signal)
+        ? { ...(before?.exit || {}), ...incoming.exit }
+        : before?.exit || incoming.exit
+
+    return {
+      tradeNumber: incoming.tradeNumber ?? before?.tradeNumber,
+      direction: incoming.direction ?? before?.direction ?? "long",
+      instrument: incoming.instrument || before?.instrument || "UNKNOWN",
+      strategy: incoming.strategy || before?.strategy || "TradingView Strategy",
+      entry: entry || null,
+      exit: exit || null,
+      netPnl: incoming.netPnl ?? before?.netPnl,
+      returnPct: incoming.returnPct ?? before?.returnPct,
+      commission: incoming.commission ?? before?.commission,
+    }
+  }
+
+  function notifyTradeCapture(changes) {
+    if (!changes.length) return
+    const detail = { changes, at: Date.now() }
+    try {
+      window.dispatchEvent(
+        new CustomEvent("jb-trade-captured", {
+          detail,
+        }),
+      )
+    } catch {
+      // ignore
+    }
+    try {
+      window.postMessage({ source: "jb-main-hook", type: "jb-trade-captured", detail }, "*")
+    } catch {
+      // ignore
+    }
+  }
+
+  function currentChartSymbol() {
+    const fromHook = String(window.__JB_CHART_SYMBOL__ || "")
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase()
+    return fromHook || "UNKNOWN"
+  }
+
+  /** Drop stale captures when the user switches chart (BTC → GOLD etc.). */
+  function resetCapturedIfSymbolChanged(symbol) {
+    if (!symbol || symbol === "UNKNOWN") return
+    const prev = String(window.__JB_CAPTURED_CHART_SYMBOL__ || "")
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase()
+    if (prev && prev !== symbol) {
+      window.__JB_CAPTURED_TRADES__ = []
+    }
+    window.__JB_CAPTURED_CHART_SYMBOL__ = symbol
+  }
+
   function storePayload(payload) {
     try {
+      const chartSymbol = currentChartSymbol()
+      resetCapturedIfSymbolChanged(chartSymbol)
+
       const trades = normalizeCapturedTrades(payload)
-      if (trades.length) {
-        const merged = new Map(window.__JB_CAPTURED_TRADES__.map((t) => [t.tradeNumber, t]))
-        for (const trade of trades) merged.set(trade.tradeNumber, trade)
-        window.__JB_CAPTURED_TRADES__ = [...merged.values()]
+      if (!trades.length) return
+
+      const beforeMap = new Map(window.__JB_CAPTURED_TRADES__.map((t) => [t.tradeNumber, t]))
+      const merged = new Map(beforeMap)
+      const changed = []
+
+      for (const incoming of trades) {
+        const stamped = {
+          ...incoming,
+          instrument:
+            chartSymbol !== "UNKNOWN"
+              ? chartSymbol
+              : incoming.instrument || beforeMap.get(incoming.tradeNumber)?.instrument || "UNKNOWN",
+        }
+        const before = beforeMap.get(stamped.tradeNumber)
+        const next = before ? mergeTradeRecord(before, stamped) : stamped
+        if (!next.entry?.price) continue
+
+        // Ignore leftovers from a previous symbol still sitting in memory.
+        const nextInst = String(next.instrument || "")
+          .replace(/[^A-Za-z0-9]/g, "")
+          .toUpperCase()
+        if (chartSymbol !== "UNKNOWN" && nextInst && nextInst !== "UNKNOWN" && nextInst !== chartSymbol) {
+          continue
+        }
+
+        const wasOpen = before ? isOpenCapturedTrade(before) : false
+        const isOpen = isOpenCapturedTrade(next)
+
+        if (!before || tradeFingerprint(before) !== tradeFingerprint(next)) {
+          let reason = before ? "updated" : "new"
+          if (before && wasOpen && !isOpen) reason = "closed"
+          changed.push({ tradeNumber: next.tradeNumber, reason })
+        }
+
+        merged.set(next.tradeNumber, next)
       }
+
+      window.__JB_CAPTURED_TRADES__ = [...merged.values()]
+
+      if (changed.length) notifyTradeCapture(changed)
     } catch {
       // ignore malformed payloads
     }

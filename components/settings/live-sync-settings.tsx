@@ -3,7 +3,7 @@
 import { ExternalLink, Radio } from "lucide-react"
 import useSWR from "swr"
 import { useEffect, useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { SettingsHint, SettingsSection } from "@/components/settings/settings-section"
 import { authFetch } from "@/lib/client-auth"
 import {
   DEFAULT_LIVE_SYNC_POLL_SECONDS,
@@ -48,21 +49,26 @@ export function LiveSyncSettings() {
       ? formatLiveSyncPollLabel(extensionPollSeconds)
       : "Not reported yet"
 
+  const pagePollLabel = formatLiveSyncPollLabel(pollSeconds)
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Radio className="h-5 w-5" />
-          Live Sync
-        </CardTitle>
-        <CardDescription>
-          Controls how often the Live Sync page calls the server while the tab is open. This is
-          separate from the Chrome extension poll interval.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="live-sync-poll">Page auto-refresh interval</Label>
+    <SettingsSection
+      id="live-sync"
+      icon={Radio}
+      iconTone="violet"
+      title="Live Sync"
+      description="How often the Live Sync page refreshes while open — separate from the Chrome extension."
+      badge={
+        <Badge variant="outline" className="text-[10px] font-normal">
+          {pagePollLabel}
+        </Badge>
+      }
+    >
+      <div className="space-y-4">
+        <div className="rounded-xl border border-border/50 bg-muted/15 px-4 py-3.5 space-y-2.5">
+          <Label htmlFor="live-sync-poll" className="text-sm font-medium">
+            Page auto-refresh interval
+          </Label>
           <Select
             value={String(pollSeconds)}
             onValueChange={(value) => {
@@ -71,7 +77,7 @@ export function LiveSyncSettings() {
               setLiveSyncPollSeconds(seconds)
             }}
           >
-            <SelectTrigger id="live-sync-poll" className="w-full max-w-md">
+            <SelectTrigger id="live-sync-poll" className="w-full bg-background">
               <SelectValue placeholder="Choose interval" />
             </SelectTrigger>
             <SelectContent>
@@ -82,23 +88,23 @@ export function LiveSyncSettings() {
               ))}
             </SelectContent>
           </Select>
-          <p className="text-xs text-muted-foreground">
-            Stored in this browser as <code className="text-foreground">jb-live-sync-poll-seconds</code>.
-            Polling runs only while the Live Sync tab is visible.
-          </p>
+          <SettingsHint>
+            Stored in this browser. Instant updates use SSE when the extension syncs; this interval
+            is a backup refresh while the Live Sync tab is visible.
+          </SettingsHint>
         </div>
 
-        <div className="rounded-lg border bg-muted/30 px-3 py-2 text-sm">
-          <p>
-            Extension poll (TradingView tab):{" "}
-            <span className="font-medium text-foreground">{extensionPollLabel}</span>
+        <div className="rounded-xl border border-border/50 bg-gradient-to-br from-muted/20 to-muted/5 px-4 py-3.5">
+          <p className="text-sm">
+            <span className="text-muted-foreground">Extension poll (TradingView):</span>{" "}
+            <span className="font-medium">{extensionPollLabel}</span>
           </p>
-          <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-            <ExternalLink className="h-3 w-3" />
-            Change in chrome://extensions → Journal Book Sync → Options
+          <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+            chrome://extensions → Journal Book Sync → Options
           </p>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </SettingsSection>
   )
 }

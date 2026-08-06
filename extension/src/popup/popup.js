@@ -54,6 +54,8 @@ async function saveRefreshResult(syncResult, result) {
   const { sessionImported = 0 } = await chrome.storage.local.get("sessionImported")
   const accountMsg = JBSync.formatByAccountMessage(syncResult.byAccount)
   const dedupedMsg = syncResult.deduped > 0 ? ` · removed ${syncResult.deduped} duplicate(s)` : ""
+  const staleMsg =
+    syncResult.closedStale > 0 ? ` · cleared ${syncResult.closedStale} stale open(s)` : ""
   const createdMsg =
     syncResult.accountsCreated?.length > 0
       ? ` · new account(s): ${syncResult.accountsCreated.join(", ")}`
@@ -67,7 +69,7 @@ async function saveRefreshResult(syncResult, result) {
       : ""
   const msg =
     syncResult.message ||
-    `Added ${syncResult.imported} new, updated ${syncResult.updated}, skipped ${syncResult.skipped}${accountMsg}${createdMsg}${accountHint}${dedupedMsg}`
+    `Added ${syncResult.imported} new, updated ${syncResult.updated}, skipped ${syncResult.skipped}${accountMsg}${createdMsg}${accountHint}${dedupedMsg}${staleMsg}`
 
   await chrome.storage.local.set({
     lastSyncAt: new Date().toISOString(),
@@ -170,7 +172,9 @@ document.getElementById("importAll").addEventListener("click", async () => {
     if (!result?.trades?.length) throw new Error(result?.error || "No trades found")
 
     statusEl.textContent = `Syncing ${result.trades.length} trades...`
-    const syncResult = await JBSync.syncTrades(result.trades, config, result.instrument)
+    const syncResult = await JBSync.syncTrades(result.trades, config, result.instrument, {
+      reconcileFromTrades: result.trades,
+    })
     const msg = await saveRefreshResult(syncResult, result)
 
     statusEl.textContent = msg

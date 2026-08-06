@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef } from "react"
 import useSWR from "swr"
 import { authFetch } from "@/lib/client-auth"
 import { useActiveAccount } from "@/hooks/use-active-account"
+import { classifySession } from "@/lib/trading/sessions"
+import type { CoachingVerdict } from "@/lib/trading/coaching-verdict"
 import type { AlertItem } from "@/components/notifications/alert-list"
 import type { MomentZoneSnapshot } from "@/lib/trading/trade-zones"
 
@@ -13,6 +15,8 @@ type AlertsResponse = {
   history: AlertItem[]
   unreadCount: number
   zones: MomentZoneSnapshot
+  verdict: CoachingVerdict | null
+  timezone: string
 }
 
 const fetcher = async (url: string) => {
@@ -31,6 +35,7 @@ function todayKey() {
 export function useTradingAlerts() {
   const { activeAccountId, switchVersion } = useActiveAccount()
   const digestRequested = useRef(false)
+  const lastSessionRef = useRef<string | null>(null)
 
   const swrKey = activeAccountId ? `/api/alerts?limit=50&account=${activeAccountId}&v=${switchVersion}` : null
 
@@ -96,12 +101,42 @@ export function useTradingAlerts() {
     }
   }, [activeAccountId, switchVersion, evaluate])
 
+  useEffect(() => {
+    const timezone = data?.timezone
+    if (!timezone || !activeAccountId) return
+
+    const checkSessionChange = () => {
+      const now = new Date()
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      })
+      const parts = formatter.formatToParts(now)
+      const hour = Number.parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10)
+      const minute = Number.parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10)
+      const session = classifySession(hour, minute)
+
+      if (lastSessionRef.current && lastSessionRef.current !== session) {
+        void evaluate(false)
+      }
+      lastSessionRef.current = session
+    }
+
+    checkSessionChange()
+    const interval = setInterval(checkSessionChange, 30_000)
+    return () => clearInterval(interval)
+  }, [activeAccountId, data?.timezone, evaluate])
+
   return {
     active: data?.active ?? [],
     topAction: data?.topAction ?? null,
     history: data?.history ?? [],
     unreadCount: data?.unreadCount ?? 0,
     zones: data?.zones ?? null,
+    verdict: data?.verdict ?? null,
+    timezone: data?.timezone ?? null,
     isLoading,
     error,
     refresh: mutate,

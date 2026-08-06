@@ -30,9 +30,19 @@ import {
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import useSWR from "swr"
 import { authFetch } from "@/lib/client-auth"
 import { useActiveAccount } from "@/hooks/use-active-account"
 import { formatHoldDuration, getTradeHoldTimeMs } from "@/lib/trading/analytics"
+import {
+  formatTradePriceRange,
+  formatTradeStartTime,
+  getTradeSessionLabel,
+  getTradeWindowFlags,
+  shouldShowStrategyLabel,
+  tradeSideLabel,
+} from "@/lib/trading/trade-display"
+import type { AnalyticsResult } from "@/lib/trading/analytics"
 import { cn } from "@/lib/utils"
 
 type Trade = {
@@ -73,6 +83,25 @@ export function TradingCalendar() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const { activeAccountId, switchVersion } = useActiveAccount()
+
+  const { data: profileData } = useSWR("/api/profile", async (url: string) => {
+    const response = await authFetch(url)
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || "Failed to load profile")
+    return data as { profile?: { timezone?: string } }
+  })
+  const timezone =
+    profileData?.profile?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+
+  const { data: analytics } = useSWR<AnalyticsResult>(
+    activeAccountId ? `/api/analytics?source=all&v=${switchVersion}` : null,
+    async (url: string) => {
+      const response = await authFetch(url)
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Failed to load analytics")
+      return data as AnalyticsResult
+    },
+  )
 
   useEffect(() => {
     if (!activeAccountId) return
@@ -425,36 +454,59 @@ export function TradingCalendar() {
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {selectedTrades.map((trade) => {
                 const holdMs = getTradeHoldTimeMs(trade)
-                const startedAt = trade.entry_date ? parseISO(trade.entry_date) : null
-                const startedLabel =
-                  startedAt && isValid(startedAt) ? format(startedAt, "HH:mm") : null
+                const startedLabel = formatTradeStartTime(trade.entry_date, timezone)
+                const sessionLabel = getTradeSessionLabel(trade.entry_date, timezone)
+                const windowFlags = getTradeWindowFlags(trade.entry_date, analytics?.avoid, timezone)
                 return (
                 <div key={trade.id} className="rounded-xl border border-border/60 bg-muted/20 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <p className="font-semibold">{trade.instrument}</p>
                     <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>
-                      {trade.trade_type}
+                      {tradeSideLabel(trade.trade_type)}
                     </Badge>
                   </div>
                   <div className="mt-3 flex items-end justify-between gap-3">
                     <div>
                       <p className="text-xs text-muted-foreground">
-                        {trade.quantity} qty · {currency.format(trade.entry_price)}
-                        {trade.exit_price ? ` → ${currency.format(trade.exit_price)}` : ""}
+                        {trade.quantity} qty ·{" "}
+                        {formatTradePriceRange(trade, (value) => currency.format(value))}
                       </p>
-                      {trade.strategy && (
+                      {shouldShowStrategyLabel(trade.strategy) && (
                         <p className="mt-1 text-xs text-muted-foreground">{trade.strategy}</p>
                       )}
                       {startedLabel && (
-                        <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                        <p className="mt-1 flex flex-wrap items-center gap-x-1 text-xs text-muted-foreground">
                           <Clock className="h-3 w-3" />
-                          Started {startedLabel}
-                          {holdMs !== null ? (
-                            <> · Completed in {formatHoldDuration(holdMs)}</>
-                          ) : (
-                            <> · Open</>
-                          )}
+                          <span>
+                            Started {startedLabel}
+                            <span className="text-foreground/70"> · {sessionLabel}</span>
+                            {holdMs !== null ? (
+                              <> · Completed in {formatHoldDuration(holdMs)}</>
+                            ) : (
+                              <> · Open</>
+                            )}
+                          </span>
                         </p>
+                      )}
+                      {(windowFlags.weakHour || windowFlags.weakSession) && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {windowFlags.weakHour ? (
+                            <Badge
+                              variant="outline"
+                              className="h-5 border-rose-500/35 px-1.5 text-[10px] font-medium text-rose-500"
+                            >
+                              Weak hour
+                            </Badge>
+                          ) : null}
+                          {windowFlags.weakSession ? (
+                            <Badge
+                              variant="outline"
+                              className="h-5 border-rose-500/35 px-1.5 text-[10px] font-medium text-rose-500"
+                            >
+                              Weak session
+                            </Badge>
+                          ) : null}
+                        </div>
                       )}
                     </div>
                     {trade.net_pnl !== null && (

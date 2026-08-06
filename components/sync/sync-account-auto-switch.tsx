@@ -1,66 +1,72 @@
 "use client"
 
-import { useEffect } from "react"
+import { useCallback } from "react"
 import { useActiveAccount } from "@/hooks/use-active-account"
+import { useTradeSyncEvent } from "@/hooks/use-trade-sync-event"
+import type { TradeSyncEventDetail } from "@/hooks/use-trade-sync-listener"
 import { useToast } from "@/hooks/use-toast"
 
-/** Refresh sidebar accounts + switch when extension syncs a new symbol portfolio. */
+/** Refresh accounts + all trade/analytics data when extension syncs (new or closed trades). */
 export function SyncAccountAutoSwitch() {
-  const { activeAccountId, switchAccount, refresh } = useActiveAccount()
+  const { activeAccountId, switchAccount, refresh, revalidateSyncedData } = useActiveAccount()
   const { toast } = useToast()
 
-  useEffect(() => {
-    const es = new EventSource("/api/sync/events")
-
-    es.onmessage = (message) => {
-      try {
-        const data = JSON.parse(message.data) as {
-          type?: string
-          accountId?: string
-          accountName?: string
-          imported?: number
-          updated?: number
-          created?: { id: string; name: string }[]
-          primaryAccountId?: string
-        }
-
-        if (data.type === "accounts_updated") {
-          const targetId = data.primaryAccountId || data.created?.[data.created.length - 1]?.id
-          const targetName =
-            data.created?.find((account) => account.id === targetId)?.name ||
-            data.created?.[data.created.length - 1]?.name
-
-          void refresh().then(async () => {
-            if (targetId && targetId !== activeAccountId) {
-              await switchAccount(targetId)
-            }
-            toast({
-              title: targetName ? `Portfolio ready: ${targetName}` : "New portfolio added",
-              description: "Switch accounts in the sidebar to test each symbol separately.",
-            })
-          })
-          return
-        }
-
-        if (data.type !== "trades_updated") return
-        if (!(data.imported || data.updated)) return
+  const onSyncEvent = useCallback(
+    (data: TradeSyncEventDetail) => {
+      if (data.type === "accounts_updated") {
+        const targetId = data.primaryAccountId || data.created?.[data.created.length - 1]?.id
+        const targetName =
+          data.created?.find((account) => account.id === targetId)?.name ||
+          data.created?.[data.created.length - 1]?.name
 
         void refresh().then(async () => {
-          if (data.accountId && data.accountId !== activeAccountId) {
-            await switchAccount(data.accountId)
+          if (targetId && targetId !== activeAccountId) {
+            await switchAccount(targetId)
           }
           toast({
-            title: data.accountName ? `Synced to ${data.accountName}` : "Trades synced",
-            description: `${data.imported ?? 0} new, ${data.updated ?? 0} updated from extension`,
+            title: targetName ? `Portfolio ready: ${targetName}` : "New portfolio added",
+            description: "Switch accounts in the sidebar to test each symbol separately.",
           })
         })
-      } catch {
-        // ignore malformed events
+        return
       }
-    }
 
-    return () => es.close()
-  }, [activeAccountId, refresh, switchAccount, toast])
+      if (data.type !== "trades_updated") return
+      if (!(data.imported || data.updated)) return
+
+      void (async () => {
+        await revalidateSyncedData()
+        await refresh()
+
+        if (data.accountId && data.accountId !== activeAccountId) {
+          await switchAccount(data.accountId)
+        }
+
+        const imported = data.imported ?? 0
+        const updated = data.updated ?? 0
+
+        if (imported > 0 && updated > 0) {
+          toast({
+            title: data.accountName ? `Synced to ${data.accountName}` : "Trades synced",
+            description: `${imported} new, ${updated} updated from TradingView`,
+          })
+        } else if (imported > 0) {
+          toast({
+            title: data.accountName ? `New trade · ${data.accountName}` : "New trade synced",
+            description: `${imported} new trade(s) from TradingView`,
+          })
+        } else if (updated > 0) {
+          toast({
+            title: data.accountName ? `Trade updated · ${data.accountName}` : "Trade updated",
+            description: `${updated} trade(s) updated — open positions may have closed`,
+          })
+        }
+      })()
+    },
+    [activeAccountId, refresh, revalidateSyncedData, switchAccount, toast],
+  )
+
+  useTradeSyncEvent(onSyncEvent)
 
   return null
 }

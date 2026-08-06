@@ -5,18 +5,16 @@ import { Bell } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { AlertActionCard } from "@/components/notifications/alert-action-card"
 import { AlertList } from "@/components/notifications/alert-list"
-import { TradingZonePanel } from "@/components/notifications/trading-zone-panel"
+import { CoachingVerdictCard } from "@/components/notifications/coaching-verdict-card"
 import { useTradingAlerts } from "@/hooks/use-trading-alerts"
 import { useActiveAccount } from "@/hooks/use-active-account"
+import { cn } from "@/lib/utils"
 
 export function NotificationBell() {
   const [open, setOpen] = useState(false)
   const { activeAccount } = useActiveAccount()
-  const { active, topAction, history, unreadCount, zones, isLoading, markRead } = useTradingAlerts()
-
-  const showRedDot = zones?.overallZone === "red" && !open
+  const { active, history, unreadCount, verdict, isLoading, markRead } = useTradingAlerts()
 
   async function handleHistoryClick(id: string) {
     await markRead({ ids: [id] })
@@ -26,17 +24,22 @@ export function NotificationBell() {
     await markRead({ all: true })
   }
 
+  const hasUrgent = verdict?.level === "stop" || active.some((a) => a.severity === "danger")
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setOpen} modal={false}>
       <PopoverTrigger asChild>
         <Button variant="outline" size="icon" className="relative" aria-label="Trading alerts">
           <Bell className="h-4 w-4" />
-          {unreadCount > 0 ? (
-            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold text-white">
-              {unreadCount > 9 ? "9+" : unreadCount}
+          {unreadCount > 0 || hasUrgent ? (
+            <span
+              className={cn(
+                "absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white",
+                hasUrgent ? "bg-rose-500" : "bg-rose-500",
+              )}
+            >
+              {unreadCount > 0 ? (unreadCount > 9 ? "9+" : unreadCount) : "!"}
             </span>
-          ) : showRedDot ? (
-            <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-background" />
           ) : null}
         </Button>
       </PopoverTrigger>
@@ -55,9 +58,9 @@ export function NotificationBell() {
           </div>
         </div>
 
-        <TradingZonePanel zones={zones} loading={isLoading} />
-
-        <AlertActionCard alert={topAction} loading={isLoading} />
+        <div className="border-b p-3">
+          <CoachingVerdictCard verdict={verdict} loading={isLoading} compact />
+        </div>
 
         <Tabs defaultValue="active" className="gap-0">
           <div className="border-b px-4 py-2">

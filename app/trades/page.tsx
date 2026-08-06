@@ -9,7 +9,7 @@ export default function TradesPage() {
         </p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">Trade History</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          View, filter, and manage your recorded trades.
+          Filter by period, view summary stats, and manage your recorded trades.
         </p>
       </div>
       <TradeHistory />

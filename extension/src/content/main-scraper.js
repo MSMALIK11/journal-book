@@ -278,7 +278,8 @@ async function jbMainScrape() {
   ingest()
 
   if (scroller) {
-    const maxSteps = importAll ? 300 : 15
+    // Refresh needs enough scroll to catch recent closes + current opens (opens sit at top).
+    const maxSteps = importAll ? 300 : 60
     scroller.scrollTop = 0
     await new Promise((r) => setTimeout(r, 150))
     ingest()

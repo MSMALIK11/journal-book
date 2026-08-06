@@ -36,6 +36,7 @@ type ActiveAccountContextValue = {
   switchVersion: number
   switchAccount: (accountId: string) => Promise<unknown>
   refresh: () => Promise<AccountsResponse | undefined>
+  revalidateSyncedData: () => Promise<void>
 }
 
 const ActiveAccountContext = createContext<ActiveAccountContextValue | null>(null)
@@ -87,6 +88,11 @@ export function ActiveAccountProvider({ children }: { children: ReactNode }) {
     [mutate],
   )
 
+  const revalidateSyncedData = useCallback(async () => {
+    setSwitchVersion((value) => value + 1)
+    await revalidateAccountScopedData()
+  }, [])
+
   const value = useMemo<ActiveAccountContextValue>(
     () => ({
       accounts: data?.accounts ?? [],
@@ -97,8 +103,9 @@ export function ActiveAccountProvider({ children }: { children: ReactNode }) {
       switchVersion,
       switchAccount,
       refresh: mutate,
+      revalidateSyncedData,
     }),
-    [data, activeAccount, isLoading, error, switchVersion, switchAccount, mutate],
+    [data, activeAccount, isLoading, error, switchVersion, switchAccount, mutate, revalidateSyncedData],
   )
 
   return createElement(ActiveAccountContext.Provider, { value }, children)

@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { Trash2 } from "lucide-react"
+import { Trash2, Wallet } from "lucide-react"
 import { useState } from "react"
 import {
   AlertDialog,
@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { SettingsSection, SettingsHint } from "@/components/settings/settings-section"
 import { useActiveAccount, revalidateAccountScopedData, type TradingAccountSummary } from "@/hooks/use-active-account"
 import { authFetch } from "@/lib/client-auth"
 import { useToast } from "@/hooks/use-toast"
@@ -64,25 +64,25 @@ function AccountListItem({
   }
 
   return (
-    <div className="flex items-start justify-between gap-3 rounded-lg border p-4">
-      <div className="min-w-0 space-y-1">
+    <div className="flex items-start justify-between gap-3 rounded-xl border border-border/50 bg-muted/15 px-4 py-3.5 transition-colors hover:bg-muted/30">
+      <div className="min-w-0 space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <p className="font-medium">{account.name}</p>
           {account.isDefault ? (
-            <Badge variant="secondary" className="text-xs">
+            <Badge variant="secondary" className="text-[10px] h-5">
               Default
             </Badge>
           ) : null}
           {isActive ? (
-            <Badge variant="outline" className="text-xs">
+            <Badge className="text-[10px] h-5 bg-primary/15 text-primary hover:bg-primary/15">
               Active
             </Badge>
           ) : null}
         </div>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {account.symbols.length ? account.symbols.join(", ") : "No symbols"}
         </p>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-xs tabular-nums text-muted-foreground">
           {tradeCount} trade{tradeCount === 1 ? "" : "s"}
         </p>
       </div>
@@ -90,7 +90,13 @@ function AccountListItem({
       {canDelete ? (
         <AlertDialog>
           <AlertDialogTrigger asChild>
-            <Button variant="outline" size="sm" disabled={deleting} aria-label={`Delete ${account.name}`}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+              disabled={deleting}
+              aria-label={`Delete ${account.name}`}
+            >
               <Trash2 className="h-4 w-4" />
             </Button>
           </AlertDialogTrigger>
@@ -117,25 +123,35 @@ function AccountListItem({
 export function AccountsSettings() {
   const { accounts, activeAccountId, refresh, isLoading } = useActiveAccount()
 
-  if (isLoading) {
-    return <p className="text-muted-foreground">Loading accounts...</p>
-  }
-
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Trading accounts</CardTitle>
-        <CardDescription>
-          All portfolios under your login. Deleting an account also removes its trade records.
-          {" "}
-          <Link href="/accounts" className="text-primary underline-offset-4 hover:underline">
+    <SettingsSection
+      id="accounts"
+      icon={Wallet}
+      iconTone="emerald"
+      title="Trading accounts"
+      description="Portfolios under your login. Deleting removes all trade records in that account."
+      defaultOpen
+      badge={
+        !isLoading && accounts.length > 0 ? (
+          <Badge variant="outline" className="text-[10px] font-normal">
+            {accounts.length} account{accounts.length === 1 ? "" : "s"}
+          </Badge>
+        ) : null
+      }
+    >
+      <div className="space-y-3">
+        <SettingsHint>
+          <Link href="/accounts" className="font-medium text-foreground underline-offset-4 hover:underline">
             Manage symbols & create accounts
           </Link>
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {accounts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No accounts yet. Sync trades from TradingView.</p>
+          {" — "}
+          add or rename portfolios from the accounts page.
+        </SettingsHint>
+
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground py-2">Loading accounts...</p>
+        ) : accounts.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">No accounts yet. Sync trades from TradingView.</p>
         ) : (
           accounts.map((account) => (
             <AccountListItem
@@ -146,7 +162,7 @@ export function AccountsSettings() {
             />
           ))
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </SettingsSection>
   )
 }

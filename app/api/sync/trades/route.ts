@@ -3,10 +3,16 @@ import connectDB from "@/app/api/db/mongoose"
 import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
-import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
+import { dropSupersededOpenTradesFromPayload, priceMatchesInstrument } from "@/lib/trading/price-sanity"
+import {
+  purgeSupersededOpenTrades,
+  reconcileStaleOpenTrades,
+} from "@/lib/trading/reconcile-open-trades"
+import { isOpenSyncedTrade, isOpenTvSignal, isOpenTvTrade } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
 import { publishAccountsUpdated, publishTradesUpdated } from "@/lib/sync-events"
+import { recordTradeSyncEvent } from "@/lib/sync-last-event"
 import { withSyncCors } from "@/lib/sync-cors"
 import { getSyncAuth } from "@/lib/sync-auth"
 import { touchSyncHeartbeat } from "@/lib/sync-heartbeat"
@@ -114,6 +120,42 @@ export async function POST(request: NextRequest) {
       : null
 
     if (parsed.data.trades.length === 0) {
+      let closedStale = 0
+      if (parsed.data.reconcileOpens) {
+        closedStale = await reconcileStaleOpenTrades(
+          auth.userId,
+          parsed.data.reconcileOpens.instrument,
+          parsed.data.reconcileOpens.opens,
+        )
+      }
+      closedStale += await purgeSupersededOpenTrades(
+        auth.userId,
+        parsed.data.reconcileOpens?.instrument || chartSymbolOverride || undefined,
+      )
+      if (closedStale > 0) {
+        const symbol = canonicalInstrumentSymbol(
+          parsed.data.reconcileOpens?.instrument || chartSymbolOverride || "",
+        )
+        if (symbol) {
+          const account = resolveAccountForInstrument(accounts, symbol)
+          const accountId = String(account._id)
+          const event = await recordTradeSyncEvent(auth.userId, {
+            accountId,
+            accountName: account.name,
+            imported: 0,
+            updated: closedStale,
+            skipped: 0,
+          })
+          publishTradesUpdated(auth.userId, accountId, {
+            eventId: event.eventId,
+            imported: 0,
+            updated: closedStale,
+            skipped: 0,
+            accountName: account.name,
+          })
+        }
+      }
+
       if (newAccounts.length) {
         publishAccountsUpdated(auth.userId, {
           created: newAccounts,
@@ -125,10 +167,11 @@ export async function POST(request: NextRequest) {
         request,
         NextResponse.json({
           imported: 0,
-          updated: 0,
+          updated: closedStale,
           skipped: 0,
           deduped: 0,
           reassigned: 0,
+          closedStale,
           accountsCreated: newAccounts.map((account) => account.name),
           newAccounts,
           byAccount: {},
@@ -141,9 +184,70 @@ export async function POST(request: NextRequest) {
     let skipped = 0
     const byAccount: Record<string, { name: string; imported: number; updated: number; skipped: number }> = {}
     const touchedAccounts = new Set<string>()
+    type TradeSnapshot = {
+      id: string
+      instrument: string
+      trade_type: string
+      entry_date: string
+      entry_price: number
+      signal?: string | null
+    }
+    const latestImportedByAccount: Record<string, TradeSnapshot> = {}
+    const latestOpenImportedByAccount: Record<string, TradeSnapshot> = {}
+    const latestUpdatedByAccount: Record<string, TradeSnapshot> = {}
 
-    for (const tvTrade of parsed.data.trades) {
+    const incomingTrades = dropSupersededOpenTradesFromPayload(parsed.data.trades)
+    skipped += parsed.data.trades.length - incomingTrades.length
+
+    // Latest closed entry per instrument already in DB — blocks resurrected ghost opens.
+    const closedCeiling = new Map<string, number>()
+    {
+      const existingRows = await Trade.find({
+        userId: auth.userId,
+        source: "tradingview",
+      })
+        .select("instrument entry_date exit_date signal tags")
+        .lean()
+      for (const row of existingRows) {
+        if (isOpenSyncedTrade(row)) continue
+        const key = canonicalInstrumentSymbol(String(row.instrument || ""))
+        const ms = row.entry_date ? new Date(row.entry_date).getTime() : NaN
+        if (!key || !Number.isFinite(ms)) continue
+        const prev = closedCeiling.get(key) ?? -Infinity
+        if (ms > prev) closedCeiling.set(key, ms)
+      }
+      for (const trade of incomingTrades) {
+        if (isOpenTvTrade(trade)) continue
+        const key = canonicalInstrumentSymbol(trade.instrument)
+        let ms = NaN
+        try {
+          ms = new Date(trade.entry.datetime).getTime()
+        } catch {
+          ms = NaN
+        }
+        if (!key || !Number.isFinite(ms)) continue
+        const prev = closedCeiling.get(key) ?? -Infinity
+        if (ms > prev) closedCeiling.set(key, ms)
+      }
+    }
+
+    for (const tvTrade of incomingTrades) {
       const symbol = chartSymbolOverride || canonicalInstrumentSymbol(tvTrade.instrument)
+
+      if (!priceMatchesInstrument(tvTrade.entry?.price, symbol)) {
+        skipped += 1
+        continue
+      }
+
+      if (isOpenTvTrade(tvTrade)) {
+        const ceiling = closedCeiling.get(symbol) ?? closedCeiling.get(canonicalInstrumentSymbol(symbol))
+        const entryMs = new Date(tvTrade.entry.datetime).getTime()
+        if (ceiling != null && Number.isFinite(entryMs) && entryMs < ceiling) {
+          skipped += 1
+          continue
+        }
+      }
+
       const resolved = await resolveOrCreateAccountForInstrument(
         auth.userId,
         symbol,
@@ -173,10 +277,22 @@ export async function POST(request: NextRequest) {
       }
 
       if (!existing) {
-        await Trade.create(mapped)
+        const created = await Trade.create(mapped)
         imported += 1
         byAccount[accountId].imported += 1
         touchedAccounts.add(accountId)
+        const snapshot: TradeSnapshot = {
+          id: String(created._id),
+          instrument: mapped.instrument,
+          trade_type: mapped.trade_type,
+          entry_date: mapped.entry_date.toISOString(),
+          entry_price: mapped.entry_price,
+          signal: mapped.signal ?? null,
+        }
+        latestImportedByAccount[accountId] = snapshot
+        if (isOpenSyncedTrade(mapped) || isOpenTvSignal(mapped.signal)) {
+          latestOpenImportedByAccount[accountId] = snapshot
+        }
         continue
       }
 
@@ -186,6 +302,14 @@ export async function POST(request: NextRequest) {
         updated += 1
         byAccount[accountId].updated += 1
         touchedAccounts.add(accountId)
+        latestUpdatedByAccount[accountId] = {
+          id: String(existing._id),
+          instrument: mapped.instrument,
+          trade_type: mapped.trade_type,
+          entry_date: mapped.entry_date.toISOString(),
+          entry_price: mapped.entry_price,
+          signal: mapped.signal ?? null,
+        }
       } else if (existing.accountId !== accountId) {
         existing.accountId = accountId
         await existing.save()
@@ -199,6 +323,41 @@ export async function POST(request: NextRequest) {
     }
 
     const deduped = await dedupeSyncedTradesByExternalId(auth.userId)
+
+    let closedStale = 0
+    if (parsed.data.reconcileOpens) {
+      closedStale = await reconcileStaleOpenTrades(
+        auth.userId,
+        parsed.data.reconcileOpens.instrument,
+        parsed.data.reconcileOpens.opens,
+      )
+    }
+
+    const purged = await purgeSupersededOpenTrades(
+      auth.userId,
+      parsed.data.reconcileOpens?.instrument || chartSymbolOverride || undefined,
+    )
+    closedStale += purged
+
+    if (closedStale > 0) {
+      const symbol = canonicalInstrumentSymbol(
+        parsed.data.reconcileOpens?.instrument || chartSymbolOverride || incomingTrades[0]?.instrument || "",
+      )
+      if (symbol) {
+        const account = resolveAccountForInstrument(accounts, symbol)
+        touchedAccounts.add(String(account._id))
+        const accountId = String(account._id)
+        if (!byAccount[accountId]) {
+          byAccount[accountId] = {
+            name: account.name,
+            imported: 0,
+            updated: 0,
+            skipped: 0,
+          }
+        }
+        byAccount[accountId].updated += closedStale
+      }
+    }
 
     const { moved: reassigned, accountIds: reassignedAccountIds } = await reconcileTradeAccounts(
       auth.userId,
@@ -217,11 +376,29 @@ export async function POST(request: NextRequest) {
     for (const accountId of touchedAccounts) {
       const stats = byAccount[accountId]
       if (stats.imported > 0 || stats.updated > 0) {
+        const event = await recordTradeSyncEvent(auth.userId, {
+          accountId,
+          accountName: stats.name,
+          imported: stats.imported,
+          updated: stats.updated,
+          skipped: stats.skipped,
+          // Prefer newly imported OPEN trade so clients only alarm on opens.
+          latestTrade:
+            stats.imported > 0
+              ? latestOpenImportedByAccount[accountId] || latestImportedByAccount[accountId]
+              : undefined,
+        })
+
         publishTradesUpdated(auth.userId, accountId, {
+          eventId: event.eventId,
           imported: stats.imported,
           updated: stats.updated,
           skipped: stats.skipped,
           accountName: stats.name,
+          latestTrade:
+            stats.imported > 0
+              ? latestOpenImportedByAccount[accountId] || latestImportedByAccount[accountId]
+              : undefined,
         })
       }
     }
@@ -229,7 +406,19 @@ export async function POST(request: NextRequest) {
     const byAccountSummary = Object.fromEntries(
       Object.entries(byAccount)
         .filter(([, stats]) => stats.imported > 0 || stats.updated > 0 || stats.skipped > 0)
-        .map(([id, stats]) => [id, { name: stats.name, ...stats }]),
+        .map(([id, stats]) => [
+          id,
+          {
+            name: stats.name,
+            imported: stats.imported,
+            updated: stats.updated,
+            skipped: stats.skipped,
+            latestTrade:
+              stats.imported > 0
+                ? latestOpenImportedByAccount[id] || latestImportedByAccount[id]
+                : undefined,
+          },
+        ]),
     )
 
     await touchSyncHeartbeat(auth.userId)
@@ -238,16 +427,17 @@ export async function POST(request: NextRequest) {
       request,
       NextResponse.json({
         imported,
-        updated,
+        updated: updated + closedStale,
         skipped,
         deduped,
         reassigned,
+        closedStale,
         accountsCreated: newAccounts.map((account) => account.name),
         newAccounts,
         switchToAccountId:
           newAccounts.length > 0
             ? newAccounts[newAccounts.length - 1].id
-            : imported > 0 || updated > 0
+            : imported > 0 || updated > 0 || closedStale > 0
               ? Object.entries(byAccountSummary).sort(
                   (a, b) => b[1].imported + b[1].updated - (a[1].imported + a[1].updated),
                 )[0]?.[0]

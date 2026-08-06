@@ -1,13 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
-import { usePathname } from "next/navigation"
-import { BarChart3, Calendar, FileText, Home, Microscope, PlusCircle, Settings, TrendingUp, LogOut, Menu, X, Calculator, Radio } from "lucide-react"
+import { usePathname, useRouter } from "next/navigation"
+import { BarChart3, Calendar, FileText, Home, Microscope, PlusCircle, Settings, LogOut, Menu, X, Calculator, Radio } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { signOut } from "@/lib/client-auth"
-import { useRouter } from "next/navigation"
 import { AccountSwitcher } from "@/components/accounts/account-switcher"
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: Home },  
@@ -19,7 +18,6 @@ const navigation = [
   { name: "Analytics", href: "/analytics", icon: BarChart3, description: "Backtest & performance insights" },
   { name: "Research", href: "/research", icon: Microscope, description: "Patterns & trading style" },
   { name: "Calendar", href: "/calendar", icon: Calendar },
-  { name: "Reports", href: "/reports", icon: TrendingUp },
   { name: "Settings", href: "/settings", icon: Settings },
 ]
 
@@ -27,6 +25,10 @@ export function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
+
+  useEffect(() => {
+    setIsMobileMenuOpen(false)
+  }, [pathname])
 
   const handleSignOut = async () => {
     await signOut()
@@ -45,7 +47,7 @@ export function Sidebar() {
       {/* Sidebar */}
       <div
         className={cn(
-          "fixed inset-y-0 left-0 z-40 w-64 bg-background border-r transform transition-transform duration-200 ease-in-out lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 w-64 bg-background border-r transform transition-transform duration-200 ease-in-out lg:translate-x-0",
           isMobileMenuOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -65,6 +67,7 @@ export function Sidebar() {
                 <Link
                   key={item.name}
                   href={item.href}
+                  prefetch
                   title={"description" in item ? item.description : undefined}
                   className={cn(
                     "flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors",
@@ -93,7 +96,7 @@ export function Sidebar() {
       {/* Mobile overlay */}
       {isMobileMenuOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black bg-opacity-50 lg:hidden"
+          className="fixed inset-0 z-40 bg-black bg-opacity-50 lg:hidden"
           onClick={() => setIsMobileMenuOpen(false)}
         />
       )}

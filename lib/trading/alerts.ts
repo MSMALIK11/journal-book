@@ -45,6 +45,10 @@ export type AlertCategory =
   | "session_deadzone"
   | "session_overlap"
   | "session_key"
+  | "avoidance_impact"
+  | "drawdown_warning"
+  | "weekly_momentum"
+  | "session_boundary"
 
 export type AlertContext = {
   hour?: number
@@ -82,6 +86,10 @@ export type AlertPreferences = {
   deadZoneAlerts: boolean
   overlapAlerts: boolean
   keySessionAlerts: boolean
+  avoidanceAlerts: boolean
+  drawdownAlerts: boolean
+  weeklyMomentumAlerts: boolean
+  sessionBoundaryAlerts: boolean
 }
 
 export const DEFAULT_ALERT_PREFERENCES: AlertPreferences = {
@@ -99,6 +107,10 @@ export const DEFAULT_ALERT_PREFERENCES: AlertPreferences = {
   deadZoneAlerts: true,
   overlapAlerts: true,
   keySessionAlerts: true,
+  avoidanceAlerts: true,
+  drawdownAlerts: true,
+  weeklyMomentumAlerts: true,
+  sessionBoundaryAlerts: true,
 }
 
 export type EvaluateAlertsOptions = {
@@ -108,7 +120,7 @@ export type EvaluateAlertsOptions = {
   preferences?: Partial<AlertPreferences>
 }
 
-export const MAX_ACTIVE_ALERTS = 3
+export const MAX_ACTIVE_ALERTS = 5
 
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -125,10 +137,27 @@ function dayKey(date: Date, timezone: string) {
 }
 
 const SEVERITY_WEIGHT: Record<AlertSeverity, number> = {
-  danger: 3,
-  warning: 2,
-  success: 1.5,
+  danger: 4,
+  warning: 2.5,
+  success: 1.2,
   info: 1,
+}
+
+const CATEGORY_URGENCY: Partial<Record<AlertCategory, number>> = {
+  streak: 5,
+  behavior_tilt: 5,
+  behavior_overtrade: 4.5,
+  drawdown_warning: 4,
+  research_leak: 3.5,
+  analytics_avoid: 3,
+  session_deadzone: 2.5,
+  avoidance_impact: 2.5,
+  weekly_momentum: 2,
+  session_boundary: 1.8,
+  behavior_recovery: 1.5,
+  session_key: 1.2,
+  research_edge: 1.2,
+  analytics_best: 1,
 }
 
 function extractNetPnl(alert: TradingAlertPayload): number {
@@ -139,10 +168,12 @@ function extractNetPnl(alert: TradingAlertPayload): number {
 }
 
 export function computeAlertPriority(alert: TradingAlertPayload): number {
-  const pnl = extractNetPnl(alert)
+  const pnl = Math.max(extractNetPnl(alert), 50)
   const severityWeight = SEVERITY_WEIGHT[alert.severity] ?? 1
+  const urgencyWeight = CATEGORY_URGENCY[alert.category] ?? 1.5
   const recencyWeight = alert.category.startsWith("behavior") ? 1.5 : 1
-  return pnl * severityWeight * recencyWeight
+  const actionWeight = alert.action ? 1.2 : 1
+  return pnl * severityWeight * urgencyWeight * recencyWeight * actionWeight
 }
 
 function withPriority(alert: TradingAlertPayload): TradingAlertPayload {
@@ -194,6 +225,14 @@ function filterByPreferences(
         return preferences.weakHours || preferences.weakSessions
       case "analytics_best":
         return preferences.edgeAlerts
+      case "avoidance_impact":
+        return preferences.avoidanceAlerts
+      case "drawdown_warning":
+        return preferences.drawdownAlerts
+      case "weekly_momentum":
+        return preferences.weeklyMomentumAlerts
+      case "session_boundary":
+        return preferences.sessionBoundaryAlerts
       default:
         return true
     }
@@ -591,6 +630,196 @@ function evaluateSessionSpecialAlerts(
   }
 }
 
+function getMinutesSinceSessionStart(hour: number, minute: number, session: TradingSession): number {
+  const def = getSessionDef(session)
+  const nowMin = hour * 60 + minute
+  if (def.start <= nowMin) return nowMin - def.start
+  return 24 * 60 - def.start + nowMin
+}
+
+function evaluateAdvancedAlerts(
+  alerts: TradingAlertPayload[],
+  analytics: ReturnType<typeof computeAnalytics>,
+  research: ReturnType<typeof computeResearchInsights>,
+  session: TradingSession,
+  sessionLabel: string,
+  hour: number,
+  minute: number,
+  dateKey: string,
+  baseContext: AlertContext,
+  thresholds: ZoneThresholds,
+) {
+  const whatIf = research.whatIf
+
+  if (whatIf?.scenarios?.length) {
+    const bestScenario = [...whatIf.scenarios].sort((a, b) => b.delta.netPnl - a.delta.netPnl)[0]
+    const inWeakWindow =
+      analytics.avoid.sessions.some((s) => s.key === session) ||
+      analytics.avoid.hours.some((h) => h.key === String(hour))
+
+    if (bestScenario && bestScenario.delta.netPnl >= 100 && inWeakWindow) {
+      alerts.push(
+        withPriority({
+          key: `avoidance_impact:${session}:${dateKey}`,
+          category: "avoidance_impact",
+          severity: "warning",
+          title: `Skipping weak windows could've saved ${currency.format(bestScenario.delta.netPnl)}`,
+          message: whatIf.summary || bestScenario.description,
+          metric: `${bestScenario.tradesRemoved} trades removed · ${bestScenario.delta.winRate.toFixed(1)} pts WR`,
+          action: "Consider sitting out until a stronger session",
+          context: { ...baseContext, session, zone: "red" },
+        }),
+      )
+    }
+  }
+
+  const maxDd = analytics.overview.maxDrawdown
+  const currentDd = analytics.equityCurve.at(-1)?.drawdown ?? 0
+  if (maxDd > 0 && currentDd >= maxDd * 0.75) {
+    alerts.push(
+      withPriority({
+        key: `drawdown_warning:${dateKey}`,
+        category: "drawdown_warning",
+        severity: currentDd >= maxDd * 0.9 ? "danger" : "warning",
+        title:
+          currentDd >= maxDd * 0.9
+            ? "Near max drawdown — size down"
+            : "Drawdown building — be selective",
+        message: `Current drawdown ${currency.format(currentDd)} vs max ${currency.format(maxDd)}.`,
+        metric: `${analytics.overview.maxDrawdownPct.toFixed(1)}% max DD`,
+        action: "Reduce size or pause until conditions improve",
+        context: baseContext,
+      }),
+    )
+  }
+}
+
+function evaluateWeeklyMomentum(
+  alerts: TradingAlertPayload[],
+  trades: ResearchTrade[],
+  timezone: string,
+  now: Date,
+  dateKey: string,
+  baseContext: AlertContext,
+) {
+  const closed = trades.filter(
+    (t): t is ResearchTrade & { net_pnl: number } => typeof t.net_pnl === "number",
+  )
+  if (closed.length < MIN_BUCKET_TRADES * 2) return
+
+  const weekMs = 7 * 24 * 60 * 60 * 1000
+  const thisWeekStart = now.getTime() - weekMs
+  const prevWeekStart = now.getTime() - 2 * weekMs
+
+  function bucketStats(from: number, to: number) {
+    const slice = closed.filter((t) => {
+      const exit = t.exit_date ? new Date(t.exit_date).getTime() : new Date(t.entry_date).getTime()
+      return exit >= from && exit < to
+    })
+    const wins = slice.filter((t) => t.net_pnl > 0).length
+    const netPnl = slice.reduce((s, t) => s + t.net_pnl, 0)
+    return {
+      trades: slice.length,
+      winRate: slice.length ? (wins / slice.length) * 100 : 0,
+      netPnl,
+    }
+  }
+
+  const thisWeek = bucketStats(thisWeekStart, now.getTime())
+  const lastWeek = bucketStats(prevWeekStart, thisWeekStart)
+
+  if (thisWeek.trades < MIN_BUCKET_TRADES || lastWeek.trades < MIN_BUCKET_TRADES) return
+
+  const wrDrop = lastWeek.winRate - thisWeek.winRate
+  const pnlDrop = lastWeek.netPnl - thisWeek.netPnl
+
+  if (wrDrop >= 10 || pnlDrop >= 200) {
+    alerts.push(
+      withPriority({
+        key: `weekly_momentum:${dateKey}`,
+        category: "weekly_momentum",
+        severity: wrDrop >= 15 || pnlDrop >= 500 ? "danger" : "warning",
+        title: "This week is weaker than last week",
+        message: `Win rate ${thisWeek.winRate.toFixed(0)}% vs ${lastWeek.winRate.toFixed(0)}% prior week.`,
+        metric: `${currency.format(thisWeek.netPnl)} vs ${currency.format(lastWeek.netPnl)} prior week`,
+        action: "Review what changed — size down until edge returns",
+        context: baseContext,
+      }),
+    )
+  } else if (thisWeek.winRate - lastWeek.winRate >= 10 && thisWeek.netPnl > lastWeek.netPnl) {
+    alerts.push(
+      withPriority({
+        key: `weekly_momentum_up:${dateKey}`,
+        category: "weekly_momentum",
+        severity: "success",
+        title: "This week is stronger than last week",
+        message: `Win rate ${thisWeek.winRate.toFixed(0)}% vs ${lastWeek.winRate.toFixed(0)}% prior week.`,
+        metric: `${currency.format(thisWeek.netPnl)} vs ${currency.format(lastWeek.netPnl)} prior week`,
+        action: "Stay disciplined — don't overtrade the hot streak",
+        context: baseContext,
+      }),
+    )
+  }
+
+  void timezone
+}
+
+function evaluateSessionBoundaryAlert(
+  alerts: TradingAlertPayload[],
+  analytics: ReturnType<typeof computeAnalytics>,
+  session: TradingSession,
+  sessionLabel: string,
+  hour: number,
+  minute: number,
+  dateKey: string,
+  baseContext: AlertContext,
+  thresholds: ZoneThresholds,
+) {
+  const minutesIn = getMinutesSinceSessionStart(hour, minute, session)
+  if (minutesIn > 8) return
+
+  const bucket = analytics.bySession.find((b) => b.key === session)
+  const def = getSessionDef(session)
+
+  if (bucket && bucket.trades >= MIN_BUCKET_TRADES) {
+    const zone = classifyZone(bucket, thresholds)
+    alerts.push(
+      withPriority({
+        key: `session_boundary:${session}:${dateKey}`,
+        category: "session_boundary",
+        severity: zone === "green" ? "success" : zone === "red" ? "warning" : "info",
+        title: `${def.shortLabel} just opened`,
+        message:
+          zone === "green"
+            ? `Strong window for you — ${bucket.winRate.toFixed(0)}% WR historically.`
+            : zone === "red"
+              ? `Historically weak — ${bucket.winRate.toFixed(0)}% WR, ${currency.format(bucket.netPnl)}.`
+              : `Average window — ${bucket.winRate.toFixed(0)}% WR in your data.`,
+        metric: formatMetric(bucket),
+        action:
+          zone === "green"
+            ? "Focus your best setups here"
+            : zone === "red"
+              ? "Skip or reduce size"
+              : "Trade selectively",
+        context: { ...baseContext, session, zone },
+      }),
+    )
+  } else if (def.tier === 5) {
+    alerts.push(
+      withPriority({
+        key: `session_boundary:${session}:${dateKey}`,
+        category: "session_boundary",
+        severity: "info",
+        title: `${def.shortLabel} just opened`,
+        message: `${sessionLabel} (${def.timeRange}) — key session window.`,
+        action: "Review your stats before trading",
+        context: { ...baseContext, session },
+      }),
+    )
+  }
+}
+
 function mergeDuplicateDimensionAlerts(alerts: TradingAlertPayload[]): TradingAlertPayload[] {
   const dropKeys = new Set<string>()
   const groups: Array<{ categories: AlertCategory[]; getKey: (a: TradingAlertPayload) => string }> = [
@@ -605,8 +834,11 @@ function mergeDuplicateDimensionAlerts(alerts: TradingAlertPayload[]): TradingAl
         "analytics_best",
         "session_key",
         "session_overlap",
+        "session_boundary",
         "research_edge",
         "research_leak",
+        "instrument_session",
+        "avoidance_impact",
       ],
       getKey: (a) => `session:${a.context.session ?? ""}`,
     },
@@ -653,9 +885,11 @@ export function rankAndCapAlerts(
 export function getTopActionAlert(
   alerts: TradingAlertPayload[],
 ): TradingAlertPayload | null {
-  const ranked = [...alerts]
+  const merged = mergeDuplicateDimensionAlerts(
+    alerts.map((a) => ({ ...a, priority: a.priority ?? computeAlertPriority(a) })),
+  )
+  const ranked = [...merged]
     .filter((a) => a.category !== "digest" && a.category !== "today")
-    .map((a) => ({ ...a, priority: a.priority ?? computeAlertPriority(a) }))
     .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
   return ranked[0] ?? null
 }
@@ -846,7 +1080,7 @@ export function evaluateTradingAlerts(
       withPriority({
         key: `streak:loss:${dateKey}`,
         category: "streak",
-        severity: "warning",
+        severity: streak.count >= 4 ? "danger" : "warning",
         title: `${streak.count} losses in a row`,
         message: "Consider a short break before the next trade.",
         metric:
@@ -865,6 +1099,33 @@ export function evaluateTradingAlerts(
   const todayStats = computeTodayStats(closed, timezone, now)
 
   evaluateBehaviorAlerts(alerts, research, closed, todayStats, dateKey, baseContext)
+
+  evaluateAdvancedAlerts(
+    alerts,
+    analytics,
+    research,
+    session,
+    sessionLabel,
+    hour,
+    minute,
+    dateKey,
+    baseContext,
+    thresholds,
+  )
+
+  evaluateWeeklyMomentum(alerts, trades, timezone, now, dateKey, baseContext)
+
+  evaluateSessionBoundaryAlert(
+    alerts,
+    analytics,
+    session,
+    sessionLabel,
+    hour,
+    minute,
+    dateKey,
+    baseContext,
+    thresholds,
+  )
 
   if (todayStats.closed > 0) {
     const todayZone =
@@ -1003,6 +1264,30 @@ export function buildDailyDigest(
       ? `Plan: avoid ${worstSession.label}.`
       : null
   if (planLine) parts.push(planLine)
+
+  const whatIf = computeResearchInsights(trades, { timezone }).whatIf
+  const bestScenario = whatIf?.scenarios?.length
+    ? [...whatIf.scenarios].sort((a, b) => b.delta.netPnl - a.delta.netPnl)[0]
+    : null
+  if (bestScenario && bestScenario.delta.netPnl >= 100) {
+    parts.push(
+      `What-if: ${bestScenario.title} could've improved P&L by ${currency.format(bestScenario.delta.netPnl)}.`,
+    )
+  }
+
+  const nextKeySession = ["LondonOpen", "NewYorkOpen", "LondonNyOverlap"] as const
+  const upcoming = nextKeySession
+    .map((key) => {
+      const def = getSessionDef(key)
+      const bucket = analytics.bySession.find((b) => b.key === key)
+      if (!bucket || bucket.trades < MIN_BUCKET_TRADES) return null
+      const zone = classifyZone(bucket, zones.thresholds)
+      return `${shortSessionLabel(SESSION_LABELS[key])} (${def.timeRange.split("–")[0]?.trim()}): ${zone === "green" ? "strong" : zone === "red" ? "weak" : "avg"}`
+    })
+    .filter(Boolean)
+  if (upcoming.length) {
+    parts.push(`Today's key windows — ${upcoming.join(" · ")}.`)
+  }
 
   if (todayStats.closed > 0) {
     parts.push(

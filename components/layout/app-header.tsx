@@ -1,6 +1,7 @@
 "use client"
 
 import { NotificationBell } from "@/components/notifications/notification-bell"
+import { TradingMomentBell } from "@/components/notifications/trading-moment-bell"
 import { SessionTimeline } from "@/components/notifications/session-timeline"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { useTradingAlerts } from "@/hooks/use-trading-alerts"
@@ -13,6 +14,7 @@ export function AppHeader() {
       {!isLoading && zones ? (
         <SessionTimeline zones={zones} compact activeOnly className="hidden sm:flex mr-1" />
       ) : null}
+      <TradingMomentBell />
       <NotificationBell />
       <ThemeToggle />
     </header>
