@@ -15,7 +15,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  SettingsHint,
   SettingsRow,
   SettingsSection,
 } from "@/components/settings/settings-section"
@@ -33,7 +32,6 @@ export function AutoExportSettings() {
   const { toast } = useToast()
   const [preferences, setPreferences] = useState<AutoExportPreferences>(DEFAULT_AUTO_EXPORT_PREFERENCES)
   const [timezone, setTimezone] = useState("Asia/Kolkata")
-  const [exportFolderPath, setExportFolderPath] = useState("~/TradingJournal/live-sync")
   const [loading, setLoading] = useState(true)
   const [savingKey, setSavingKey] = useState<string | null>(null)
   const [exportingDaily, setExportingDaily] = useState(false)
@@ -47,7 +45,6 @@ export function AutoExportSettings() {
         if (!response.ok) throw new Error(data.error || "Failed to load settings")
         setPreferences(normalizeAutoExportPreferences(data.preferences))
         setTimezone(data.timezone || "Asia/Kolkata")
-        if (data.exportFolderPath) setExportFolderPath(data.exportFolderPath)
       } catch (error) {
         toast({
           title: "Could not load auto-export settings",
@@ -81,7 +78,6 @@ export function AutoExportSettings() {
       if (!response.ok) throw new Error(data.error || "Failed to save")
       setPreferences(normalizeAutoExportPreferences(data.preferences))
       setTimezone(data.timezone || timezone)
-      if (data.exportFolderPath) setExportFolderPath(data.exportFolderPath)
     } catch (error) {
       setPreferences(previous)
       toast({
@@ -99,7 +95,6 @@ export function AutoExportSettings() {
     const prefsData = await prefsResponse.json()
     if (prefsResponse.ok) {
       setPreferences(normalizeAutoExportPreferences(prefsData.preferences))
-      if (prefsData.exportFolderPath) setExportFolderPath(prefsData.exportFolderPath)
     }
   }
 
@@ -268,17 +263,6 @@ export function AutoExportSettings() {
             />
           </div>
         </div>
-
-        <SettingsHint>
-          Files save in your Mac home folder (not browser Downloads, not the project repo):
-          <br />
-          <strong className="text-foreground">{exportFolderPath}/</strong>
-          <br />
-          Daily: <strong className="text-foreground">YYYY-MM-DD.csv</strong> · Monthly:{" "}
-          <strong className="text-foreground">YYYY-MM.csv</strong>
-          <br />
-          Keep the app open for scheduled runs. Finder → Go → Home → TradingJournal.
-        </SettingsHint>
 
         {preferences.lastExportPath ? (
           <div className="rounded-xl border border-border/50 bg-muted/10 px-4 py-3 text-sm">
