@@ -62,7 +62,11 @@
     <p>Generate a sync key in journal-book Profile settings, then paste it here.</p>
 
     <label for="apiUrl">Journal Book API URL</label>
-    <input id="apiUrl" placeholder="http://localhost:3000" />
+    <input id="apiUrl" placeholder="https://your-app.vercel.app" />
+    <p class="hint">
+      Live site: <code>https://your-app.vercel.app</code> (no trailing slash). Local dev:
+      <code>http://localhost:3000</code>. On save, Chrome may ask permission for the live domain — allow it.
+    </p>
 
     <label for="syncToken">Sync API Key</label>
     <input id="syncToken" placeholder="jb_sync_..." />

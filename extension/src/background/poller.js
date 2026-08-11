@@ -1,9 +1,10 @@
 /* global JBSync */
-const VERSION = "1.15.1"
+const VERSION = "1.16.0"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 120
-const JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
+const LOCAL_JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
+const JOURNAL_SCRIPT_ID = "jb-journal-bridge-dynamic"
 
 importScripts("../lib/symbol-utils.js", "../lib/sync-client.js")
 
@@ -16,6 +17,56 @@ let lastJournalSyncAt = 0
 let lastTableSyncAt = 0
 const JOURNAL_SYNC_MIN_MS = 3_000
 const TABLE_SYNC_MIN_MS = 350
+
+async function journalOrigin() {
+  try {
+    const config = await JBSync.getConfig()
+    return new URL(config.apiUrl).origin
+  } catch {
+    return ""
+  }
+}
+
+async function isJournalTabUrl(url) {
+  if (!url) return false
+  if (LOCAL_JOURNAL_URL.test(url)) return true
+  const origin = await journalOrigin()
+  return Boolean(origin) && url.startsWith(origin)
+}
+
+/**
+ * Static manifest matches only cover localhost + *.vercel.app.
+ * Custom production domains need the bridge registered at runtime, after the
+ * user grants the optional host permission in Options.
+ */
+async function ensureJournalBridgeRegistration() {
+  const config = await JBSync.getConfig()
+  const pattern = JBSync.journalOriginPattern(config.apiUrl)
+  if (LOCAL_JOURNAL_URL.test(pattern) || /\/\/[^/]*\.vercel\.app\//.test(pattern)) return
+
+  const granted = await chrome.permissions.contains({ origins: [pattern] }).catch(() => false)
+  if (!granted) return
+
+  const existing = await chrome.scripting
+    .getRegisteredContentScripts({ ids: [JOURNAL_SCRIPT_ID] })
+    .catch(() => [])
+  if (existing[0]?.matches?.includes(pattern)) return
+  if (existing.length) {
+    await chrome.scripting.unregisterContentScripts({ ids: [JOURNAL_SCRIPT_ID] }).catch(() => {})
+  }
+
+  await chrome.scripting
+    .registerContentScripts([
+      {
+        id: JOURNAL_SCRIPT_ID,
+        matches: [pattern],
+        js: ["src/content/journal-bridge.js"],
+        runAt: "document_idle",
+        persistAcrossSessions: true,
+      },
+    ])
+    .catch(() => {})
+}
 
 async function injectJournalBridge(tabId) {
   try {
@@ -89,8 +140,10 @@ async function injectBridgeOnJournalTabs() {
 }
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === "complete" && tab.url && JOURNAL_URL.test(tab.url)) {
-    void injectJournalBridge(tabId)
+  if (changeInfo.status === "complete" && tab.url) {
+    void (async () => {
+      if (await isJournalTabUrl(tab.url)) await injectJournalBridge(tabId)
+    })()
   }
   if (tab.url && JBSync.isTradingViewChartTab(tab) && (changeInfo.status === "complete" || changeInfo.url)) {
     void JBSync.rememberTvChartTab(tabId)
@@ -282,15 +335,19 @@ function scheduleCaptureSync() {
 chrome.runtime.onInstalled.addListener(() => {
   void syncAlarmFromSettings()
   void sendHeartbeatIfConfigured()
+  void ensureJournalBridgeRegistration()
   void injectBridgeOnJournalTabs()
   void injectHooksOnOpenTvTabs()
 })
 
 chrome.runtime.onStartup.addListener(() => {
   void syncAlarmFromSettings()
+  void ensureJournalBridgeRegistration()
   void injectBridgeOnJournalTabs()
   void injectHooksOnOpenTvTabs()
 })
+
+void ensureJournalBridgeRegistration()
 
 // Keep hooks alive on open TV tabs without asking the user to refresh.
 void injectHooksOnOpenTvTabs()
@@ -319,11 +376,13 @@ async function syncAlarmFromSettings() {
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (
-    area === "sync" &&
-    (changes.pollIntervalSeconds || changes.syncToken || changes.autoSyncTrades)
-  ) {
+  if (area !== "sync") return
+  if (changes.pollIntervalSeconds || changes.syncToken || changes.autoSyncTrades) {
     void syncAlarmFromSettings()
+  }
+  if (changes.apiUrl) {
+    void ensureJournalBridgeRegistration()
+    void injectBridgeOnJournalTabs()
   }
 })
 
@@ -341,6 +400,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "PING") {
     sendResponse({ ok: true, version: VERSION })
     return false
+  }
+
+  if (message.type === "REGISTER_JOURNAL_BRIDGE") {
+    void (async () => {
+      await ensureJournalBridgeRegistration()
+      await injectBridgeOnJournalTabs()
+      sendResponse({ ok: true })
+    })()
+    return true
   }
 
   if (message.type === "POLL_TICK") {

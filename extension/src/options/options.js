@@ -38,6 +38,26 @@ function readPayload() {
   }
 }
 
+/** Live/production domains are optional permissions — ask on save (user gesture). */
+async function ensureHostPermission(apiUrl) {
+  let pattern
+  try {
+    pattern = `${new URL(apiUrl).origin}/*`
+  } catch {
+    return { ok: false, error: "API URL looks invalid — use https://your-app.vercel.app" }
+  }
+
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(pattern)) return { ok: true }
+
+  // Request directly — awaiting permissions.contains() first can drop the user gesture.
+  // Chrome resolves true without a prompt when the origin is already granted.
+  const granted = await chrome.permissions.request({ origins: [pattern] }).catch(() => false)
+  if (!granted) {
+    return { ok: false, error: `Permission denied for ${pattern} — allow it so sync can reach your live site` }
+  }
+  return { ok: true }
+}
+
 async function testConnection(payload) {
   const response = await fetch(`${payload.apiUrl.replace(/\/$/, "")}/api/sync/verify`, {
     headers: {
@@ -57,7 +77,11 @@ document.getElementById("save").addEventListener("click", async () => {
   savedEl.textContent = "Saving..."
   try {
     const payload = readPayload()
+    const permission = await ensureHostPermission(payload.apiUrl)
+    if (!permission.ok) throw new Error(permission.error)
+
     await chrome.storage.sync.set(payload)
+    await chrome.runtime.sendMessage({ type: "REGISTER_JOURNAL_BRIDGE" }).catch(() => {})
     await testConnection(payload)
     savedEl.textContent = payload.pollIntervalSeconds
       ? `Settings saved. Poll every ${formatPollLabel(payload.pollIntervalSeconds)}.`

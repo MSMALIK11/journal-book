@@ -1,15 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Journal Book - TradingView Sync",
-  "version": "1.15.1",
+  "version": "1.16.0",
   "description": "Sync TradingView Strategy Tester trades to journal-book without refreshing TV",
   "permissions": ["storage", "tabs", "scripting", "alarms"],
   "host_permissions": [
     "https://*.tradingview.com/*",
     "https://tradingview.com/*",
     "http://localhost/*",
-    "http://127.0.0.1/*"
+    "http://127.0.0.1/*",
+    "https://*.vercel.app/*"
   ],
+  "optional_host_permissions": ["https://*/*"],
   "background": {
     "service_worker": "src/background/poller.js"
   },
@@ -33,7 +35,7 @@
       "all_frames": true
     },
     {
-      "matches": ["http://localhost/*", "http://127.0.0.1/*"],
+      "matches": ["http://localhost/*", "http://127.0.0.1/*", "https://*.vercel.app/*"],
       "js": ["src/content/journal-bridge.js"],
       "run_at": "document_idle"
     }
