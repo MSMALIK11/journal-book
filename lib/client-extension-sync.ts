@@ -4,8 +4,10 @@ export type ExtensionSyncResult = {
   updated?: number
   skipped?: number
   deduped?: number
+  closedStale?: number
   synced?: number
   message?: string
+  warning?: string
   error?: string
   finishedAt?: string
 }

@@ -4,13 +4,17 @@
   window.__JB_CAPTURE_RELAY__ = true
 
   function forwardCapture(detail) {
-    if (!detail?.changes?.length) return
+    const changes = detail?.changes || []
+    const trades = detail?.trades || changes.map((c) => c?.trade).filter(Boolean)
+    if (!changes.length && !trades.length) return
 
     try {
       chrome.runtime.sendMessage({
         type: "TRADE_CAPTURED",
-        changes: detail.changes,
-        at: detail.at,
+        changes,
+        trades,
+        chartSymbol: detail?.chartSymbol || "",
+        at: detail?.at || Date.now(),
       })
     } catch {
       // background sleeping — poll backup will retry

@@ -1,9 +1,10 @@
 const LIVE_SYNC_POLL_SECONDS_KEY = "jb-live-sync-poll-seconds"
 
-export const DEFAULT_LIVE_SYNC_POLL_SECONDS = 30
+export const DEFAULT_LIVE_SYNC_POLL_SECONDS = 5
 
 export const LIVE_SYNC_POLL_OPTIONS = [
   { value: 0, label: "Off" },
+  { value: 5, label: "Every 5 seconds (recommended)" },
   { value: 15, label: "Every 15 seconds" },
   { value: 30, label: "Every 30 seconds" },
   { value: 60, label: "Every 1 minute" },

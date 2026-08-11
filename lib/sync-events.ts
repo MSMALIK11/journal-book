@@ -5,6 +5,8 @@ export type ImportedTradeSnapshot = {
   entry_date: string
   entry_price: number
   signal?: string | null
+  /** True when the imported TV row is still an open position. */
+  is_open?: boolean
 }
 
 export type TradesUpdatedEvent = {

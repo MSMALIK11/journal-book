@@ -34,16 +34,17 @@ export function SyncAccountAutoSwitch() {
       if (data.type !== "trades_updated") return
       if (!(data.imported || data.updated)) return
 
+      // Instant UI refresh first — toast can follow.
       void (async () => {
-        await revalidateSyncedData()
-        await refresh()
+        const imported = data.imported ?? 0
+        const updated = data.updated ?? 0
 
         if (data.accountId && data.accountId !== activeAccountId) {
           await switchAccount(data.accountId)
+        } else {
+          await revalidateSyncedData()
+          await refresh()
         }
-
-        const imported = data.imported ?? 0
-        const updated = data.updated ?? 0
 
         if (imported > 0 && updated > 0) {
           toast({
@@ -57,8 +58,8 @@ export function SyncAccountAutoSwitch() {
           })
         } else if (updated > 0) {
           toast({
-            title: data.accountName ? `Trade updated · ${data.accountName}` : "Trade updated",
-            description: `${updated} trade(s) updated — open positions may have closed`,
+            title: data.accountName ? `Trade closed/updated · ${data.accountName}` : "Trade closed/updated",
+            description: `${updated} trade(s) updated from TradingView`,
           })
         }
       })()

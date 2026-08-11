@@ -18,6 +18,7 @@ export type PersistedTradeSyncEvent = {
     entry_date: string
     entry_price: number
     signal?: string | null
+    is_open?: boolean
   }
 }
 

@@ -162,20 +162,15 @@
     }
   }
 
-  function notifyTradeCapture(changes) {
-    if (!changes.length) return
-    const detail = { changes, at: Date.now() }
+  function notifyTradeCapture(payload) {
+    if (!payload?.changes?.length && !payload?.trades?.length) return
     try {
-      window.dispatchEvent(
-        new CustomEvent("jb-trade-captured", {
-          detail,
-        }),
-      )
+      window.dispatchEvent(new CustomEvent("jb-trade-captured", { detail: payload }))
     } catch {
       // ignore
     }
     try {
-      window.postMessage({ source: "jb-main-hook", type: "jb-trade-captured", detail }, "*")
+      window.postMessage({ source: "jb-main-hook", type: "jb-trade-captured", detail: payload }, "*")
     } catch {
       // ignore
     }
@@ -238,7 +233,13 @@
         if (!before || tradeFingerprint(before) !== tradeFingerprint(next)) {
           let reason = before ? "updated" : "new"
           if (before && wasOpen && !isOpen) reason = "closed"
-          changed.push({ tradeNumber: next.tradeNumber, reason })
+          // Include full trade so background can POST without Strategy Tester scrape.
+          changed.push({
+            tradeNumber: next.tradeNumber,
+            reason,
+            trade: next,
+            isOpen,
+          })
         }
 
         merged.set(next.tradeNumber, next)
@@ -246,7 +247,14 @@
 
       window.__JB_CAPTURED_TRADES__ = [...merged.values()]
 
-      if (changed.length) notifyTradeCapture(changed)
+      if (changed.length) {
+        notifyTradeCapture({
+          changes: changed,
+          trades: changed.map((c) => c.trade).filter(Boolean),
+          chartSymbol,
+          at: Date.now(),
+        })
+      }
     } catch {
       // ignore malformed payloads
     }

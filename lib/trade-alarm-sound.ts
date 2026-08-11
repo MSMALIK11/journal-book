@@ -5,6 +5,7 @@ import {
 } from "@/lib/new-trade-alarm-settings"
 
 let activeAudio: HTMLAudioElement | null = null
+let audioUnlocked = false
 
 function stopActiveAudio() {
   if (!activeAudio) return
@@ -17,6 +18,22 @@ function stopActiveAudio() {
 
 export function stopTradeAlarmSound() {
   stopActiveAudio()
+}
+
+/** Call after a user gesture so later alarms are not blocked by autoplay policy. */
+export async function unlockTradeAlarmAudio() {
+  if (typeof window === "undefined" || audioUnlocked) return
+  try {
+    const silent = new Audio()
+    silent.src =
+      "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA="
+    silent.volume = 0.01
+    await silent.play()
+    silent.pause()
+    audioUnlocked = true
+  } catch {
+    // Still blocked — next gesture / play attempt will retry.
+  }
 }
 
 /** @deprecated Use stopTradeAlarmSound */

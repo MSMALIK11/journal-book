@@ -50,11 +50,16 @@ const fetcher = async (url: string) => {
 
 function revalidateAccountScopedData() {
   return globalMutate(
-    (key) =>
-      typeof key === "string" &&
-      (key.startsWith("/api/trades") ||
-        key.startsWith("/api/analytics") ||
-        key.startsWith("/api/accounts")),
+    (key) => {
+      const path = Array.isArray(key) ? key[0] : key
+      return (
+        typeof path === "string" &&
+        (path.startsWith("/api/trades") ||
+          path.startsWith("/api/analytics") ||
+          path.startsWith("/api/accounts") ||
+          path.startsWith("/api/alerts"))
+      )
+    },
     undefined,
     { revalidate: true },
   )

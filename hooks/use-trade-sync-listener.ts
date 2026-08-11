@@ -24,7 +24,8 @@ type Options = {
   onConnectionChange?: (connected: boolean) => void
 }
 
-const POLL_MS = 3_000
+// SSE can miss events across Next.js workers — fast poll is backup; DOM/bridge is instant.
+const POLL_MS = 700
 
 /** SSE + extension DOM event + DB poll backup — reliable UI refresh after TV sync. */
 export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChange }: Options) {

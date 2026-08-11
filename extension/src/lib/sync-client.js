@@ -97,8 +97,10 @@ JBSync.dropSupersededOpenTrades = function dropSupersededOpenTrades(trades) {
   })
 }
 
-JBSync.fetchKnownTradeSnapshot = async function fetchKnownTradeSnapshot(config) {
-  const params = new URLSearchParams({ limit: "10000" })
+JBSync.fetchKnownTradeSnapshot = async function fetchKnownTradeSnapshot(config, options = {}) {
+  // Polls don't need the entire history — newest slice is enough for open/exit checks.
+  const limit = options.limit || 1500
+  const params = new URLSearchParams({ limit: String(limit) })
 
   const response = await fetch(`${config.apiUrl}/api/sync/trades?${params}`, {
     headers: {
@@ -125,10 +127,12 @@ JBSync.tradeNeedsRefresh = function tradeNeedsRefresh(trade, snapshot, latestTra
   const extId = JBSync.buildExternalId(trade)
   const legacyId = `tv:${JBSync.strategySlug(trade.strategy || "")}:${trade.tradeNumber}`
   const known = snapshot.ids.has(extId) || snapshot.ids.has(legacyId)
+  const wasOpenOnServer = snapshot.openIds.has(extId) || snapshot.openIds.has(legacyId)
 
   if (!known) return true
   if (JBSync.isOpenTrade(trade)) return true
-  if (snapshot.openIds.has(extId) || snapshot.openIds.has(legacyId)) return true
+  // Exit/close on TV while journal still has this trade open — must sync for UI refresh.
+  if (wasOpenOnServer) return true
   return false
 }
 
@@ -329,12 +333,18 @@ JBSync.applyChartSymbol = function applyChartSymbol(trades, chartSymbol) {
   return filtered
 }
 
-JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = false) {
+/**
+ * @param {boolean} importAll - true = full history scan (Import All button)
+ * @param {{ mode?: 'light'|'full' }} [options]
+ *   light (default for polls): top rows + capture memory, single frame, no full table walk
+ *   full: deep extract + all frames + full virtualized scroll
+ */
+JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = false, options = {}) {
   const tab = await JBSync.getTradingViewTab()
   if (!tab?.id) {
     return {
       trades: [],
-      error: "TradingView chart tab not found. Open tradingview.com/chart and refresh (F5).",
+      error: "TradingView chart tab not found. Keep tradingview.com/chart open.",
     }
   }
 
@@ -344,13 +354,18 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
     return {
       trades: [],
       error:
-        "Could not detect chart symbol. Open your TradingView chart tab, press F5, make sure the symbol shows in the header, then retry.",
+        "Could not detect chart symbol. Open your TradingView chart tab and make sure the symbol shows in the header.",
       debug: { tabUrl: tab.url },
     }
   }
 
+  const scrapeMode = importAll || options.mode === "full" ? "full" : "light"
+  // Polls only need the chart frame — scanning every iframe is expensive.
+  const allFrames = scrapeMode === "full"
+  const target = { tabId: tab.id, allFrames }
+
   await chrome.scripting.executeScript({
-    target: { tabId: tab.id, allFrames: true },
+    target: { tabId: tab.id, allFrames: false },
     world: "MAIN",
     func: (sym) => {
       const prev = String(window.__JB_CAPTURED_CHART_SYMBOL__ || window.__JB_CHART_SYMBOL__ || "")
@@ -366,55 +381,60 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
   }).catch(() => {})
 
   await chrome.scripting.executeScript({
-    target: { tabId: tab.id, allFrames: true },
-    func: (sym, importAll) => {
+    target,
+    func: (sym, importAllFlag, mode) => {
       window.__JB_CHART_SYMBOL__ = sym
-      window.__JB_IMPORT_ALL__ = importAll
+      window.__JB_IMPORT_ALL__ = importAllFlag
+      window.__JB_SCRAPE_MODE__ = mode
     },
-    args: [chartSymbol, importAll],
+    args: [chartSymbol, scrapeMode === "full", scrapeMode],
   }).catch(() => {})
 
-  const target = { tabId: tab.id, allFrames: true }
   const merged = new Map()
   const mainWorldKeys = new Set()
   const gridKeys = new Set()
   const frameDebug = []
 
   try {
-    // 1) MAIN world — API capture + in-memory report objects
+    // MAIN world: light = captured array only; full = deep extract walk.
     try {
-      const mainExtractions = await chrome.scripting.executeScript({
-        target,
-        world: "MAIN",
-        files: ["src/content/extract-trades.js"],
-      })
-      for (const ext of mainExtractions || []) {
-        frameDebug.push({
-          frameId: ext.frameId,
-          method: "main-world",
-          trades: ext.result?.trades?.length || 0,
-          debug: ext.result?.debug,
-          error: ext.error,
-        })
-        for (const trade of ext.result?.trades || []) {
+      if (scrapeMode === "light") {
+        const captured = await JBSync.readCapturedTradesFromTab(tab)
+        for (const trade of captured.trades || []) {
           const key = JBSync.tradeKey(trade)
           mainWorldKeys.add(key)
           merged.set(key, trade)
+        }
+        frameDebug.push({
+          method: "captured-memory",
+          trades: captured.trades?.length || 0,
+        })
+      } else {
+        const mainExtractions = await chrome.scripting.executeScript({
+          target,
+          world: "MAIN",
+          files: ["src/content/extract-trades.js"],
+        })
+        for (const ext of mainExtractions || []) {
+          frameDebug.push({
+            frameId: ext.frameId,
+            method: "main-world",
+            trades: ext.result?.trades?.length || 0,
+            debug: ext.result?.debug,
+            error: ext.error,
+          })
+          for (const trade of ext.result?.trades || []) {
+            const key = JBSync.tradeKey(trade)
+            mainWorldKeys.add(key)
+            merged.set(key, trade)
+          }
         }
       }
     } catch (error) {
       frameDebug.push({ method: "main-world", injectionError: error.message })
     }
 
-    await chrome.scripting.executeScript({
-      target,
-      func: (flag) => {
-        window.__JB_IMPORT_ALL__ = flag
-      },
-      args: [importAll],
-    })
-
-    // isolated-world scraper reads __JB_CHART_SYMBOL__ / __JB_IMPORT_ALL__
+    // isolated-world scraper — light mode only peeks top of List of trades.
     const injections = await chrome.scripting.executeScript({
       target,
       files: ["src/content/main-scraper.js"],
@@ -448,25 +468,60 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
     let mergedTrades = [...merged.values()]
 
     // Ghost opens often live only in API capture memory, not in List of Trades.
-    // If the grid scraped anything, drop main-world-only Open rows.
+    // Keep capture-only opens that are NEWER than the grid (brand-new fills),
+    // otherwise they never reach the journal/alarm.
+    let maxGridTradeNumber = -Infinity
+    for (const trade of mergedTrades) {
+      const key = JBSync.tradeKey(trade)
+      if (!gridKeys.has(key)) continue
+      if (Number.isFinite(trade.tradeNumber) && trade.tradeNumber > maxGridTradeNumber) {
+        maxGridTradeNumber = trade.tradeNumber
+      }
+    }
+
     if (gridKeys.size > 0) {
       const before = mergedTrades.length
       mergedTrades = mergedTrades.filter((trade) => {
         if (!JBSync.isOpenTrade(trade)) return true
         const key = JBSync.tradeKey(trade)
         if (gridKeys.has(key)) return true
-        if (mainWorldKeys.has(key) && !gridKeys.has(key)) return false
+        if (mainWorldKeys.has(key) && !gridKeys.has(key)) {
+          // Newer than anything in the Strategy Tester grid → real new fill.
+          if (
+            Number.isFinite(trade.tradeNumber) &&
+            Number.isFinite(maxGridTradeNumber) &&
+            trade.tradeNumber > maxGridTradeNumber
+          ) {
+            return true
+          }
+          // Grid empty of trade numbers (parse quirk) — still keep capture opens.
+          if (!Number.isFinite(maxGridTradeNumber) || maxGridTradeNumber < 0) return true
+          return false
+        }
         return true
       })
       frameDebug.push({
         method: "filter-main-only-opens",
         removed: before - mergedTrades.length,
         gridKeys: gridKeys.size,
+        maxGridTradeNumber: Number.isFinite(maxGridTradeNumber) ? maxGridTradeNumber : null,
       })
     }
 
     const beforeSuperseded = mergedTrades.length
     mergedTrades = JBSync.dropSupersededOpenTrades(mergedTrades)
+
+    // If grid scrape was empty/stale but API capture has opens, sync those.
+    if (!mergedTrades.length && mainWorldKeys.size > 0) {
+      const captureFallback = [...merged.values()].filter((trade) => JBSync.isOpenTrade(trade))
+      if (captureFallback.length) {
+        mergedTrades = JBSync.dropSupersededOpenTrades(captureFallback)
+        frameDebug.push({
+          method: "capture-open-fallback",
+          trades: mergedTrades.length,
+        })
+      }
+    }
 
     const trades = JBSync.applyChartSymbol(
       mergedTrades.sort((a, b) => b.tradeNumber - a.tradeNumber),
@@ -475,48 +530,50 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
     const best = frameDebug.sort((a, b) => b.trades - a.trades)[0]
     const bestGrid = injections?.find((i) => i.result)?.result
 
-    // Prune stale opens from MAIN-world capture so they stop resurrecting after delete.
-    try {
-      await chrome.scripting.executeScript({
-        target,
-        world: "MAIN",
-        func: () => {
-          const list = window.__JB_CAPTURED_TRADES__
-          if (!Array.isArray(list) || list.length < 2) return
+    // Full import only — prune capture memory. Skip on every poll (too expensive).
+    if (scrapeMode === "full") {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames: false },
+          world: "MAIN",
+          func: () => {
+            const list = window.__JB_CAPTURED_TRADES__
+            if (!Array.isArray(list) || list.length < 2) return
 
-          function isOpen(trade) {
-            if (!trade?.exit) return true
-            const exitSig = String(trade.exit.signal || "")
-              .trim()
-              .toLowerCase()
-            const entrySig = String(trade.entry?.signal || "")
-              .trim()
-              .toLowerCase()
-            return exitSig === "open" || entrySig === "open"
-          }
-
-          let maxClosedEntryMs = -Infinity
-          let maxClosedTradeNumber = -Infinity
-          for (const trade of list) {
-            if (isOpen(trade)) continue
-            const entryMs = new Date(String(trade.entry?.datetime || "").replace(/,\s*/, " ")).getTime()
-            if (Number.isFinite(entryMs) && entryMs > maxClosedEntryMs) maxClosedEntryMs = entryMs
-            if (Number.isFinite(trade.tradeNumber) && trade.tradeNumber > maxClosedTradeNumber) {
-              maxClosedTradeNumber = trade.tradeNumber
+            function isOpen(trade) {
+              if (!trade?.exit) return true
+              const exitSig = String(trade.exit.signal || "")
+                .trim()
+                .toLowerCase()
+              const entrySig = String(trade.entry?.signal || "")
+                .trim()
+                .toLowerCase()
+              return exitSig === "open" || entrySig === "open"
             }
-          }
 
-          window.__JB_CAPTURED_TRADES__ = list.filter((trade) => {
-            if (!isOpen(trade)) return true
-            const entryMs = new Date(String(trade.entry?.datetime || "").replace(/,\s*/, " ")).getTime()
-            if (Number.isFinite(entryMs) && entryMs < maxClosedEntryMs) return false
-            if (Number.isFinite(trade.tradeNumber) && trade.tradeNumber < maxClosedTradeNumber) return false
-            return true
-          })
-        },
-      })
-    } catch {
-      // ignore prune failures
+            let maxClosedEntryMs = -Infinity
+            let maxClosedTradeNumber = -Infinity
+            for (const trade of list) {
+              if (isOpen(trade)) continue
+              const entryMs = new Date(String(trade.entry?.datetime || "").replace(/,\s*/, " ")).getTime()
+              if (Number.isFinite(entryMs) && entryMs > maxClosedEntryMs) maxClosedEntryMs = entryMs
+              if (Number.isFinite(trade.tradeNumber) && trade.tradeNumber > maxClosedTradeNumber) {
+                maxClosedTradeNumber = trade.tradeNumber
+              }
+            }
+
+            window.__JB_CAPTURED_TRADES__ = list.filter((trade) => {
+              if (!isOpen(trade)) return true
+              const entryMs = new Date(String(trade.entry?.datetime || "").replace(/,\s*/, " ")).getTime()
+              if (Number.isFinite(entryMs) && entryMs < maxClosedEntryMs) return false
+              if (Number.isFinite(trade.tradeNumber) && trade.tradeNumber < maxClosedTradeNumber) return false
+              return true
+            })
+          },
+        })
+      } catch {
+        // ignore prune failures
+      }
     }
 
     const result = {
@@ -560,14 +617,15 @@ JBSync.getConfig = async function getConfig() {
   ])
 
   const pollIntervalSeconds =
-    stored.pollIntervalSeconds === undefined ? 30 : Number(stored.pollIntervalSeconds)
+    stored.pollIntervalSeconds === undefined ? 15 : Number(stored.pollIntervalSeconds)
 
   return {
     apiUrl: (stored.apiUrl || "http://localhost:3000").replace(/\/$/, ""),
     syncToken: (stored.syncToken || "").trim(),
     assetType: stored.assetType || "crypto",
     pollIntervalSeconds: Number.isFinite(pollIntervalSeconds) ? pollIntervalSeconds : 30,
-    autoSyncTrades: Boolean(stored.autoSyncTrades),
+    // Default ON when unset — capture sync always runs; this gates poll backup only.
+    autoSyncTrades: stored.autoSyncTrades === undefined ? true : Boolean(stored.autoSyncTrades),
   }
 }
 
@@ -785,21 +843,46 @@ JBSync.completeRefreshRequest = async function completeRefreshRequest(config, re
   })
 }
 
-JBSync.notifyJournalTabs = async function notifyJournalTabs(payload) {
+/** Match chrome.tabs.query pattern for the configured journal API origin. */
+JBSync.journalOriginPattern = function journalOriginPattern(apiUrl) {
   try {
-    const tabs = await chrome.tabs.query({
-      url: ["http://localhost:3000/*", "http://127.0.0.1:3000/*"],
-    })
+    const url = new URL((apiUrl || "http://localhost:3000").replace(/\/$/, ""))
+    return `${url.origin}/*`
+  } catch {
+    return "http://localhost:3000/*"
+  }
+}
+
+JBSync.notifyJournalTabs = async function notifyJournalTabs(payload, apiUrl) {
+  try {
+    const origin = JBSync.journalOriginPattern(apiUrl)
+    const patterns = new Set([origin, "http://localhost/*", "http://127.0.0.1/*"])
+    const tabs = await chrome.tabs.query({ url: [...patterns] })
+
+    const detail = {
+      type: "trades_updated",
+      ...payload,
+      at: payload?.at || new Date().toISOString(),
+    }
 
     for (const tab of tabs) {
       if (!tab.id) continue
+
+      // 1) Instant message to journal-bridge (fastest UI refresh path).
+      try {
+        await chrome.tabs.sendMessage(tab.id, { type: "TRADES_SYNCED", detail })
+      } catch {
+        // bridge may not be injected yet
+      }
+
+      // 2) Fallback DOM inject if bridge listener wasn't ready.
       try {
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          func: (detail) => {
-            document.dispatchEvent(new CustomEvent("jb-trades-synced", { detail }))
+          func: (eventDetail) => {
+            document.dispatchEvent(new CustomEvent("jb-trades-synced", { detail: eventDetail }))
           },
-          args: [payload],
+          args: [detail],
         })
       } catch {
         // tab may be loading or restricted
@@ -820,7 +903,7 @@ JBSync.maybeRunRequestedRefresh = async function maybeRunRequestedRefresh(config
   if (!tab?.id) {
     const failure = {
       ok: false,
-      error: "TradingView chart tab not found. Open tradingview.com/chart and refresh (F5).",
+      error: "TradingView chart tab not found. Keep tradingview.com/chart open (no refresh needed).",
     }
     await JBSync.completeRefreshRequest(config, failure)
     return failure
@@ -837,30 +920,201 @@ JBSync.maybeRunRequestedRefresh = async function maybeRunRequestedRefresh(config
   }
 }
 
+/** Sync trades already captured from TV network hooks — no Strategy Tester scrape needed. */
+JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, chartSymbol) {
+  await JBSync.sendHeartbeat(config)
+
+  const list = (trades || []).filter((trade) => trade?.entry?.price && trade?.entry?.datetime)
+  if (!list.length) {
+    return { imported: 0, updated: 0, skipped: 0, closedStale: 0, byAccount: {}, message: "No captured trades" }
+  }
+
+  let symbol =
+    JBSync.normalizeChartSymbol(chartSymbol) ||
+    JBSync.normalizeChartSymbol(list[0]?.instrument) ||
+    ""
+
+  if (!symbol || symbol === "UNKNOWN") {
+    const tab = await JBSync.getTradingViewTab()
+    symbol = JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+  }
+
+  if (!symbol) {
+    throw new Error("Missing chart symbol for captured trades — refresh TradingView chart (F5).")
+  }
+
+  const stamped = list.map((trade) => ({ ...trade, instrument: symbol, strategy: trade.strategy || "TradingView Strategy" }))
+  const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: 1500 })
+  const latestTradeNumber = Math.max(...stamped.map((trade) => Number(trade.tradeNumber) || 0))
+  const newOrUpdated = stamped.filter((trade) => JBSync.tradeNeedsRefresh(trade, snapshot, latestTradeNumber))
+
+  if (!newOrUpdated.length) {
+    return {
+      imported: 0,
+      updated: 0,
+      skipped: stamped.length,
+      closedStale: 0,
+      byAccount: {},
+      message: "Open trade already up to date",
+    }
+  }
+
+  const syncResult = await JBSync.syncTrades(newOrUpdated, config, symbol, {
+    reconcileFromTrades: stamped,
+    reconcile: true,
+  })
+
+  const closedStale = syncResult.closedStale || 0
+  if (syncResult.imported > 0 || syncResult.updated > 0 || closedStale > 0) {
+    const topAccount = Object.entries(syncResult.byAccount || {}).sort(
+      (a, b) => (b[1].imported || 0) + (b[1].updated || 0) - ((a[1].imported || 0) + (a[1].updated || 0)),
+    )[0]
+    const rawLatest = topAccount?.[1]?.latestTrade
+    const latestTrade = rawLatest
+      ? {
+          ...rawLatest,
+          signal: rawLatest.signal || (rawLatest.is_open ? "Open" : rawLatest.signal),
+          is_open:
+            rawLatest.is_open === true ||
+            String(rawLatest.signal || "")
+              .trim()
+              .toLowerCase() === "open",
+        }
+      : undefined
+
+    await JBSync.notifyJournalTabs(
+      {
+        eventId: `cap-${Date.now()}-${syncResult.imported}-${syncResult.updated}-${closedStale}`,
+        imported: syncResult.imported,
+        updated: syncResult.updated,
+        accountId: topAccount?.[0],
+        accountName: topAccount?.[1]?.name,
+        latestTrade,
+      },
+      config.apiUrl,
+    )
+  }
+
+  if (syncResult.imported > 0) {
+    syncResult.message = `${syncResult.imported} new trade(s) synced`
+  } else if (syncResult.updated > 0) {
+    syncResult.message = `${syncResult.updated} trade(s) updated`
+  }
+
+  return syncResult
+}
+
+JBSync.readCapturedTradesFromTab = async function readCapturedTradesFromTab(tab) {
+  if (!tab?.id) return { trades: [], chartSymbol: "" }
+  try {
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: false },
+      world: "MAIN",
+      func: () => {
+        const symbol = String(window.__JB_CHART_SYMBOL__ || window.__JB_CAPTURED_CHART_SYMBOL__ || "")
+          .replace(/[^A-Za-z0-9]/g, "")
+          .toUpperCase()
+        const trades = Array.isArray(window.__JB_CAPTURED_TRADES__)
+          ? window.__JB_CAPTURED_TRADES__.map((t) => ({ ...t }))
+          : []
+        return { trades, chartSymbol: symbol }
+      },
+    })
+    return {
+      trades: injection?.result?.trades || [],
+      chartSymbol: injection?.result?.chartSymbol || "",
+    }
+  } catch {
+    return { trades: [], chartSymbol: "" }
+  }
+}
+
 /** Scrape latest TV trades and sync only new / open ones — then drop stale Open rows. */
 JBSync.refreshNewTrades = async function refreshNewTrades(config) {
   await JBSync.sendHeartbeat(config)
 
-  const result = await JBSync.scrapeFromActiveTab(false)
-  if (!result?.trades?.length) {
-    throw new Error(result?.error || "No trades found on TradingView")
+  const tab = await JBSync.getTradingViewTab()
+  const captured = await JBSync.readCapturedTradesFromTab(tab)
+
+  // Polls use light scrape (top ~40 rows + capture). Never full-table walk.
+  let result = await JBSync.scrapeFromActiveTab(false, { mode: "light" }).catch((error) => ({
+    trades: [],
+    error: error?.message || "Scrape failed",
+  }))
+
+  // If Strategy Tester grid is empty/stale, fall back to network-captured trades.
+  if (!result?.trades?.length && captured.trades.length) {
+    result = {
+      trades: captured.trades,
+      instrument: captured.chartSymbol || captured.trades[0]?.instrument || "",
+      error: null,
+      debug: { fallback: "captured-memory" },
+    }
+  } else if (result?.trades?.length && captured.trades.length) {
+    const byNumber = new Map(result.trades.map((t) => [t.tradeNumber, t]))
+    for (const trade of captured.trades) {
+      if (!byNumber.has(trade.tradeNumber)) byNumber.set(trade.tradeNumber, trade)
+    }
+    result.trades = [...byNumber.values()]
   }
 
-  const snapshot = await JBSync.fetchKnownTradeSnapshot(config)
+  const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: 1500 })
+  const chartSymbol =
+    JBSync.normalizeChartSymbol(result?.instrument || captured.chartSymbol) ||
+    JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+
+  if (!result?.trades?.length) {
+    // Scrape empty — still try to close journal opens using captured memory only.
+    if (captured.trades.length && chartSymbol) {
+      result = {
+        trades: captured.trades,
+        instrument: chartSymbol,
+        error: null,
+        debug: { fallback: "captured-memory-empty-scrape" },
+      }
+    } else {
+      return {
+        imported: 0,
+        updated: 0,
+        skipped: 0,
+        closedStale: 0,
+        byAccount: {},
+        message: "Waiting for List of trades",
+        warning:
+          result?.error ||
+          "Strategy Tester → open bottom panel → click “List of trades”. New fills will sync automatically after that.",
+      }
+    }
+  }
+
   const latestTradeNumber = Math.max(...result.trades.map((trade) => trade.tradeNumber))
   const newOrUpdated = result.trades.filter((trade) =>
     JBSync.tradeNeedsRefresh(trade, snapshot, latestTradeNumber),
   )
 
+  // If List of trades has closed rows and zero opens, drop journal opens that exited.
+  const scrapedOpens = result.trades.filter((trade) => JBSync.isOpenTrade(trade))
+  const hasClosedRows = result.trades.some((trade) => !JBSync.isOpenTrade(trade))
+  const shouldForceReconcile =
+    snapshot.openIds.size > 0 && scrapedOpens.length === 0 && hasClosedRows && Boolean(chartSymbol)
+
   let syncResult = { imported: 0, updated: 0, skipped: 0, deduped: 0, closedStale: 0, byAccount: {} }
 
   if (newOrUpdated.length) {
     // Reconcile using full scrape so real TV opens are never wiped by a partial sync set.
-    syncResult = await JBSync.syncTrades(newOrUpdated, config, result.instrument, {
+    syncResult = await JBSync.syncTrades(newOrUpdated, config, chartSymbol, {
       reconcileFromTrades: result.trades,
     })
+  } else if (shouldForceReconcile) {
+    const reconcile = await JBSync.reconcileOpenTrades(config, scrapedOpens, chartSymbol)
+    syncResult.closedStale = reconcile.closedStale || 0
+    syncResult.updated = reconcile.updated || syncResult.closedStale || 0
+    syncResult.message =
+      syncResult.closedStale > 0
+        ? `Cleared ${syncResult.closedStale} closed trade(s)`
+        : "No new trades"
   } else {
-    const reconcile = await JBSync.reconcileOpenTrades(config, result.trades, result.instrument)
+    const reconcile = await JBSync.reconcileOpenTrades(config, result.trades, chartSymbol)
     syncResult.closedStale = reconcile.closedStale || 0
     syncResult.updated = reconcile.updated || syncResult.closedStale || 0
   }
@@ -892,14 +1146,30 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
       (a, b) => (b[1].imported || 0) + (b[1].updated || 0) - ((a[1].imported || 0) + (a[1].updated || 0)),
     )[0]
 
-    await JBSync.notifyJournalTabs({
-      eventId: `ext-${Date.now()}-${syncResult.imported}-${syncResult.updated}-${closedStale}`,
-      imported: syncResult.imported,
-      updated: syncResult.updated,
-      accountId: topAccount?.[0],
-      accountName: topAccount?.[1]?.name,
-      latestTrade: topAccount?.[1]?.latestTrade,
-    })
+    const rawLatest = topAccount?.[1]?.latestTrade
+    const latestTrade = rawLatest
+      ? {
+          ...rawLatest,
+          signal: rawLatest.signal || (rawLatest.is_open ? "Open" : rawLatest.signal),
+          is_open:
+            rawLatest.is_open === true ||
+            String(rawLatest.signal || "")
+              .trim()
+              .toLowerCase() === "open",
+        }
+      : undefined
+
+    await JBSync.notifyJournalTabs(
+      {
+        eventId: `ext-${Date.now()}-${syncResult.imported}-${syncResult.updated}-${closedStale}`,
+        imported: syncResult.imported,
+        updated: syncResult.updated,
+        accountId: topAccount?.[0],
+        accountName: topAccount?.[1]?.name,
+        latestTrade,
+      },
+      config.apiUrl,
+    )
   }
 
   return { ...syncResult, result, synced: newOrUpdated.length }

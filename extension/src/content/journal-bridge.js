@@ -12,6 +12,18 @@
     return marker
   }
 
+  function emitTradesSynced(detail) {
+    ensureMarker()
+    document.dispatchEvent(
+      new CustomEvent("jb-trades-synced", {
+        detail: {
+          type: "trades_updated",
+          ...detail,
+        },
+      }),
+    )
+  }
+
   ensureMarker()
   setInterval(ensureMarker, 5000)
 
@@ -40,6 +52,13 @@
       )
     })
   })
+
+  // Instant push from background after open/exit sync (faster than executeScript alone).
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== "TRADES_SYNCED") return
+    emitTradesSynced(message.detail || message)
+  })
+
   async function wakeBackground() {
     try {
       await chrome.runtime.sendMessage({ type: "HEARTBEAT_TICK" })
@@ -50,8 +69,8 @@
   }
 
   void wakeBackground()
-  // Keep extension alive on journal pages — wakes MV3 service worker for UI refresh.
+  // Keep extension alive on journal pages for instant open/exit UI updates.
   setInterval(() => {
     void wakeBackground()
-  }, 5000)
+  }, 3000)
 })()

@@ -10,11 +10,17 @@ type Options = {
   onComplete?: (result: import("@/lib/client-extension-sync").ExtensionSyncResult | null) => void
 }
 
+/** Live Sync page always checks TV — "Off" still uses a fast 5s safety poll. */
+function effectivePollSeconds(seconds: number) {
+  return seconds > 0 ? seconds : 5
+}
+
 export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Options) {
   const inFlightRef = useRef(false)
   const pollSecondsRef = useRef(pollSeconds)
   const mountedRef = useRef(false)
   const [isSyncing, setIsSyncing] = useState(false)
+  const [lastError, setLastError] = useState<string | null>(null)
 
   useEffect(() => {
     pollSecondsRef.current = pollSeconds
@@ -39,9 +45,21 @@ export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Opt
           return data
         },
       })
+      const softWait =
+        result?.message === "Waiting for List of trades" ||
+        /list of trades|waiting for list|ka-table|0 rows/i.test(
+          String(result?.warning || result?.error || ""),
+        )
+      // Soft wait states stay silent in the UI.
+      if (result?.error && !softWait) {
+        setLastError(String(result.error))
+      } else {
+        setLastError(null)
+      }
       onComplete?.(result)
-    } catch {
-      // Silent background sync — next poll will retry.
+    } catch (error) {
+      setLastError(error instanceof Error ? error.message : "Sync failed")
+      // Next poll retries.
     } finally {
       inFlightRef.current = false
       setIsSyncing(false)
@@ -58,13 +76,13 @@ export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Opt
 
     function scheduleNext(delayMs?: number) {
       if (cancelled) return
-      const seconds = pollSecondsRef.current
-      const waitMs = delayMs ?? (seconds > 0 ? seconds * 1000 : 5000)
+      const seconds = effectivePollSeconds(pollSecondsRef.current)
+      const waitMs = delayMs ?? seconds * 1000
 
       timer = window.setTimeout(async () => {
         if (cancelled) return
 
-        if (pollSecondsRef.current > 0 && document.visibilityState === "visible") {
+        if (document.visibilityState === "visible") {
           await runSync()
         }
 
@@ -72,10 +90,10 @@ export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Opt
       }, waitMs)
     }
 
-    if (runOnMount && pollSecondsRef.current > 0) {
+    if (runOnMount) {
       void runSync()
     }
-    scheduleNext(pollSecondsRef.current > 0 ? pollSecondsRef.current * 1000 : 5000)
+    scheduleNext(effectivePollSeconds(pollSeconds) * 1000)
 
     return () => {
       cancelled = true
@@ -83,5 +101,5 @@ export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Opt
     }
   }, [enabled, pollSeconds, runSync])
 
-  return { isSyncing }
+  return { isSyncing, lastError, runSync }
 }

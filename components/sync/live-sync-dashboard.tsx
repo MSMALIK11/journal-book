@@ -87,7 +87,8 @@ const fetcher = async (url: string) => {
 
 export function LiveSyncDashboard() {
   const { toast } = useToast()
-  const { activeAccount, activeAccountId, switchVersion, refresh } = useActiveAccount()
+  const { activeAccount, activeAccountId, switchVersion, refresh, revalidateSyncedData } =
+    useActiveAccount()
   const seenTradeIds = useRef<Set<string>>(new Set())
   const initialized = useRef(false)
   const [clearOpen, setClearOpen] = useState(false)
@@ -122,11 +123,38 @@ export function LiveSyncDashboard() {
 
   const trades = tradesData?.trades ?? []
 
-  const { isSyncing } = useLiveSyncAutoRefresh({
+  const { isSyncing, lastError: syncError } = useLiveSyncAutoRefresh({
     enabled: Boolean(activeAccountId),
     pollSeconds,
-    onComplete: () => {
-      refreshSyncedViews()
+    onComplete: (result) => {
+      const imported = result?.imported || 0
+      const updated = result?.updated || 0
+      const closedStale = result?.closedStale || 0
+      // Always hard-revalidate after a sync pass so exits show even if SSE missed.
+      if (imported > 0 || updated > 0 || closedStale > 0) {
+        void revalidateSyncedData()
+      } else {
+        refreshSyncedViews()
+      }
+
+      // Soft "waiting for List of trades" is not a hard failure — don't toast every poll.
+      if (result?.error && !/list of trades|waiting for list/i.test(String(result.error))) {
+        toast({
+          title: "Sync issue",
+          description: String(result.error),
+          variant: "destructive",
+        })
+      } else if (imported > 0) {
+        toast({
+          title: "New trade synced",
+          description: `${imported} trade(s) imported from TradingView`,
+        })
+      } else if (updated > 0 || closedStale > 0) {
+        toast({
+          title: "Trade updated",
+          description: "Exit/close synced from TradingView",
+        })
+      }
     },
   })
 
@@ -181,10 +209,10 @@ export function LiveSyncDashboard() {
     (data: { type?: string; imported?: number; updated?: number }) => {
       if (data.type !== "trades_updated") return
       if (!(data.imported || data.updated)) return
+      void revalidateSyncedData()
       void refresh()
-      refreshSyncedViews()
     },
-    [refresh, refreshSyncedViews],
+    [refresh, revalidateSyncedData],
   )
 
   useTradeSyncEvent(onTradeSync)
@@ -371,6 +399,10 @@ export function LiveSyncDashboard() {
                 Offline usually means the extension is asleep. Keep this page or a TradingView chart tab
                 open with your sync key configured.
               </p>
+            ) : null}
+            {syncError &&
+            !/list of trades|waiting for list|overview|ka-table|0 rows/i.test(syncError) ? (
+              <p className="text-xs text-rose-600 mt-2">Last sync error: {syncError}</p>
             ) : null}
           </CardContent>
         </Card>

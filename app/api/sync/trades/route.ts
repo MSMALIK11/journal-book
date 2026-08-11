@@ -191,6 +191,7 @@ export async function POST(request: NextRequest) {
       entry_date: string
       entry_price: number
       signal?: string | null
+      is_open?: boolean
     }
     const latestImportedByAccount: Record<string, TradeSnapshot> = {}
     const latestOpenImportedByAccount: Record<string, TradeSnapshot> = {}
@@ -281,6 +282,7 @@ export async function POST(request: NextRequest) {
         imported += 1
         byAccount[accountId].imported += 1
         touchedAccounts.add(accountId)
+        const isOpen = isOpenSyncedTrade(mapped) || isOpenTvSignal(mapped.signal)
         const snapshot: TradeSnapshot = {
           id: String(created._id),
           instrument: mapped.instrument,
@@ -288,9 +290,10 @@ export async function POST(request: NextRequest) {
           entry_date: mapped.entry_date.toISOString(),
           entry_price: mapped.entry_price,
           signal: mapped.signal ?? null,
+          is_open: isOpen,
         }
         latestImportedByAccount[accountId] = snapshot
-        if (isOpenSyncedTrade(mapped) || isOpenTvSignal(mapped.signal)) {
+        if (isOpen) {
           latestOpenImportedByAccount[accountId] = snapshot
         }
         continue
@@ -309,6 +312,7 @@ export async function POST(request: NextRequest) {
           entry_date: mapped.entry_date.toISOString(),
           entry_price: mapped.entry_price,
           signal: mapped.signal ?? null,
+          is_open: isOpenSyncedTrade(mapped) || isOpenTvSignal(mapped.signal),
         }
       } else if (existing.accountId !== accountId) {
         existing.accountId = accountId
@@ -376,17 +380,19 @@ export async function POST(request: NextRequest) {
     for (const accountId of touchedAccounts) {
       const stats = byAccount[accountId]
       if (stats.imported > 0 || stats.updated > 0) {
+        const latestTrade =
+          stats.imported > 0
+            ? latestOpenImportedByAccount[accountId] || latestImportedByAccount[accountId]
+            : latestUpdatedByAccount[accountId]
+
         const event = await recordTradeSyncEvent(auth.userId, {
           accountId,
           accountName: stats.name,
           imported: stats.imported,
           updated: stats.updated,
           skipped: stats.skipped,
-          // Prefer newly imported OPEN trade so clients only alarm on opens.
-          latestTrade:
-            stats.imported > 0
-              ? latestOpenImportedByAccount[accountId] || latestImportedByAccount[accountId]
-              : undefined,
+          // Opens for alarm; updates/closes still carry a snapshot so UI can refresh.
+          latestTrade,
         })
 
         publishTradesUpdated(auth.userId, accountId, {
@@ -395,10 +401,7 @@ export async function POST(request: NextRequest) {
           updated: stats.updated,
           skipped: stats.skipped,
           accountName: stats.name,
-          latestTrade:
-            stats.imported > 0
-              ? latestOpenImportedByAccount[accountId] || latestImportedByAccount[accountId]
-              : undefined,
+          latestTrade,
         })
       }
     }

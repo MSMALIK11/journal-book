@@ -16,13 +16,14 @@ async function loadOptions() {
     const el = document.getElementById(field)
     if (!el) continue
     if (field === "autoSyncTrades") {
-      el.checked = Boolean(stored.autoSyncTrades)
+      // Default ON for new installs so TV fills hit the journal UI + alarm quickly.
+      el.checked = stored.autoSyncTrades === undefined ? true : Boolean(stored.autoSyncTrades)
       continue
     }
     if (stored[field] !== undefined) {
       el.value = String(stored[field])
     } else if (field === "pollIntervalSeconds") {
-      el.value = "30"
+      el.value = "15"
     }
   }
 }

@@ -79,7 +79,8 @@
 
     <label for="pollIntervalSeconds">Connection poll interval</label>
     <select id="pollIntervalSeconds">
-      <option value="15">Every 15 seconds (recommended)</option>
+      <option value="5">Every 5 seconds</option>
+      <option value="15" selected>Every 15 seconds (backup poll)</option>
       <option value="30">Every 30 seconds</option>
       <option value="60">Every 60 seconds</option>
       <option value="120">Every 2 minutes</option>
@@ -97,7 +98,10 @@
       <input id="autoSyncTrades" type="checkbox" />
       <label for="autoSyncTrades" style="margin: 0">Auto-sync new trades (instant + poll backup)</label>
     </div>
-    <p class="hint">When enabled, new Strategy Tester trades sync instantly when TV updates, plus on each poll interval as backup.</p>
+    <p class="hint">
+      Keep this ON. New Strategy Tester trades sync automatically — you should NOT need to refresh TradingView.
+      Just keep the TV chart tab + Journal Live Sync page open.
+    </p>
 
     <button id="save">Save settings</button>
     <button id="test" type="button">Test connection</button>

@@ -128,7 +128,7 @@ document.getElementById("refreshNew").addEventListener("click", async () => {
 
     await chrome.storage.local.set({
       importStatus: "running",
-      importMessage: "Checking for new trades...",
+      importMessage: "Checking for new trades (no TV refresh needed)...",
       lastError: "",
     })
 

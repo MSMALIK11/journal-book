@@ -1,6 +1,13 @@
 // Isolated world — parses TradingView ka-table (List of trades).
 async function jbMainScrape() {
   const importAll = Boolean(window.__JB_IMPORT_ALL__)
+  // light = poll/instant (top rows only). full = manual Import All.
+  const scrapeMode =
+    window.__JB_SCRAPE_MODE__ === "full" || importAll
+      ? "full"
+      : window.__JB_SCRAPE_MODE__ === "light"
+        ? "light"
+        : "light"
 
   function parseNumber(value) {
     if (value == null || value === "") return undefined
@@ -72,18 +79,67 @@ async function jbMainScrape() {
     return "UNKNOWN"
   }
 
-  function clickListOfTradesTab(root) {
-    for (const el of root.querySelectorAll("button, [role='tab'], span, div")) {
-      if (/^list of trades$/i.test((el.textContent || "").trim())) {
-        try {
-          el.click()
-        } catch {
-          // ignore
-        }
+  function clickFirst(selectors, root = document) {
+    for (const selector of selectors) {
+      const el = root.querySelector(selector)
+      if (!el) continue
+      try {
+        el.click()
         return true
+      } catch {
+        // ignore
       }
     }
     return false
+  }
+
+  function clickByText(patterns, root = document) {
+    const nodes = root.querySelectorAll("button, [role='tab'], [role='button'], a, span, div")
+    for (const el of nodes) {
+      const text = (el.textContent || "").replace(/\s+/g, " ").trim()
+      if (!text || text.length > 48) continue
+      if (!patterns.some((re) => re.test(text))) continue
+      try {
+        el.click()
+        return true
+      } catch {
+        // ignore
+      }
+    }
+    return false
+  }
+
+  /** Open Strategy Tester panel if collapsed, then switch to List of trades. */
+  async function ensureListOfTradesVisible(root) {
+    // Open bottom Strategy Tester / backtesting panel.
+    clickByText([/^strategy tester$/i, /^strategy$/i], document)
+    clickFirst(
+      [
+        '[data-name="backtesting"]',
+        '[data-name="strategy-tester"]',
+        'button[aria-label*="Strategy Tester" i]',
+        'button[aria-label*="Strategy" i]',
+      ],
+      document,
+    )
+    await new Promise((r) => setTimeout(r, 250))
+
+    const scopes = [root, document.querySelector("#bottom-area"), document].filter(Boolean)
+    let clicked = false
+    for (const scope of scopes) {
+      if (
+        clickByText(
+          [/^list of trades$/i, /^list of trades/i, /^trades$/i, /^операции$/i, /^trades list$/i],
+          scope,
+        )
+      ) {
+        clicked = true
+        break
+      }
+    }
+
+    await new Promise((r) => setTimeout(r, clicked ? 700 : 400))
+    return clicked
   }
 
   function getCellParts(td) {
@@ -255,54 +311,81 @@ async function jbMainScrape() {
     return { trades, tablesFound: tables.length, rowCount }
   }
 
-  const root = getBacktestingRoot()
-  clickListOfTradesTab(root)
-  await new Promise((r) => setTimeout(r, 400))
+  let root = getBacktestingRoot()
+  // Only click around if the trade table isn't already visible (saves ~1s on every poll).
+  const alreadyHasRows = findKaTables(root).some(
+    (table) => table.querySelectorAll("tbody tr[data-row-id], tbody tr.ka-row").length > 0,
+  )
+  if (!alreadyHasRows) {
+    await ensureListOfTradesVisible(root)
+    root = getBacktestingRoot()
+  }
 
   const strategy = getStrategyName(root)
   const instrument = getInstrumentSymbol()
-  const scroller =
-    findTableScroller(root) ||
-    root.querySelector('[class*="scroll"]') ||
-    root.querySelector('[style*="overflow"]')
 
   const collected = new Map()
   let lastStats = { tablesFound: 0, rowCount: 0 }
 
   const ingest = () => {
-    const result = collectTrades(root, instrument, strategy)
+    const activeRoot = getBacktestingRoot()
+    const result = collectTrades(activeRoot, instrument, strategy)
     lastStats = result
     for (const t of result.trades) collected.set(t.tradeNumber, t)
+    return findTableScroller(activeRoot)
   }
 
-  ingest()
+  let scroller = ingest()
+
+  // Retry once if Overview/Performance is still showing.
+  if (!collected.size) {
+    await ensureListOfTradesVisible(getBacktestingRoot())
+    scroller = ingest()
+  }
 
   if (scroller) {
-    // Refresh needs enough scroll to catch recent closes + current opens (opens sit at top).
-    const maxSteps = importAll ? 300 : 60
+    // Opens + newest closes sit at the TOP of List of trades.
     scroller.scrollTop = 0
-    await new Promise((r) => setTimeout(r, 150))
+    await new Promise((r) => setTimeout(r, scrapeMode === "light" ? 40 : 150))
     ingest()
 
-    let stable = 0
-    let last = collected.size
-    for (let i = 0; i < maxSteps && stable < 8; i++) {
-      scroller.scrollTop += Math.max(60, scroller.clientHeight * 0.75)
-      await new Promise((r) => setTimeout(r, 80))
-      ingest()
-      if (collected.size === last) stable += 1
-      else {
-        stable = 0
-        last = collected.size
+    if (scrapeMode === "full") {
+      // Manual Import All — walk the whole virtualized table.
+      const maxSteps = 300
+      let stable = 0
+      let last = collected.size
+      for (let i = 0; i < maxSteps && stable < 8; i++) {
+        scroller.scrollTop += Math.max(60, scroller.clientHeight * 0.75)
+        await new Promise((r) => setTimeout(r, 80))
+        ingest()
+        if (collected.size === last) stable += 1
+        else {
+          stable = 0
+          last = collected.size
+        }
       }
+      scroller.scrollTop = scroller.scrollHeight
+      await new Promise((r) => setTimeout(r, 200))
+      ingest()
+    } else {
+      // Poll/instant — only peek a couple viewports below the top. Never full-scan.
+      for (let i = 0; i < 2; i++) {
+        scroller.scrollTop += Math.max(80, scroller.clientHeight * 0.9)
+        await new Promise((r) => setTimeout(r, 45))
+        ingest()
+      }
+      scroller.scrollTop = 0
     }
-
-    scroller.scrollTop = scroller.scrollHeight
-    await new Promise((r) => setTimeout(r, 200))
-    ingest()
   }
 
-  const trades = [...collected.values()].sort((a, b) => b.tradeNumber - a.tradeNumber)
+  let trades = [...collected.values()].sort((a, b) => b.tradeNumber - a.tradeNumber)
+
+  // Poll only needs the newest slice (opens + latest exits). Cap hard.
+  if (scrapeMode === "light" && trades.length > 40) {
+    trades = trades.slice(0, 40)
+  }
+
+  const hasListTab = /list of trades/i.test((getBacktestingRoot().innerText || "") + (document.body?.innerText || ""))
 
   return {
     trades,
@@ -311,16 +394,20 @@ async function jbMainScrape() {
     frameUrl: location.href,
     debug: {
       method: "ka-table",
+      scrapeMode,
       tradesParsed: trades.length,
       importAll,
       tablesFound: lastStats.tablesFound,
       rowCount: lastStats.rowCount,
       hasScroller: Boolean(scroller),
-      hasListOfTradesText: /list of trades/i.test(root.innerText || ""),
+      hasListOfTradesText: hasListTab,
+      skippedFullScan: scrapeMode === "light",
     },
     error: trades.length
       ? undefined
-      : `ka-table: ${lastStats.rowCount} rows found, 0 parsed. Open List of trades tab.`,
+      : hasListTab
+        ? "Strategy Tester List of trades is open but empty — wait for a trade fill, or run the strategy once."
+        : "Strategy Tester → open bottom panel → click “List of trades” (Overview pe mat chhodo).",
   }
 }
 

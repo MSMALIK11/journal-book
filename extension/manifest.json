@@ -1,14 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Journal Book - TradingView Sync",
-  "version": "1.14.2",
-  "description": "Sync TradingView Strategy Tester trades to journal-book",
+  "version": "1.15.1",
+  "description": "Sync TradingView Strategy Tester trades to journal-book without refreshing TV",
   "permissions": ["storage", "tabs", "scripting", "alarms"],
   "host_permissions": [
     "https://*.tradingview.com/*",
     "https://tradingview.com/*",
-    "http://localhost:3000/*",
-    "http://127.0.0.1:3000/*"
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "src/background/poller.js"
@@ -16,7 +16,7 @@
   "content_scripts": [
     {
       "matches": ["https://*.tradingview.com/*", "https://tradingview.com/*"],
-      "js": ["src/content/tv-poller.js"],
+      "js": ["src/content/tv-poller.js", "src/content/tv-trade-watcher.js"],
       "run_at": "document_idle"
     },
     {
@@ -33,7 +33,7 @@
       "all_frames": true
     },
     {
-      "matches": ["http://localhost:3000/*", "http://127.0.0.1:3000/*"],
+      "matches": ["http://localhost/*", "http://127.0.0.1/*"],
       "js": ["src/content/journal-bridge.js"],
       "run_at": "document_idle"
     }

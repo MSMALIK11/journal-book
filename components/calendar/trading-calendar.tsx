@@ -44,7 +44,6 @@ import {
 } from "@/lib/trading/trade-display"
 import type { AnalyticsResult } from "@/lib/trading/analytics"
 import { cn } from "@/lib/utils"
-import { EodJournalPanel } from "@/components/calendar/eod-journal-panel"
 
 type Trade = {
   id: string
@@ -83,21 +82,7 @@ export function TradingCalendar() {
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
-  const [journalDirty, setJournalDirty] = useState(false)
   const { activeAccountId, switchVersion } = useActiveAccount()
-
-  function selectDay(day: Date | null) {
-    if (
-      journalDirty &&
-      selectedDate &&
-      (!day || !isSameDay(day, selectedDate))
-    ) {
-      const leave = window.confirm("You have unsaved EOD journal changes. Discard them?")
-      if (!leave) return
-    }
-    setSelectedDate(day)
-    if (!day) setJournalDirty(false)
-  }
 
   const { data: profileData } = useSWR("/api/profile", async (url: string) => {
     const response = await authFetch(url)
@@ -138,7 +123,6 @@ export function TradingCalendar() {
 
         setTrades(data.trades ?? [])
         setSelectedDate(null)
-        setJournalDirty(false)
       } catch (requestError) {
         if (controller.signal.aborted) return
         setTrades([])
@@ -362,7 +346,7 @@ export function TradingCalendar() {
                     key={dateKey}
                     type="button"
                     disabled={!inMonth}
-                    onClick={() => selectDay(day)}
+                    onClick={() => setSelectedDate(day)}
                     className={cn(
                       "group relative min-h-28 border-b border-r border-border/60 p-3 text-left transition-colors",
                       index % 7 === 6 && "border-r-0",
@@ -541,15 +525,6 @@ export function TradingCalendar() {
               )})}
             </div>
           )}
-
-          <EodJournalPanel
-            dateKey={format(selectedDate, "yyyy-MM-dd")}
-            accountId={activeAccountId ?? null}
-            selectedTrades={selectedTrades}
-            timezone={timezone}
-            avoid={analytics?.avoid}
-            onDirtyChange={setJournalDirty}
-          />
         </div>
       )}
     </div>
