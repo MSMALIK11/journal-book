@@ -24,8 +24,12 @@ type Options = {
   onConnectionChange?: (connected: boolean) => void
 }
 
-// SSE can miss events across Next.js workers — fast poll is backup; DOM/bridge is instant.
-const POLL_MS = 700
+// The instant paths are the extension DOM event and SSE; this poll only covers
+// events those miss (e.g. SSE landing on another Next.js worker). So it backs
+// right off while SSE is healthy instead of hammering the DB every few hundred ms.
+const POLL_SSE_UP_MS = 5_000
+const POLL_SSE_DOWN_MS = 2_000
+const POLL_HIDDEN_MS = 30_000
 
 /** SSE + extension DOM event + DB poll backup — reliable UI refresh after TV sync. */
 export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChange }: Options) {
@@ -62,7 +66,9 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
 
     let es: EventSource | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let pollTimer: ReturnType<typeof setInterval> | null = null
+    let pollTimer: ReturnType<typeof setTimeout> | null = null
+    let stopped = false
+    let sseUp = false
 
     function onDomSync(event: Event) {
       const detail = (event as CustomEvent<TradeSyncEventDetail>).detail
@@ -77,6 +83,7 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
     document.addEventListener("jb-trades-synced", onDomSync)
 
     async function pollLastEvent() {
+      if (document.visibilityState === "hidden") return
       try {
         const response = await authFetch("/api/sync/last-event")
         const data = await response.json()
@@ -88,6 +95,27 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
       }
     }
 
+    function nextPollDelay() {
+      if (document.visibilityState === "hidden") return POLL_HIDDEN_MS
+      return sseUp ? POLL_SSE_UP_MS : POLL_SSE_DOWN_MS
+    }
+
+    function schedulePoll() {
+      if (stopped) return
+      if (pollTimer) clearTimeout(pollTimer)
+      pollTimer = setTimeout(async () => {
+        await pollLastEvent()
+        schedulePoll()
+      }, nextPollDelay())
+    }
+
+    function onVisibilityChange() {
+      if (document.visibilityState !== "visible") return
+      // Catch up on anything missed while the tab was backgrounded.
+      void pollLastEvent()
+      schedulePoll()
+    }
+
     function connectSse() {
       es = new EventSource("/api/sync/events")
 
@@ -95,7 +123,9 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
         try {
           const data = JSON.parse(message.data) as TradeSyncEventDetail & { type?: string }
           if (data.type === "connected") {
+            sseUp = true
             onConnectionChangeRef.current?.(true)
+            schedulePoll()
             return
           }
           if (data.type === "accounts_updated") {
@@ -113,23 +143,27 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
       }
 
       es.onerror = () => {
+        sseUp = false
         onConnectionChangeRef.current?.(false)
         es?.close()
+        // SSE is the primary channel — poll faster until it is back.
+        schedulePoll()
         reconnectTimer = setTimeout(connectSse, 5000)
       }
     }
 
+    document.addEventListener("visibilitychange", onVisibilityChange)
     connectSse()
     void pollLastEvent()
-    pollTimer = setInterval(() => {
-      void pollLastEvent()
-    }, POLL_MS)
+    schedulePoll()
 
     return () => {
+      stopped = true
       document.removeEventListener("jb-trades-synced", onDomSync)
+      document.removeEventListener("visibilitychange", onVisibilityChange)
       es?.close()
       if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (pollTimer) clearInterval(pollTimer)
+      if (pollTimer) clearTimeout(pollTimer)
     }
   }, [enabled, handleEvent])
 }
