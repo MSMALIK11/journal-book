@@ -6,8 +6,35 @@ import {
 
 let activeAudio: HTMLAudioElement | null = null
 let audioUnlocked = false
+let gestureRetry: (() => void) | null = null
+
+function clearGestureRetry() {
+  if (!gestureRetry) return
+  window.removeEventListener("pointerdown", gestureRetry, true)
+  window.removeEventListener("keydown", gestureRetry, true)
+  gestureRetry = null
+}
+
+/**
+ * Autoplay policy blocks sound until the page has been interacted with, which
+ * silently swallowed alarms on tabs the user never clicked. Ring the moment they
+ * do interact instead of dropping the alarm.
+ */
+function retrySoundOnNextGesture(audio: HTMLAudioElement) {
+  clearGestureRetry()
+  const retry = () => {
+    clearGestureRetry()
+    if (activeAudio !== audio) return
+    audioUnlocked = true
+    void audio.play().catch(() => {})
+  }
+  gestureRetry = retry
+  window.addEventListener("pointerdown", retry, { capture: true, once: true })
+  window.addEventListener("keydown", retry, { capture: true, once: true })
+}
 
 function stopActiveAudio() {
+  clearGestureRetry()
   if (!activeAudio) return
   activeAudio.pause()
   activeAudio.currentTime = 0
@@ -44,7 +71,8 @@ export function stopRepeatingTradeAlarm(_timerId: number | null) {
 function startAudio(audio: HTMLAudioElement) {
   activeAudio = audio
   void audio.play().catch(() => {
-    stopActiveAudio()
+    if (activeAudio !== audio) return
+    retrySoundOnNextGesture(audio)
   })
 }
 

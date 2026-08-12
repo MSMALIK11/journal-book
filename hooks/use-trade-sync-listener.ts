@@ -30,6 +30,9 @@ type Options = {
 const POLL_SSE_UP_MS = 5_000
 const POLL_SSE_DOWN_MS = 2_000
 const POLL_HIDDEN_MS = 30_000
+// On mount the stored event is history, so anything older than this is used only
+// as a baseline — otherwise every page load replays the last trade's alarm.
+const STALE_EVENT_MS = 2 * 60_000
 
 /** SSE + extension DOM event + DB poll backup — reliable UI refresh after TV sync. */
 export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChange }: Options) {
@@ -69,6 +72,7 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
     let pollTimer: ReturnType<typeof setTimeout> | null = null
     let stopped = false
     let sseUp = false
+    let primed = false
 
     function onDomSync(event: Event) {
       const detail = (event as CustomEvent<TradeSyncEventDetail>).detail
@@ -83,12 +87,22 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
     document.addEventListener("jb-trades-synced", onDomSync)
 
     async function pollLastEvent() {
-      if (document.visibilityState === "hidden") return
       try {
         const response = await authFetch("/api/sync/last-event")
         const data = await response.json()
         if (!response.ok || !data.event?.eventId) return
         if (data.event.eventId === lastEventIdRef.current) return
+
+        const wasPrimed = primed
+        primed = true
+        if (!wasPrimed) {
+          const ageMs = data.event.at ? Date.now() - new Date(data.event.at).getTime() : 0
+          if (ageMs > STALE_EVENT_MS) {
+            lastEventIdRef.current = data.event.eventId
+            return
+          }
+        }
+
         handleEvent({ type: "trades_updated", ...data.event })
       } catch {
         // silent — SSE or next poll retries
