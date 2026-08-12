@@ -145,7 +145,7 @@ export async function PUT(request: NextRequest) {
     const instrument = await Instrument.findOneAndUpdate(
       { userId: session.sub, symbol: parsed.data.symbol },
       { $set: parsed.data },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     ).select("symbol name assetType baseCurrency quoteCurrency contractSize pipSize tickSize tickValue decimalPlaces minLot maxLot lotStep isDefault")
 
     if (!instrument) {

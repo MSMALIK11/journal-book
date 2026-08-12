@@ -46,7 +46,7 @@ export async function PATCH(request: NextRequest) {
   const profile = await User.findByIdAndUpdate(
     session.sub,
     { $set: parsed.data },
-    { new: true, runValidators: true },
+    { returnDocument: "after", runValidators: true },
   ).select("email name mobile trading_style risk_profile timezone theme")
 
   if (!profile) return NextResponse.json({ error: "User not found" }, { status: 404 })

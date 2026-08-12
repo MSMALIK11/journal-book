@@ -1,5 +1,5 @@
 /* global JBSync */
-const VERSION = "1.16.0"
+const VERSION = "1.16.1"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 120
@@ -15,8 +15,10 @@ let captureSyncPending = false
 let pendingCapturePayload = null
 let lastJournalSyncAt = 0
 let lastTableSyncAt = 0
+let lastRefreshCheckAt = 0
 const JOURNAL_SYNC_MIN_MS = 3_000
 const TABLE_SYNC_MIN_MS = 350
+const REFRESH_CHECK_MIN_MS = 2_000
 
 async function journalOrigin() {
   try {
@@ -167,7 +169,12 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 async function runRefreshCheck() {
   if (refreshInFlight) return
+  // Journal tabs ping every few seconds AND a timer fires here, so without a
+  // floor the same check runs several times per second against the API.
+  if (Date.now() - lastRefreshCheckAt < REFRESH_CHECK_MIN_MS) return
+
   refreshInFlight = true
+  lastRefreshCheckAt = Date.now()
   try {
     const config = await JBSync.getConfig()
     if (!config.syncToken) return

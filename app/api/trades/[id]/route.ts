@@ -108,7 +108,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
         exit_date: body.exit_date ? new Date(body.exit_date) : null,
         updatedAt: new Date(),
       },
-      { new: true },
+      { returnDocument: "after" },
     )
 
     if (!updated) return NextResponse.json({ error: "Trade not found or unauthorized" }, { status: 404 })

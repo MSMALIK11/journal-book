@@ -120,7 +120,7 @@ export async function persistAlerts(
           key: payload.key,
         },
       },
-      { upsert: true, new: true },
+      { upsert: true, returnDocument: "after" },
     )
 
     if (doc) {

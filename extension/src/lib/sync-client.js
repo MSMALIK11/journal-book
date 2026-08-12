@@ -814,11 +814,28 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
   }
 }
 
-JBSync.sendHeartbeat = async function sendHeartbeat(config) {
+// "Extension connected" tolerates 5+ minutes of silence, so pinging more often
+// than this only burns DB writes (and serverless invocations in production).
+JBSync.HEARTBEAT_MIN_MS = 15_000
+
+JBSync.sendHeartbeat = async function sendHeartbeat(config, options = {}) {
   if (!config.syncToken) return null
-  return JBSync.postJson(`${config.apiUrl}/api/sync/heartbeat`, config.syncToken, {
-    pollIntervalSeconds: config.pollIntervalSeconds ?? 30,
-  })
+
+  const now = Date.now()
+  if (!options.force && now - (JBSync._lastHeartbeatAt || 0) < JBSync.HEARTBEAT_MIN_MS) {
+    return null
+  }
+  JBSync._lastHeartbeatAt = now
+
+  try {
+    return await JBSync.postJson(`${config.apiUrl}/api/sync/heartbeat`, config.syncToken, {
+      pollIntervalSeconds: config.pollIntervalSeconds ?? 30,
+    })
+  } catch (error) {
+    // Failed ping shouldn't hold the throttle window open.
+    JBSync._lastHeartbeatAt = 0
+    throw error
+  }
 }
 
 JBSync.checkRefreshRequest = async function checkRefreshRequest(config) {
