@@ -1,5 +1,5 @@
 /* global JBSync */
-const VERSION = "1.16.2"
+const VERSION = "1.16.3"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 120
@@ -18,7 +18,7 @@ let lastTableSyncAt = 0
 let lastRefreshCheckAt = 0
 const JOURNAL_SYNC_MIN_MS = 3_000
 const TABLE_SYNC_MIN_MS = 350
-const REFRESH_CHECK_MIN_MS = 10_000
+const REFRESH_CHECK_MIN_MS = 5_000
 
 async function journalOrigin() {
   try {
@@ -169,16 +169,16 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 async function runRefreshCheck() {
   if (refreshInFlight) return
-  // Journal tabs ping every few seconds AND a timer fires here, so without a
-  // floor the same check runs several times per second against the API.
-  if (Date.now() - lastRefreshCheckAt < REFRESH_CHECK_MIN_MS) return
 
   refreshInFlight = true
   lastRefreshCheckAt = Date.now()
   try {
     const config = await JBSync.getConfig()
     if (!config.syncToken) return
+    // Heartbeat has its own 15s floor — safe to call every time.
     await JBSync.sendHeartbeat(config).catch(() => {})
+    // Always process Live Sync "request refresh" queues. Do not early-return
+    // before this or the page poll looks dead while refresh-status stays pending.
     await JBSync.maybeRunRequestedRefresh(config)
   } catch (error) {
     console.warn("Refresh check failed:", error?.message || error)
@@ -189,6 +189,7 @@ async function runRefreshCheck() {
 
 function startRefreshChecker() {
   void runRefreshCheck()
+  // Timer itself is the throttle (was also early-returning inside and skipping queues).
   setInterval(() => {
     void runRefreshCheck()
   }, REFRESH_CHECK_MIN_MS)
@@ -355,6 +356,8 @@ chrome.runtime.onStartup.addListener(() => {
 })
 
 void ensureJournalBridgeRegistration()
+// SW can wake without onStartup — re-arm alarms so poll backup never goes missing.
+void syncAlarmFromSettings()
 
 // Keep hooks alive on open TV tabs without asking the user to refresh.
 void injectHooksOnOpenTvTabs()
@@ -419,9 +422,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "POLL_TICK") {
-    void handlePollTick(Boolean(message.autoSync))
-    sendResponse({ ok: true })
-    return false
+    void (async () => {
+      try {
+        // Prefer storage default (true when unset) over a stale false from older content scripts.
+        const config = await JBSync.getConfig()
+        await handlePollTick(config.autoSyncTrades)
+        sendResponse({ ok: true })
+      } catch (error) {
+        sendResponse({ ok: false, error: error?.message || "Poll failed" })
+      }
+    })()
+    return true
   }
 
   if (message.type === "TV_TABLE_CHANGED") {

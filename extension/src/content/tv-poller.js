@@ -14,7 +14,9 @@
     return {
       configured: Boolean((stored.syncToken || "").trim()),
       pollIntervalSeconds: Number.isFinite(pollIntervalSeconds) ? pollIntervalSeconds : 30,
-      autoSyncTrades: Boolean(stored.autoSyncTrades),
+      // Must match options/sync-client — Boolean(undefined) is false and silently
+      // disables POLL_TICK trade sync for anyone who never toggled the checkbox.
+      autoSyncTrades: stored.autoSyncTrades === undefined ? true : Boolean(stored.autoSyncTrades),
     }
   }
 
