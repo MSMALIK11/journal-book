@@ -284,8 +284,25 @@ export function TradeAlarmSettings() {
             onClick={() => testSound(preferences.soundMode)}
           >
             <Play className="h-4 w-4" />
-            Test with current settings
+            Test sound only
           </Button>
+
+          <Button
+            type="button"
+            variant="default"
+            className="w-full gap-1.5"
+            disabled={loading}
+            onClick={() => {
+              window.dispatchEvent(new Event("jb-test-trade-alarm"))
+            }}
+          >
+            <BellRing className="h-4 w-4" />
+            Test full alarm (modal + sound)
+          </Button>
+          <SettingsHint>
+            Full alarm uses the same path as a real open-trade sync. If this works but live fills
+            stay silent, the sync event is not reaching the page — keep Live Sync open.
+          </SettingsHint>
         </div>
       </div>
     </SettingsSection>

@@ -6,6 +6,7 @@ import useSWR from "swr"
 import { format, isToday, parseISO } from "date-fns"
 import {
   BarChart3,
+  BellRing,
   ChevronDown,
   Download,
   Loader2,
@@ -344,11 +345,25 @@ export function LiveSyncDashboard() {
 
   return (
     <div className="space-y-6">
-      {activeAccount ? (
-        <p className="text-sm text-muted-foreground">
-          Viewing account: <span className="font-medium text-foreground">{activeAccount.name}</span>
-        </p>
-      ) : null}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {activeAccount ? (
+          <p className="text-sm text-muted-foreground">
+            Viewing account: <span className="font-medium text-foreground">{activeAccount.name}</span>
+          </p>
+        ) : (
+          <span />
+        )}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          onClick={() => window.dispatchEvent(new Event("jb-test-trade-alarm"))}
+        >
+          <BellRing className="h-3.5 w-3.5" />
+          Test alarm
+        </Button>
+      </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card>

@@ -419,7 +419,7 @@ export async function POST(request: NextRequest) {
             latestTrade:
               stats.imported > 0
                 ? latestOpenImportedByAccount[id] || latestImportedByAccount[id]
-                : undefined,
+                : latestUpdatedByAccount[id] || latestOpenImportedByAccount[id],
           },
         ]),
     )

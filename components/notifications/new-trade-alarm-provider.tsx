@@ -31,12 +31,24 @@ const preferencesFetcher = async (url: string) => {
 function resolveOpenTradeForAlarm(
   latestTrade?: ImportedTradeSnapshot | null,
 ): ImportedTradeSnapshot | null {
-  // Alarm only for newly imported OPEN trades — never closed LONG/SHORT syncs.
+  // Alarm only for OPEN trades — never closed LONG/SHORT syncs.
   if (!latestTrade) return null
   if (latestTrade.is_open === true) return latestTrade
   if (latestTrade.is_open === false) return null
-  if (!isOpenTvSignal(latestTrade.signal)) return null
-  return latestTrade
+  // Some payloads omit is_open and only send signal "Open".
+  if (isOpenTvSignal(latestTrade.signal)) return { ...latestTrade, is_open: true }
+  return null
+}
+
+function shouldConsiderAlarm(data: {
+  imported?: number
+  updated?: number
+  latestTrade?: ImportedTradeSnapshot
+}) {
+  if (resolveOpenTradeForAlarm(data.latestTrade)) return true
+  // Brand-new rows may need a DB fetch when the snapshot was a mixed batch.
+  if ((data.imported ?? 0) > 0) return true
+  return false
 }
 
 function readSeenKeys(): Set<string> {
@@ -148,18 +160,21 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
     async (payload: {
       accountId: string
       accountName?: string
-      imported: number
+      imported?: number
+      updated?: number
       latestTrade?: ImportedTradeSnapshot
       eventId?: string
       eventAt?: string
+      force?: boolean
     }) => {
       const prefs = preferencesRef.current
-      if (!prefs.enabled || payload.imported <= 0) return
+      if (!prefs.enabled && !payload.force) return
+      if (!payload.force && !shouldConsiderAlarm(payload)) return
 
       const dedupeKey =
         payload.eventId ||
         `${payload.accountId}:${payload.latestTrade?.id ?? "none"}:${payload.latestTrade?.entry_date ?? ""}:import`
-      if (seenImportKeysRef.current.has(dedupeKey)) return
+      if (!payload.force && seenImportKeysRef.current.has(dedupeKey)) return
 
       const targetAccountId = payload.accountId || activeAccountId || ""
 
@@ -168,7 +183,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
 
       // If the event only carried a closed row (batch mixed), load the open for
       // THAT account via ?account= (API used to ignore this and miss GOLD fills).
-      if (!trade && targetAccountId) {
+      if (!trade && targetAccountId && !payload.force) {
         const candidate = await fetchLatestOpenTrade(targetAccountId)
         if (candidate) {
           const snapshotClosed = payload.latestTrade?.is_open === false
@@ -181,29 +196,43 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
             } else {
               trade = candidate
             }
-          } else {
+          } else if ((payload.imported ?? 0) > 0) {
             trade = candidate
           }
+        }
+      }
+
+      if (!trade && payload.force) {
+        trade = {
+          id: `test-${Date.now()}`,
+          instrument: "TEST",
+          trade_type: "Buy",
+          entry_date: new Date().toISOString(),
+          entry_price: 0,
+          signal: "Open",
+          is_open: true,
         }
       }
       if (!trade) return
 
       const finalKey = `${payload.accountId}:${trade.id}:${trade.entry_date}:import`
-      if (seenImportKeysRef.current.has(finalKey)) return
-      markSeen(finalKey, dedupeKey)
+      if (!payload.force && seenImportKeysRef.current.has(finalKey)) return
+      if (!payload.force) markSeen(finalKey, dedupeKey)
 
       // Fire modal + sound immediately — refresh can follow.
       let advice = buildFallbackTradeAdvice({ isUpdate: false })
       setAlarm({
         trade,
         accountName: payload.accountName,
-        importedCount: payload.imported,
+        importedCount: payload.imported || 1,
         advice,
       })
       setOpen(true)
       void unlockTradeAlarmAudio().finally(() => {
         startSound(prefs.soundId, prefs.soundMode)
       })
+
+      if (payload.force) return
 
       void (async () => {
         try {
@@ -237,17 +266,19 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
       eventId?: string
       at?: string
       imported?: number
+      updated?: number
       accountId?: string
       accountName?: string
       latestTrade?: ImportedTradeSnapshot
     }) => {
       if (data.type !== "trades_updated") return
-      if (!data.imported || data.imported <= 0) return
+      if (!shouldConsiderAlarm(data)) return
 
       void triggerAlarm({
         accountId: data.accountId || activeAccountId || "",
         accountName: data.accountName,
         imported: data.imported,
+        updated: data.updated,
         latestTrade: data.latestTrade,
         eventId: data.eventId,
         eventAt: data.at,
@@ -257,6 +288,30 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
   )
 
   useTradeSyncEvent(onSyncEvent)
+
+  // Settings / Live Sync "Test alarm" button → full modal + sound path.
+  useEffect(() => {
+    function onTestAlarm() {
+      void triggerAlarm({
+        accountId: activeAccountId || "test",
+        accountName: "Test",
+        imported: 1,
+        force: true,
+        eventId: `manual-test-${Date.now()}`,
+        latestTrade: {
+          id: `manual-test-${Date.now()}`,
+          instrument: "TEST",
+          trade_type: "Buy",
+          entry_date: new Date().toISOString(),
+          entry_price: 0,
+          signal: "Open",
+          is_open: true,
+        },
+      })
+    }
+    window.addEventListener("jb-test-trade-alarm", onTestAlarm)
+    return () => window.removeEventListener("jb-test-trade-alarm", onTestAlarm)
+  }, [activeAccountId, triggerAlarm])
 
   // Catch-up: if the page was closed/backgrounded when an open fill synced,
   // last-event still has it — ring once within the catch-up window.
@@ -269,7 +324,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         const response = await authFetch("/api/sync/last-event")
         const data = await response.json()
         const event = data?.event
-        if (!response.ok || !event?.eventId || !(event.imported > 0)) return
+        if (!response.ok || !event?.eventId || !shouldConsiderAlarm(event)) return
 
         const ageMs = event.at ? Date.now() - new Date(event.at).getTime() : CATCHUP_WINDOW_MS + 1
         if (ageMs > CATCHUP_WINDOW_MS) return
@@ -278,6 +333,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
           accountId: event.accountId || "",
           accountName: event.accountName,
           imported: event.imported,
+          updated: event.updated,
           latestTrade: event.latestTrade,
           eventId: `catchup:${event.eventId}`,
           eventAt: event.at,
