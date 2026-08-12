@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import connectDB from "@/app/api/db/mongoose"
 import Trade from "@/app/api/models/Trade"
+import TradingAccount from "@/app/api/models/TradingAccount"
 import { getQuantityMode } from "@/lib/instruments"
 import { resolveInstrumentForUser } from "@/lib/instruments-server"
 import { getAccountContext } from "@/lib/active-account"
@@ -15,8 +16,22 @@ export async function GET(request: NextRequest) {
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     await connectDB()
 
-    const { accountId } = await getAccountContext(request, session.sub)
     const { searchParams } = new URL(request.url)
+    const requestedAccountId = searchParams.get("account")?.trim()
+    let accountId = (await getAccountContext(request, session.sub)).accountId
+
+    // Alarm / live-sync often need another account than the cookie (e.g. GOLD
+    // fill while BTC is selected). Honor ?account= when it belongs to this user.
+    if (requestedAccountId && requestedAccountId !== accountId) {
+      const owned = await TradingAccount.findOne({
+        _id: requestedAccountId,
+        userId: session.sub,
+      })
+        .select("_id")
+        .lean()
+      if (owned) accountId = String(owned._id)
+    }
+
     const query: any = { userId: session.sub, accountId }
 
     const search = searchParams.get("search")

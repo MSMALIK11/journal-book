@@ -18,6 +18,8 @@ import { isOpenTvSignal, isOpenSyncedTrade } from "@/lib/trading/tradingview-ope
 import type { MomentZoneSnapshot } from "@/lib/trading/trade-zones"
 
 const TRADE_ALARM_PREFS_KEY = "/api/settings/trade-alarm"
+const SEEN_ALARM_KEYS = "jb-seen-trade-alarms"
+const CATCHUP_WINDOW_MS = 60 * 60_000
 
 const preferencesFetcher = async (url: string) => {
   const response = await authFetch(url)
@@ -37,7 +39,29 @@ function resolveOpenTradeForAlarm(
   return latestTrade
 }
 
-async function fetchLatestOpenTrade(accountId: string): Promise<ImportedTradeSnapshot | null> {
+function readSeenKeys(): Set<string> {
+  try {
+    const raw = sessionStorage.getItem(SEEN_ALARM_KEYS)
+    if (!raw) return new Set()
+    const parsed = JSON.parse(raw)
+    return new Set(Array.isArray(parsed) ? parsed.map(String) : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function writeSeenKeys(keys: Set<string>) {
+  try {
+    sessionStorage.setItem(SEEN_ALARM_KEYS, JSON.stringify([...keys].slice(-40))
+    )
+  } catch {
+    // private mode / quota
+  }
+}
+
+async function fetchLatestOpenTrade(
+  accountId: string,
+): Promise<(ImportedTradeSnapshot & { createdAt?: string }) | null> {
   try {
     const response = await authFetch(
       `/api/trades?source=tradingview&limit=20${accountId ? `&account=${accountId}` : ""}`,
@@ -57,6 +81,7 @@ async function fetchLatestOpenTrade(accountId: string): Promise<ImportedTradeSna
       entry_price: Number(open.entry_price || 0),
       signal: open.signal ?? "Open",
       is_open: true,
+      createdAt: open.createdAt ? String(open.createdAt) : undefined,
     }
   } catch {
     return null
@@ -69,6 +94,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false)
   const seenImportKeysRef = useRef<Set<string>>(new Set())
   const preferencesRef = useRef(DEFAULT_TRADE_ALARM_PREFERENCES)
+  const catchupDoneRef = useRef(false)
 
   const { data: preferences = DEFAULT_TRADE_ALARM_PREFERENCES } = useSWR(
     TRADE_ALARM_PREFS_KEY,
@@ -78,6 +104,10 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     preferencesRef.current = preferences
   }, [preferences])
+
+  useEffect(() => {
+    seenImportKeysRef.current = readSeenKeys()
+  }, [])
 
   // Browsers block audio until a user gesture — unlock once so alarms can ring.
   useEffect(() => {
@@ -106,39 +136,61 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const markSeen = useCallback((...keys: string[]) => {
+    for (const key of keys) {
+      if (!key) continue
+      seenImportKeysRef.current.add(key)
+    }
+    writeSeenKeys(seenImportKeysRef.current)
+  }, [])
+
   const triggerAlarm = useCallback(
     async (payload: {
       accountId: string
       accountName?: string
       imported: number
       latestTrade?: ImportedTradeSnapshot
+      eventId?: string
+      eventAt?: string
     }) => {
       const prefs = preferencesRef.current
       if (!prefs.enabled || payload.imported <= 0) return
 
-      const dedupeKey = `${payload.accountId}:${payload.latestTrade?.id ?? "none"}:${payload.latestTrade?.entry_date ?? ""}:import`
+      const dedupeKey =
+        payload.eventId ||
+        `${payload.accountId}:${payload.latestTrade?.id ?? "none"}:${payload.latestTrade?.entry_date ?? ""}:import`
       if (seenImportKeysRef.current.has(dedupeKey)) return
 
       const targetAccountId = payload.accountId || activeAccountId || ""
 
-      // Resolve open trade — fallback fetch uses active-account cookie, so switch first.
+      // Prefer the snapshot from the sync event — no cookie/account race.
       let trade = resolveOpenTradeForAlarm(payload.latestTrade)
-      if (!trade) {
-        try {
-          if (targetAccountId && targetAccountId !== activeAccountId) {
-            await switchAccount(targetAccountId)
+
+      // If the event only carried a closed row (batch mixed), load the open for
+      // THAT account via ?account= (API used to ignore this and miss GOLD fills).
+      if (!trade && targetAccountId) {
+        const candidate = await fetchLatestOpenTrade(targetAccountId)
+        if (candidate) {
+          const snapshotClosed = payload.latestTrade?.is_open === false
+          if (snapshotClosed && candidate.createdAt && payload.eventAt) {
+            const createdMs = new Date(candidate.createdAt).getTime()
+            const eventMs = new Date(payload.eventAt).getTime()
+            // Same sync wave only — don't re-ring a day-old open on later closed imports.
+            if (Number.isFinite(createdMs) && Number.isFinite(eventMs) && Math.abs(eventMs - createdMs) > 5 * 60_000) {
+              trade = null
+            } else {
+              trade = candidate
+            }
+          } else {
+            trade = candidate
           }
-          trade = await fetchLatestOpenTrade(targetAccountId)
-        } catch {
-          trade = null
         }
       }
       if (!trade) return
 
       const finalKey = `${payload.accountId}:${trade.id}:${trade.entry_date}:import`
       if (seenImportKeysRef.current.has(finalKey)) return
-      seenImportKeysRef.current.add(finalKey)
-      seenImportKeysRef.current.add(dedupeKey)
+      markSeen(finalKey, dedupeKey)
 
       // Fire modal + sound immediately — refresh can follow.
       let advice = buildFallbackTradeAdvice({ isUpdate: false })
@@ -176,12 +228,14 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         }
       })()
     },
-    [activeAccountId, revalidateSyncedData, refresh, startSound, switchAccount, switchVersion],
+    [activeAccountId, markSeen, revalidateSyncedData, refresh, startSound, switchAccount, switchVersion],
   )
 
   const onSyncEvent = useCallback(
     (data: {
       type?: string
+      eventId?: string
+      at?: string
       imported?: number
       accountId?: string
       accountName?: string
@@ -195,12 +249,44 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         accountName: data.accountName,
         imported: data.imported,
         latestTrade: data.latestTrade,
+        eventId: data.eventId,
+        eventAt: data.at,
       })
     },
     [activeAccountId, triggerAlarm],
   )
 
   useTradeSyncEvent(onSyncEvent)
+
+  // Catch-up: if the page was closed/backgrounded when an open fill synced,
+  // last-event still has it — ring once within the catch-up window.
+  useEffect(() => {
+    if (catchupDoneRef.current) return
+    catchupDoneRef.current = true
+
+    void (async () => {
+      try {
+        const response = await authFetch("/api/sync/last-event")
+        const data = await response.json()
+        const event = data?.event
+        if (!response.ok || !event?.eventId || !(event.imported > 0)) return
+
+        const ageMs = event.at ? Date.now() - new Date(event.at).getTime() : CATCHUP_WINDOW_MS + 1
+        if (ageMs > CATCHUP_WINDOW_MS) return
+
+        await triggerAlarm({
+          accountId: event.accountId || "",
+          accountName: event.accountName,
+          imported: event.imported,
+          latestTrade: event.latestTrade,
+          eventId: `catchup:${event.eventId}`,
+          eventAt: event.at,
+        })
+      } catch {
+        // ignore — live events still work
+      }
+    })()
+  }, [triggerAlarm])
 
   useEffect(() => () => stopTradeAlarmSound(), [])
 
