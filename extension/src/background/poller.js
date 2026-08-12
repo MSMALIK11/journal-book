@@ -1,5 +1,5 @@
 /* global JBSync */
-const VERSION = "1.16.1"
+const VERSION = "1.16.2"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 120
@@ -18,7 +18,7 @@ let lastTableSyncAt = 0
 let lastRefreshCheckAt = 0
 const JOURNAL_SYNC_MIN_MS = 3_000
 const TABLE_SYNC_MIN_MS = 350
-const REFRESH_CHECK_MIN_MS = 2_000
+const REFRESH_CHECK_MIN_MS = 10_000
 
 async function journalOrigin() {
   try {
@@ -191,7 +191,7 @@ function startRefreshChecker() {
   void runRefreshCheck()
   setInterval(() => {
     void runRefreshCheck()
-  }, 2000)
+  }, REFRESH_CHECK_MIN_MS)
 }
 
 startRefreshChecker()

@@ -69,8 +69,8 @@
   }
 
   void wakeBackground()
-  // Keep extension alive on journal pages for instant open/exit UI updates.
+  // Keep the service worker warm without hammering refresh-status every few seconds.
   setInterval(() => {
     void wakeBackground()
-  }, 3000)
+  }, 10_000)
 })()
