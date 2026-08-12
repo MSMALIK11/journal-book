@@ -51,6 +51,16 @@ function shouldConsiderAlarm(data: {
   return false
 }
 
+/** Sync often lands after TV already closed the row — still ring for fresh fills. */
+function isRecentImportedFill(trade: ImportedTradeSnapshot, eventAt?: string) {
+  const entryMs = new Date(trade.entry_date).getTime()
+  const refMs = eventAt ? new Date(eventAt).getTime() : Date.now()
+  if (!Number.isFinite(entryMs) || !Number.isFinite(refMs)) return false
+  const ageMs = refMs - entryMs
+  // Same session / trading day — not a multi-day history import dump.
+  return ageMs >= -60_000 && ageMs <= 12 * 60 * 60_000
+}
+
 function readSeenKeys(): Set<string> {
   try {
     const raw = sessionStorage.getItem(SEEN_ALARM_KEYS)
@@ -178,25 +188,28 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
 
       const targetAccountId = payload.accountId || activeAccountId || ""
 
-      // Prefer the snapshot from the sync event — no cookie/account race.
+      // 1) Live open from the sync event (best case — what worked for the 01:15 fill).
       let trade = resolveOpenTradeForAlarm(payload.latestTrade)
 
-      // If the event only carried a closed row (batch mixed), load the open for
-      // THAT account via ?account= (API used to ignore this and miss GOLD fills).
-      if (!trade && targetAccountId && !payload.force) {
+      // 2) New import that already closed on TV before sync landed. After the first
+      // open alarm, later fills were often createdAsClosed in Mongo — old logic
+      // returned here and never rang again.
+      if (
+        !trade &&
+        (payload.imported ?? 0) > 0 &&
+        payload.latestTrade &&
+        isRecentImportedFill(payload.latestTrade, payload.eventAt)
+      ) {
+        trade = payload.latestTrade
+      }
+
+      // 3) Mixed batch: event snapshot was closed but an open exists on that account.
+      if (!trade && targetAccountId && !payload.force && (payload.imported ?? 0) > 0) {
         const candidate = await fetchLatestOpenTrade(targetAccountId)
         if (candidate) {
-          const snapshotClosed = payload.latestTrade?.is_open === false
-          if (snapshotClosed && candidate.createdAt && payload.eventAt) {
-            const createdMs = new Date(candidate.createdAt).getTime()
-            const eventMs = new Date(payload.eventAt).getTime()
-            // Same sync wave only — don't re-ring a day-old open on later closed imports.
-            if (Number.isFinite(createdMs) && Number.isFinite(eventMs) && Math.abs(eventMs - createdMs) > 5 * 60_000) {
-              trade = null
-            } else {
-              trade = candidate
-            }
-          } else if ((payload.imported ?? 0) > 0) {
+          const createdMs = candidate.createdAt ? new Date(candidate.createdAt).getTime() : NaN
+          const eventMs = payload.eventAt ? new Date(payload.eventAt).getTime() : Date.now()
+          if (!Number.isFinite(createdMs) || Math.abs(eventMs - createdMs) <= 5 * 60_000) {
             trade = candidate
           }
         }
@@ -215,7 +228,8 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
       }
       if (!trade) return
 
-      const finalKey = `${payload.accountId}:${trade.id}:${trade.entry_date}:import`
+      // Dedupe by the actual trade identity — never block trade B because trade A already rang.
+      const finalKey = `${payload.accountId}:${trade.id}:${trade.entry_date}:alarm`
       if (!payload.force && seenImportKeysRef.current.has(finalKey)) return
       if (!payload.force) markSeen(finalKey, dedupeKey)
 

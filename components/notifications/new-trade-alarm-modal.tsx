@@ -75,7 +75,7 @@ export function NewTradeAlarmModal({ open, alarm, onStop }: NewTradeAlarmModalPr
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <BellRing className="h-5 w-5 text-amber-500 animate-pulse" />
-            New open trade
+            {trade.is_open === false ? "New trade synced" : "New open trade"}
           </DialogTitle>
           <DialogDescription>
             {importedCount > 1
