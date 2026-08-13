@@ -397,7 +397,6 @@ export function TradeHistory() {
               </div>
             </div>
           )}
-        </div>
       </HudPanel>
     </div>
   )
