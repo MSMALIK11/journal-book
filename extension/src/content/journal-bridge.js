@@ -36,7 +36,8 @@
     const requestId = event.detail?.requestId
     if (!requestId) return
 
-    chrome.runtime.sendMessage({ type: "REFRESH_NEW_TRADES" }, (response) => {
+    const type = event.detail?.reloadChart ? "RELOAD_TV_AND_SYNC" : "REFRESH_NEW_TRADES"
+    chrome.runtime.sendMessage({ type }, (response) => {
       const runtimeError = chrome.runtime.lastError?.message
       document.dispatchEvent(
         new CustomEvent("jb-sync-response", {

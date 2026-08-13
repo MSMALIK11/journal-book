@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import connectDB from "@/app/api/db/mongoose"
 import User from "@/app/api/models/User"
-import { completeSyncRefresh, getSyncRefreshState, isRefreshPendingForUser } from "@/lib/sync-refresh-request"
+import {
+  completeSyncRefresh,
+  getSyncRefreshState,
+  isRefreshPendingForUser,
+  peekRefreshQueue,
+} from "@/lib/sync-refresh-request"
 import { withSyncCors } from "@/lib/sync-cors"
 import { getSyncAuth } from "@/lib/sync-auth"
 import { getSession } from "@/lib/session"
@@ -35,13 +40,16 @@ export async function GET(request: NextRequest) {
         return withSyncCors(request, NextResponse.json({ error: "Unauthorized" }, { status: 401 }))
       }
 
-      const refreshRequested = isRefreshPendingForUser(
-        String(user._id),
-        user.sync_refresh_requested_at,
-      )
+      const userId = String(user._id)
+      const refreshRequested = isRefreshPendingForUser(userId, user.sync_refresh_requested_at)
+      const queued = peekRefreshQueue(userId)
       return withSyncCors(
         request,
-        NextResponse.json({ refreshRequested, at: new Date().toISOString() }),
+        NextResponse.json({
+          refreshRequested,
+          reloadChart: Boolean(refreshRequested && queued?.reloadChart),
+          at: new Date().toISOString(),
+        }),
       )
     } catch (error) {
       console.error("Failed to read extension refresh status:", error)

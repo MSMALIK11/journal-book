@@ -839,7 +839,7 @@ JBSync.sendHeartbeat = async function sendHeartbeat(config, options = {}) {
 }
 
 JBSync.checkRefreshRequest = async function checkRefreshRequest(config) {
-  if (!config.syncToken) return false
+  if (!config.syncToken) return { requested: false, reloadChart: false }
 
   const response = await fetch(`${config.apiUrl}/api/sync/refresh-status`, {
     cache: "no-store",
@@ -849,8 +849,74 @@ JBSync.checkRefreshRequest = async function checkRefreshRequest(config) {
     },
   })
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) return false
-  return Boolean(data.refreshRequested)
+  if (!response.ok) return { requested: false, reloadChart: false }
+  return {
+    requested: Boolean(data.refreshRequested),
+    reloadChart: Boolean(data.reloadChart),
+  }
+}
+
+/** Same as pressing F5 on the TradingView chart tab. */
+JBSync.reloadTradingViewChartTab = async function reloadTradingViewChartTab() {
+  const tab = await JBSync.getTradingViewTab()
+  if (!tab?.id) {
+    throw new Error("TradingView chart tab not found. Keep tradingview.com/chart open.")
+  }
+
+  const tabId = tab.id
+
+  await new Promise((resolve, reject) => {
+    let sawLoading = false
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(onUpdated)
+      reject(new Error("TradingView reload timed out"))
+    }, 40_000)
+
+    function onUpdated(id, info) {
+      if (id !== tabId) return
+      if (info.status === "loading") sawLoading = true
+      if (info.status !== "complete" || !sawLoading) return
+      clearTimeout(timeout)
+      chrome.tabs.onUpdated.removeListener(onUpdated)
+      resolve()
+    }
+
+    chrome.tabs.onUpdated.addListener(onUpdated)
+
+    try {
+      const reloaded = chrome.tabs.reload(tabId)
+      if (reloaded && typeof reloaded.catch === "function") {
+        reloaded.catch((error) => {
+          clearTimeout(timeout)
+          chrome.tabs.onUpdated.removeListener(onUpdated)
+          reject(error)
+        })
+      }
+    } catch (error) {
+      clearTimeout(timeout)
+      chrome.tabs.onUpdated.removeListener(onUpdated)
+      reject(error)
+    }
+  })
+
+  // Strategy Tester needs a moment after F5 to rebuild List of trades.
+  await new Promise((resolve) => setTimeout(resolve, 4000))
+  return tabId
+}
+
+JBSync.refreshNewTradesAfterTvReload = async function refreshNewTradesAfterTvReload(config) {
+  if (JBSync._tvReloadPromise) return JBSync._tvReloadPromise
+
+  JBSync._tvReloadPromise = (async () => {
+    try {
+      await JBSync.reloadTradingViewChartTab()
+      return await JBSync.refreshNewTrades(config)
+    } finally {
+      JBSync._tvReloadPromise = null
+    }
+  })()
+
+  return JBSync._tvReloadPromise
 }
 
 JBSync.completeRefreshRequest = async function completeRefreshRequest(config, result) {
@@ -913,21 +979,23 @@ JBSync.notifyJournalTabs = async function notifyJournalTabs(payload, apiUrl) {
 JBSync.maybeRunRequestedRefresh = async function maybeRunRequestedRefresh(config) {
   if (!config.syncToken) return null
 
-  const requested = await JBSync.checkRefreshRequest(config)
-  if (!requested) return null
+  const request = await JBSync.checkRefreshRequest(config)
+  if (!request.requested) return null
 
   const tab = await JBSync.getTradingViewTab()
   if (!tab?.id) {
     const failure = {
       ok: false,
-      error: "TradingView chart tab not found. Keep tradingview.com/chart open (no refresh needed).",
+      error: "TradingView chart tab not found. Keep tradingview.com/chart open.",
     }
     await JBSync.completeRefreshRequest(config, failure)
     return failure
   }
 
   try {
-    const syncResult = await JBSync.refreshNewTrades(config)
+    const syncResult = request.reloadChart
+      ? await JBSync.refreshNewTradesAfterTvReload(config)
+      : await JBSync.refreshNewTrades(config)
     await JBSync.completeRefreshRequest(config, syncResult)
     return syncResult
   } catch (error) {

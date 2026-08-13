@@ -11,6 +11,7 @@ import {
   Download,
   Loader2,
   Radio,
+  RefreshCw,
   Trash2,
   TrendingDown,
   TrendingUp,
@@ -42,6 +43,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { authFetch } from "@/lib/client-auth"
+import { formatExtensionSyncSummary, requestTvChartRefresh } from "@/lib/client-extension-sync"
 import { useActiveAccount } from "@/hooks/use-active-account"
 import { useTradeSyncEvent, useTradeSyncConnection } from "@/hooks/use-trade-sync-event"
 import { useLiveSyncAutoRefresh } from "@/hooks/use-live-sync-auto-refresh"
@@ -96,6 +98,7 @@ export function LiveSyncDashboard() {
   const [clearing, setClearing] = useState(false)
   const [bridgeReady, setBridgeReady] = useState(false)
   const [pollSeconds, setPollSeconds] = useState(DEFAULT_LIVE_SYNC_POLL_SECONDS)
+  const [isRefreshingTv, setIsRefreshingTv] = useState(false)
 
   const { data: tradesData, isLoading: tradesLoading, mutate } = useSWR<{ trades: SyncTrade[] }>(
     activeAccountId ? ["/api/trades?source=tradingview&limit=5000", activeAccountId, switchVersion] : null,
@@ -316,6 +319,58 @@ export function LiveSyncDashboard() {
     }
   }
 
+  async function handleRefreshTv() {
+    if (isRefreshingTv) return
+    setIsRefreshingTv(true)
+    try {
+      const result = await requestTvChartRefresh({
+        queueRefresh: async () => {
+          const response = await authFetch("/api/sync/request-refresh", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reloadChart: true }),
+          })
+          const data = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(data.error || "Could not queue TradingView refresh")
+          return new Date(data.at || Date.now()).getTime()
+        },
+        fetchRefreshStatus: async () => {
+          const response = await authFetch("/api/sync/refresh-status")
+          const data = await response.json()
+          if (!response.ok) throw new Error(data.error || "Could not read sync status")
+          return data
+        },
+      })
+
+      void revalidateSyncedData()
+      refreshSyncedViews()
+
+      if (result?.error) {
+        toast({
+          title: "TradingView refresh failed",
+          description: String(result.error),
+          variant: "destructive",
+        })
+      } else {
+        toast({
+          title: "TradingView refreshed",
+          description: formatExtensionSyncSummary(result),
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Could not refresh TradingView",
+        description:
+          error instanceof Error
+            ? error.message
+            : "Keep the extension and TradingView chart tab open",
+        variant: "destructive",
+      })
+    } finally {
+      setIsRefreshingTv(false)
+    }
+  }
+
   async function handleClearAll() {
     setClearing(true)
     try {
@@ -353,16 +408,33 @@ export function LiveSyncDashboard() {
         ) : (
           <span />
         )}
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="gap-1.5"
-          onClick={() => window.dispatchEvent(new Event("jb-test-trade-alarm"))}
-        >
-          <BellRing className="h-3.5 w-3.5" />
-          Test alarm
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            className="gap-1.5"
+            disabled={isRefreshingTv}
+            title="Reload TradingView chart (same as F5) and sync trades"
+            onClick={() => void handleRefreshTv()}
+          >
+            {isRefreshingTv ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
+            {isRefreshingTv ? "Refreshing TV…" : "Refresh"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            onClick={() => window.dispatchEvent(new Event("jb-test-trade-alarm"))}
+          >
+            <BellRing className="h-3.5 w-3.5" />
+            Test alarm
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -470,7 +542,12 @@ export function LiveSyncDashboard() {
               </CardTitle>
             </div>
             <div className="flex items-center gap-2">
-              {isSyncing ? (
+              {isRefreshingTv ? (
+                <Badge variant="outline" className="gap-1 text-amber-600">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Reloading TV
+                </Badge>
+              ) : isSyncing ? (
                 <Badge variant="outline" className="gap-1 text-amber-600">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Syncing

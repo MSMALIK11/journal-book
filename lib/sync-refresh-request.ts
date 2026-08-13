@@ -5,6 +5,7 @@ export const SYNC_REFRESH_TTL_MS = 120_000
 type RefreshEntry = {
   requestedAt: number
   lastResult: Record<string, unknown> | null
+  reloadChart?: boolean
 }
 
 const globalStore = globalThis as typeof globalThis & {
@@ -34,9 +35,17 @@ export function isRefreshPendingForUser(userId: string, mongoRequestedAt?: Date 
   return isSyncRefreshPending(mongoRequestedAt)
 }
 
-export async function requestSyncRefresh(userId: string) {
+export function peekRefreshQueue(userId: string) {
+  return queueStore().get(userId) ?? null
+}
+
+export async function requestSyncRefresh(userId: string, options?: { reloadChart?: boolean }) {
   const at = new Date()
-  queueStore().set(userId, { requestedAt: at.getTime(), lastResult: null })
+  queueStore().set(userId, {
+    requestedAt: at.getTime(),
+    lastResult: null,
+    reloadChart: Boolean(options?.reloadChart),
+  })
 
   // Best-effort persist (may be ignored if mongoose model was cached before schema update).
   try {
@@ -72,7 +81,7 @@ export async function getSyncRefreshState(userId: string) {
 
 export async function completeSyncRefresh(userId: string, result: Record<string, unknown>) {
   const finished = { ...result, finishedAt: new Date().toISOString() }
-  queueStore().set(userId, { requestedAt: 0, lastResult: finished })
+  queueStore().set(userId, { requestedAt: 0, lastResult: finished, reloadChart: false })
 
   try {
     await User.updateOne(

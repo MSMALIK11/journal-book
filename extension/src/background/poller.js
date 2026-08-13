@@ -1,5 +1,5 @@
 /* global JBSync */
-const VERSION = "1.16.3"
+const VERSION = "1.16.4"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 120
@@ -479,7 +479,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true
   }
 
-  if (message.type === "REFRESH_NEW_TRADES") {
+  if (message.type === "REFRESH_NEW_TRADES" || message.type === "RELOAD_TV_AND_SYNC") {
     void (async () => {
       try {
         const config = await JBSync.getConfig()
@@ -492,15 +492,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (!tab?.id) {
           sendResponse({
             ok: false,
-            error: "TradingView chart tab not found. Keep tradingview.com/chart open (no refresh needed).",
+            error: "TradingView chart tab not found. Keep tradingview.com/chart open.",
           })
           return
         }
 
-        await injectTvHooks(tab.id)
-        const syncResult = await JBSync.refreshNewTrades(config)
+        const syncResult =
+          message.type === "RELOAD_TV_AND_SYNC"
+            ? await JBSync.refreshNewTradesAfterTvReload(config)
+            : await (async () => {
+                await injectTvHooks(tab.id)
+                return JBSync.refreshNewTrades(config)
+              })()
         await JBSync.completeRefreshRequest(config, syncResult).catch(() => {})
-        sendResponse({ ok: true, ...syncResult })
+        sendResponse({ ok: !syncResult?.error, ...syncResult })
       } catch (error) {
         sendResponse({ ok: false, error: error?.message || "Sync failed" })
       }

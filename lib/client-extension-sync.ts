@@ -13,6 +13,7 @@ export type ExtensionSyncResult = {
 }
 
 const SYNC_TIMEOUT_MS = 20_000
+const TV_RELOAD_TIMEOUT_MS = 70_000
 const BRIDGE_WAIT_MS = 2_000
 const SERVER_POLL_MS = 2_000
 const SERVER_POLL_MAX = 45
@@ -59,7 +60,10 @@ async function waitForBridge(maxMs = BRIDGE_WAIT_MS) {
   return false
 }
 
-function requestExtensionSyncViaBridge(): Promise<ExtensionSyncResult> {
+function requestExtensionSyncViaBridge(options?: {
+  reloadChart?: boolean
+  timeoutMs?: number
+}): Promise<ExtensionSyncResult> {
   return new Promise((resolve, reject) => {
     const requestId =
       typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -69,7 +73,7 @@ function requestExtensionSyncViaBridge(): Promise<ExtensionSyncResult> {
     const timeout = window.setTimeout(() => {
       document.removeEventListener("jb-sync-response", onResponse)
       reject(new Error("Extension bridge timed out"))
-    }, SYNC_TIMEOUT_MS)
+    }, options?.timeoutMs ?? SYNC_TIMEOUT_MS)
 
     function onResponse(event: Event) {
       const detail = (event as CustomEvent<{ requestId?: string; error?: string; result?: ExtensionSyncResult }>)
@@ -88,7 +92,11 @@ function requestExtensionSyncViaBridge(): Promise<ExtensionSyncResult> {
     }
 
     document.addEventListener("jb-sync-response", onResponse)
-    document.dispatchEvent(new CustomEvent("jb-sync-request", { detail: { requestId } }))
+    document.dispatchEvent(
+      new CustomEvent("jb-sync-request", {
+        detail: { requestId, reloadChart: Boolean(options?.reloadChart) },
+      }),
+    )
   })
 }
 
@@ -159,6 +167,31 @@ export async function requestExtensionSync(options: {
     try {
       const result = await requestExtensionSyncViaBridge()
       return result
+    } catch {
+      // Fall through to server poll when bridge fails mid-flight.
+    }
+  }
+
+  return waitForServerRefresh(options.fetchRefreshStatus, queuedAt)
+}
+
+/** Reload the TradingView chart tab (same as F5), then scrape and sync trades. */
+export async function requestTvChartRefresh(options: {
+  queueRefresh: () => Promise<number>
+  fetchRefreshStatus: () => Promise<{
+    pending?: boolean
+    refreshRequested?: boolean
+    lastResult?: ExtensionSyncResult | null
+  }>
+}): Promise<ExtensionSyncResult | null> {
+  const queuedAt = await options.queueRefresh()
+
+  if (await waitForBridge()) {
+    try {
+      return await requestExtensionSyncViaBridge({
+        reloadChart: true,
+        timeoutMs: TV_RELOAD_TIMEOUT_MS,
+      })
     } catch {
       // Fall through to server poll when bridge fails mid-flight.
     }
