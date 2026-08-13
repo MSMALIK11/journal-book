@@ -20,7 +20,7 @@ export default function SideLayout({ children }: SiteLayoutProps) {
           <TradingAlertsSync />
           <SyncAccountAutoSwitch />
           <AutoExportScheduler />
-          <div className="flex min-h-screen w-full">
+          <div className="flex min-h-screen w-full bg-background hud-grid">
             <div className="hidden w-64 shrink-0 lg:block" aria-hidden />
             <Sidebar />
             <AppHeader />

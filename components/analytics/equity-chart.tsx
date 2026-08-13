@@ -10,7 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import {
   ChartContainer,
   ChartTooltip,
@@ -26,8 +26,8 @@ const currency = new Intl.NumberFormat("en-US", {
 })
 
 const equityConfig: ChartConfig = {
-  equity: { label: "Equity", color: "hsl(var(--chart-1))" },
-  drawdown: { label: "Drawdown", color: "hsl(var(--chart-2))" },
+  equity: { label: "Equity", color: "#22d3ee" },
+  drawdown: { label: "Drawdown", color: "#f43f5e" },
 }
 
 type Props = {
@@ -49,26 +49,21 @@ export function EquityChart({ equityCurve, maxDrawdown, maxDrawdownPct }: Props)
 
   if (!chartData.length) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Equity &amp; Drawdown</CardTitle>
-          <CardDescription>No closed trades to chart yet</CardDescription>
-        </CardHeader>
-      </Card>
+      <HudPanel className="p-5">
+        <p className="text-sm font-semibold">Equity & Drawdown</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">No closed trades to chart yet</p>
+      </HudPanel>
     )
   }
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle>Equity Curve</CardTitle>
-          <CardDescription>Cumulative P&amp;L by trade exit</CardDescription>
-        </CardHeader>
-        <CardContent>
+      <HudPanel>
+        <HudPanelHeader title="Equity Curve" description="Cumulative P&L by trade exit" />
+        <div className="p-4">
           <ChartContainer config={equityConfig} className="h-[280px] w-full">
             <LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-              <CartesianGrid vertical={false} />
+              <CartesianGrid vertical={false} stroke="rgba(34,211,238,0.08)" />
               <XAxis
                 dataKey="label"
                 tickLine={false}
@@ -99,23 +94,20 @@ export function EquityChart({ equityCurve, maxDrawdown, maxDrawdownPct }: Props)
               />
             </LineChart>
           </ChartContainer>
-        </CardContent>
-      </Card>
+        </div>
+      </HudPanel>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Drawdown</CardTitle>
-          <CardDescription>
-            Max {currency.format(maxDrawdown)} ({maxDrawdownPct.toFixed(1)}%)
-            {maxDdPoint?.date && (
-              <> · worst on {format(parseISO(maxDdPoint.date), "MMM d, yyyy")}</>
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+      <HudPanel glow="red">
+        <HudPanelHeader
+          title="Drawdown"
+          description={`Max ${currency.format(maxDrawdown)} (${maxDrawdownPct.toFixed(1)}%)${
+            maxDdPoint?.date ? ` · worst on ${format(parseISO(maxDdPoint.date), "MMM d, yyyy")}` : ""
+          }`}
+        />
+        <div className="p-4">
           <ChartContainer config={equityConfig} className="h-[280px] w-full">
             <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-              <CartesianGrid vertical={false} />
+              <CartesianGrid vertical={false} stroke="rgba(34,211,238,0.08)" />
               <XAxis
                 dataKey="label"
                 tickLine={false}
@@ -147,8 +139,8 @@ export function EquityChart({ equityCurve, maxDrawdown, maxDrawdownPct }: Props)
               />
             </AreaChart>
           </ChartContainer>
-        </CardContent>
-      </Card>
+        </div>
+      </HudPanel>
     </div>
   )
 }

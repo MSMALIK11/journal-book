@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useActiveAccount, revalidateAccountScopedData, type TradingAccountSummary } from "@/hooks/use-active-account"
@@ -114,60 +114,60 @@ function AccountRow({ account, onChanged }: { account: TradingAccountSummary; on
   }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-lg flex items-center gap-2">
+    <HudPanel>
+      <div className="flex items-start justify-between gap-3 border-b border-cyan-400/10 px-5 py-4">
+        <div>
+          <p className="flex items-center gap-2 text-sm font-semibold">
             {account.name}
             {account.isDefault ? (
-              <Badge variant="secondary" className="text-xs">
+              <Badge variant="outline" className="border-cyan-400/30 text-[10px] text-cyan-300">
                 Default
               </Badge>
             ) : null}
-          </CardTitle>
-          <div className="flex gap-2">
-            {!account.isDefault ? (
-              <Button variant="outline" size="sm" onClick={() => void setDefault()}>
-                <Star className="h-4 w-4 mr-1" />
-                Set default
-              </Button>
-            ) : null}
-            {!account.isDefault ? (
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="outline" size="sm" disabled={deleting}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Delete {account.name}?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This permanently deletes the account
-                      {(account.tradeCount ?? 0) > 0
-                        ? ` and all ${account.tradeCount} trade record(s) in it`
-                        : ""}
-                      . This cannot be undone.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => void remove()}>Delete</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            ) : null}
-          </div>
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {account.tradeCount ?? 0} trade{(account.tradeCount ?? 0) === 1 ? "" : "s"} · Synced trades
+            matching these symbols go here. Unmatched symbols use your default account.
+          </p>
         </div>
-        <CardDescription>
-          {account.tradeCount ?? 0} trade{(account.tradeCount ?? 0) === 1 ? "" : "s"} · Synced trades
-          matching these symbols go here. Unmatched symbols use your default account.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+        <div className="flex gap-2">
+          {!account.isDefault ? (
+            <Button variant="outline" size="sm" className="border-cyan-400/20" onClick={() => void setDefault()}>
+              <Star className="h-4 w-4 mr-1" />
+              Set default
+            </Button>
+          ) : null}
+          {!account.isDefault ? (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" size="sm" className="border-rose-400/30" disabled={deleting}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete {account.name}?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This permanently deletes the account
+                    {(account.tradeCount ?? 0) > 0
+                      ? ` and all ${account.tradeCount} trade record(s) in it`
+                      : ""}
+                    . This cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={() => void remove()}>Delete</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          ) : null}
+        </div>
+      </div>
+      <div className="space-y-4 p-5">
         <div className="space-y-2">
           <Label htmlFor={`name-${account.id}`}>Account name</Label>
-          <Input id={`name-${account.id}`} value={name} onChange={(e) => setName(e.target.value)} />
+          <Input id={`name-${account.id}`} value={name} onChange={(e) => setName(e.target.value)} className="border-cyan-400/20 bg-transparent" />
         </div>
         <div className="space-y-2">
           <Label htmlFor={`symbols-${account.id}`}>Symbols (comma-separated)</Label>
@@ -176,13 +176,14 @@ function AccountRow({ account, onChanged }: { account: TradingAccountSummary; on
             value={symbolsText}
             onChange={(e) => setSymbolsText(e.target.value)}
             placeholder="BTCUSDT, BTCUSD, XAUUSD"
+            className="border-cyan-400/20 bg-transparent"
           />
         </div>
         <Button onClick={() => void save()} disabled={saving}>
           {saving ? "Saving..." : "Save changes"}
         </Button>
-      </CardContent>
-    </Card>
+      </div>
+    </HudPanel>
   )
 }
 
@@ -261,16 +262,13 @@ export function AccountsManager() {
 
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Add account</CardTitle>
-          <CardDescription>
-            Each synced symbol gets its own portfolio automatically (BTC, XAUUSD, USOIL, etc.).
-            Import from the extension — new symbols appear in the sidebar. Use Reassign for older trades.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Button variant="outline" onClick={() => void reassignAllTrades()} disabled={reconciling}>
+      <HudPanel>
+        <HudPanelHeader
+          title="Add account"
+          description="Each synced symbol gets its own portfolio automatically (BTC, XAUUSD, USOIL, etc.). Import from the extension — new symbols appear in the sidebar. Use Reassign for older trades."
+        />
+        <div className="space-y-4 p-5">
+          <Button variant="outline" className="border-cyan-400/20" onClick={() => void reassignAllTrades()} disabled={reconciling}>
             {reconciling ? "Reassigning..." : "Reassign trades by symbol"}
           </Button>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -281,6 +279,7 @@ export function AccountsManager() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="BTC Backtest"
+                className="border-cyan-400/20 bg-transparent"
               />
             </div>
             <div className="space-y-2">
@@ -290,6 +289,7 @@ export function AccountsManager() {
                 value={symbolsText}
                 onChange={(e) => setSymbolsText(e.target.value)}
                 placeholder="BTCUSDT, BTCUSD"
+                className="border-cyan-400/20 bg-transparent"
               />
             </div>
           </div>
@@ -297,8 +297,8 @@ export function AccountsManager() {
             <Plus className="h-4 w-4 mr-2" />
             {creating ? "Creating..." : "Create account"}
           </Button>
-        </CardContent>
-      </Card>
+        </div>
+      </HudPanel>
 
       <div className="space-y-4">
         {accounts.map((account) => (

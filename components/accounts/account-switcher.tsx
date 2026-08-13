@@ -34,7 +34,7 @@ export function AccountSwitcher({ className }: { className?: string }) {
       <DropdownMenuTrigger asChild>
         <Button
           variant="outline"
-          className={cn("w-full justify-between bg-transparent text-left font-normal", className)}
+          className={cn("w-full justify-between border-cyan-400/20 bg-transparent text-left font-normal", className)}
         >
           <span className="flex items-center gap-2 truncate">
             <Layers className="h-4 w-4 shrink-0" />

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { Copy, KeyRound, RefreshCw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import { Input } from "@/components/ui/input"
 import { authFetch } from "@/lib/client-auth"
 import { useToast } from "@/hooks/use-toast"
@@ -84,20 +84,16 @@ export function TradingViewSyncSettings() {
   }, [])
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <KeyRound className="h-4 w-4" />
-          TradingView Sync
-        </CardTitle>
-        <CardDescription>
-          Connect the browser extension to automatically import Strategy Tester trades into your journal.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="rounded-lg border p-4 text-sm text-muted-foreground space-y-2">
+    <HudPanel>
+      <HudPanelHeader
+        title="TradingView Sync"
+        description="Connect the browser extension to automatically import Strategy Tester trades into your journal."
+        action={<KeyRound className="h-4 w-4 text-cyan-300" />}
+      />
+      <div className="space-y-4 p-5">
+        <div className="space-y-2 rounded-lg border border-cyan-400/15 bg-[#05070a]/60 p-4 text-sm text-muted-foreground">
           <p>1. Generate a sync API key below.</p>
-          <p>2. Load the extension from the <code className="text-xs">extension/</code> folder in Chrome.</p>
+          <p>2. Load the extension from the <code className="text-xs text-cyan-300">extension/</code> folder in Chrome.</p>
           <p>3. Paste your API URL and key in extension options, then open TradingView Strategy Tester.</p>
         </div>
 
@@ -132,7 +128,7 @@ export function TradingViewSyncSettings() {
             {status.last_heartbeat ? ` · Last seen ${new Date(status.last_heartbeat).toLocaleTimeString()}` : ""}
           </p>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </HudPanel>
   )
 }

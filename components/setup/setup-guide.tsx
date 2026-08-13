@@ -1,6 +1,6 @@
 "use client"
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -30,10 +30,11 @@ export function SetupGuide() {
   ]
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
+    <div className="min-h-screen bg-background hud-grid flex items-center justify-center p-4">
       <div className="w-full max-w-2xl space-y-6">
         <div className="text-center space-y-2">
-          <h1 className="text-3xl font-bold">Trading Journal Setup</h1>
+          <p className="hud-label">Setup</p>
+          <h1 className="text-2xl font-semibold text-cyan-100">Trading Journal</h1>
           <p className="text-muted-foreground">Let's get your trading journal configured and ready to use</p>
         </div>
 
@@ -47,24 +48,22 @@ export function SetupGuide() {
 
         <div className="space-y-4">
           {steps.map((step, index) => (
-            <Card key={index}>
-              <CardHeader>
-                <div className="flex items-center justify-between">
+            <HudPanel key={index}>
+              <div className="flex items-center justify-between border-b border-cyan-400/10 px-5 py-4">
                   <div className="flex items-center gap-3">
-                    <div className="flex items-center justify-center w-8 h-8 rounded-full bg-primary text-primary-foreground text-sm font-medium">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/10 text-sm font-medium text-cyan-300">
                       {step.completed ? <CheckCircle className="h-4 w-4" /> : index + 1}
                     </div>
                     <div>
-                      <CardTitle className="text-lg">{step.title}</CardTitle>
-                      <CardDescription>{step.description}</CardDescription>
+                      <p className="text-sm font-semibold">{step.title}</p>
+                      <p className="text-xs text-muted-foreground">{step.description}</p>
                     </div>
                   </div>
-                  <Badge variant={step.completed ? "default" : "secondary"}>
+                  <Badge variant="outline" className={step.completed ? "border-emerald-400/30 text-emerald-400" : "border-cyan-400/20 text-cyan-300/80"}>
                     {step.completed ? "Complete" : "Pending"}
                   </Badge>
-                </div>
-              </CardHeader>
-              <CardContent>
+              </div>
+              <div className="p-5">
                 {index === 0 && (
                   <div className="space-y-4">
                     <p className="text-sm text-muted-foreground">
@@ -117,33 +116,28 @@ export function SetupGuide() {
                     </p>
                   </div>
                 )}
-              </CardContent>
-            </Card>
+              </div>
+            </HudPanel>
           ))}
         </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Key className="h-5 w-5" />
-              Need Help?
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+        <HudPanel>
+          <HudPanelHeader title="Need Help?" action={<Key className="h-4 w-4 text-cyan-300" />} />
+          <div className="p-5">
             <p className="text-sm text-muted-foreground mb-4">
               If you need assistance with the setup process, check out the Supabase documentation or reach out for
               support.
             </p>
             <div className="flex gap-2">
-              <Button variant="outline" asChild>
+              <Button variant="outline" className="border-cyan-400/20" asChild>
                 <a href="https://supabase.com/docs" target="_blank" rel="noopener noreferrer">
                   <ExternalLink className="mr-2 h-4 w-4" />
                   Supabase Docs
                 </a>
               </Button>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </HudPanel>
       </div>
     </div>
   )

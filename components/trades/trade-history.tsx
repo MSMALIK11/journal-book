@@ -7,7 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
 import { authFetch } from "@/lib/client-auth"
@@ -196,41 +196,40 @@ export function TradeHistory() {
 
       <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
         {summaryCards.map((card) => (
-          <Card key={card.label} className="rounded-xl border-border/60 shadow-sm">
-            <CardContent className="p-4">
-              <p className="text-xs font-medium text-muted-foreground">{card.label}</p>
-              <p
-                className={cn(
-                  "mt-1.5 text-lg font-semibold tabular-nums",
-                  card.tone === "positive" && "text-emerald-500",
-                  card.tone === "negative" && "text-rose-500",
-                )}
-              >
-                {loading ? "—" : card.value}
-              </p>
-            </CardContent>
-          </Card>
+          <HudPanel
+            key={card.label}
+            glow={card.tone === "positive" ? "green" : card.tone === "negative" ? "red" : "cyan"}
+            className="p-4"
+          >
+            <p className="hud-label">{card.label}</p>
+            <p
+              className={cn(
+                "mt-1.5 text-lg font-semibold tabular-nums",
+                card.tone === "positive" && "text-emerald-400",
+                card.tone === "negative" && "text-rose-400",
+                !card.tone && "text-cyan-100",
+              )}
+            >
+              {loading ? "—" : card.value}
+            </p>
+          </HudPanel>
         ))}
       </div>
 
-      <Card className="rounded-xl border-border/60">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Search className="h-4 w-4" />
-            Search & filters
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
+      <HudPanel>
+        <HudPanelHeader title="Search & filters" action={<Search className="h-4 w-4 text-cyan-300" />} />
+        <div className="p-4">
           <div className="flex flex-col gap-3 md:flex-row md:flex-wrap">
             <div className="flex-1 min-w-[200px]">
               <Input
                 placeholder="Search symbol or strategy..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
+                className="border-cyan-400/20 bg-transparent"
               />
             </div>
             <Select value={periodFilter} onValueChange={setPeriodFilter}>
-              <SelectTrigger className="w-full md:w-36">
+              <SelectTrigger className="w-full border-cyan-400/20 bg-transparent md:w-36">
                 <SelectValue placeholder="Period" />
               </SelectTrigger>
               <SelectContent>
@@ -240,7 +239,7 @@ export function TradeHistory() {
               </SelectContent>
             </Select>
             <Select value={filterDirection} onValueChange={setFilterDirection}>
-              <SelectTrigger className="w-full md:w-32">
+              <SelectTrigger className="w-full border-cyan-400/20 bg-transparent md:w-32">
                 <SelectValue placeholder="Direction" />
               </SelectTrigger>
               <SelectContent>
@@ -250,7 +249,7 @@ export function TradeHistory() {
               </SelectContent>
             </Select>
             <Select value={filterType} onValueChange={(v) => setFilterType(v as ResultFilter)}>
-              <SelectTrigger className="w-full md:w-32">
+              <SelectTrigger className="w-full border-cyan-400/20 bg-transparent md:w-32">
                 <SelectValue placeholder="Result" />
               </SelectTrigger>
               <SelectContent>
@@ -261,7 +260,7 @@ export function TradeHistory() {
               </SelectContent>
             </Select>
             <Select value={filterStrategy} onValueChange={setFilterStrategy}>
-              <SelectTrigger className="w-full md:w-40">
+              <SelectTrigger className="w-full border-cyan-400/20 bg-transparent md:w-40">
                 <SelectValue placeholder="Strategy" />
               </SelectTrigger>
               <SelectContent>
@@ -274,34 +273,31 @@ export function TradeHistory() {
               </SelectContent>
             </Select>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </HudPanel>
 
-      <Card className="rounded-xl border-border/60">
-        <CardHeader>
-          <CardTitle>
-            Trades
-            {!loading ? (
-              <span className="ml-2 text-sm font-normal text-muted-foreground">
-                ({filteredTrades.length})
-              </span>
-            ) : null}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
+      <HudPanel>
+        <HudPanelHeader
+          title="Trades"
+          action={
+            !loading ? (
+              <span className="text-sm font-normal text-muted-foreground">({filteredTrades.length})</span>
+            ) : null
+          }
+        />
+        <div className="overflow-x-auto p-4">
             <Table>
               <TableHeader>
-                <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Symbol</TableHead>
-                  <TableHead>Side</TableHead>
-                  <TableHead>Entry</TableHead>
-                  <TableHead>Exit</TableHead>
-                  <TableHead>Size</TableHead>
-                  <TableHead>P&L</TableHead>
-                  <TableHead>Strategy</TableHead>
-                  <TableHead>Emotion</TableHead>
+                <TableRow className="border-cyan-400/10 hover:bg-transparent">
+                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Date</TableHead>
+                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Symbol</TableHead>
+                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Side</TableHead>
+                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Entry</TableHead>
+                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Exit</TableHead>
+                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Size</TableHead>
+                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">P&L</TableHead>
+                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Strategy</TableHead>
+                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Emotion</TableHead>
                   <TableHead className="w-12" />
                 </TableRow>
               </TableHeader>
@@ -325,7 +321,7 @@ export function TradeHistory() {
                   paginatedTrades.map((trade) => {
                     const legs = resolveTradeLegs(trade)
                     return (
-                      <TableRow key={trade.id}>
+                      <TableRow key={trade.id} className="border-cyan-400/10 hover:bg-cyan-400/5">
                         <TableCell>
                           {format(new Date(`${trade.entry_date.slice(0, 10)}T00:00:00`), "dd/MM/yyyy")}
                         </TableCell>
@@ -344,7 +340,7 @@ export function TradeHistory() {
                         </TableCell>
                         <TableCell>
                           {typeof trade.net_pnl === "number" ? (
-                            <span className={trade.net_pnl >= 0 ? "text-emerald-500" : "text-rose-500"}>
+                            <span className={trade.net_pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
                               {currency.format(trade.net_pnl)}
                             </span>
                           ) : (
@@ -377,7 +373,7 @@ export function TradeHistory() {
           </div>
 
           {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-4 pt-4 border-t">
+            <div className="flex items-center justify-between mt-4 pt-4 border-t border-cyan-400/10">
               <p className="text-sm text-muted-foreground">
                 Page {currentPage} of {totalPages}
               </p>
@@ -401,8 +397,8 @@ export function TradeHistory() {
               </div>
             </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </HudPanel>
     </div>
   )
 }

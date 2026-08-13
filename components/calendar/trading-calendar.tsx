@@ -30,6 +30,7 @@ import {
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { HudPanel } from "@/components/dashboard/hud-panel"
 import useSWR from "swr"
 import { authFetch } from "@/lib/client-auth"
 import { useActiveAccount } from "@/hooks/use-active-account"
@@ -231,26 +232,19 @@ export function TradingCalendar() {
         {stats.map((stat) => {
           const Icon = stat.icon
           return (
-            <div
+            <HudPanel
               key={stat.label}
-              className="group relative overflow-hidden rounded-2xl border border-border/60 bg-card p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
+              glow={stat.positive ? "green" : "red"}
+              className="p-5"
             >
-              <div
-                className={cn(
-                  "absolute inset-x-0 top-0 h-0.5",
-                  stat.positive ? "bg-emerald-500" : "bg-rose-500",
-                )}
-              />
               <div className="flex items-start justify-between">
                 <div>
-                  <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                    {stat.label}
-                  </p>
+                  <p className="hud-label">{stat.label}</p>
                   <p
                     className={cn(
                       "mt-2 text-2xl font-semibold tracking-tight",
                       stat.value !== "—" &&
-                        (stat.positive ? "text-emerald-500" : "text-rose-500"),
+                        (stat.positive ? "text-emerald-400" : "text-rose-400"),
                     )}
                   >
                     {stat.value}
@@ -261,22 +255,22 @@ export function TradingCalendar() {
                   className={cn(
                     "rounded-xl p-2.5",
                     stat.positive
-                      ? "bg-emerald-500/10 text-emerald-500"
-                      : "bg-rose-500/10 text-rose-500",
+                      ? "bg-emerald-500/10 text-emerald-400"
+                      : "bg-rose-500/10 text-rose-400",
                   )}
                 >
                   <Icon className="h-4 w-4" />
                 </div>
               </div>
-            </div>
+            </HudPanel>
           )
         })}
       </div>
 
-      <div className="overflow-hidden rounded-3xl border border-border/60 bg-card shadow-sm">
-        <div className="flex flex-col gap-4 border-b border-border/60 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+      <HudPanel>
+        <div className="flex flex-col gap-4 border-b border-cyan-400/10 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <div className="flex items-center gap-3">
-            <div className="rounded-xl bg-primary/10 p-2.5 text-primary">
+            <div className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 p-2.5 text-cyan-300">
               <CalendarDays className="h-5 w-5" />
             </div>
             <div>
@@ -285,7 +279,7 @@ export function TradingCalendar() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between gap-2 rounded-xl border border-border/60 bg-muted/40 p-1">
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-cyan-400/20 bg-[#05070a] p-1">
             <Button
               variant="ghost"
               size="icon"
@@ -318,7 +312,7 @@ export function TradingCalendar() {
 
         <div className="overflow-x-auto">
           <div className={cn("min-w-[760px] transition-opacity", loading && "opacity-50")}>
-            <div className="grid grid-cols-7 border-b border-border/60 bg-muted/30">
+            <div className="grid grid-cols-7 border-b border-cyan-400/10 bg-cyan-400/5">
               {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => (
                 <div
                   key={day}
@@ -348,21 +342,21 @@ export function TradingCalendar() {
                     disabled={!inMonth}
                     onClick={() => setSelectedDate(day)}
                     className={cn(
-                      "group relative min-h-28 border-b border-r border-border/60 p-3 text-left transition-colors",
+                      "group relative min-h-28 border-b border-r border-cyan-400/10 p-3 text-left transition-colors",
                       index % 7 === 6 && "border-r-0",
-                      !inMonth && "bg-muted/20 text-muted-foreground/30",
-                      inMonth && !hasTrades && "bg-card hover:bg-muted/40",
+                      !inMonth && "bg-[#05070a]/40 text-muted-foreground/30",
+                      inMonth && !hasTrades && "hover:bg-cyan-400/5",
                       hasTrades && pnl > 0 && "bg-emerald-500/[0.08] hover:bg-emerald-500/[0.14]",
                       hasTrades && pnl < 0 && "bg-rose-500/[0.08] hover:bg-rose-500/[0.14]",
                       hasTrades && pnl === 0 && "bg-amber-500/[0.08] hover:bg-amber-500/[0.14]",
-                      isSelected && "z-10 ring-2 ring-inset ring-primary",
+                      isSelected && "z-10 ring-2 ring-inset ring-cyan-400/60",
                     )}
                   >
                     <div className="flex items-start justify-between">
                       <span
                         className={cn(
                           "flex h-7 min-w-7 items-center justify-center rounded-lg px-1.5 text-xs font-semibold",
-                          isToday(day) && "bg-primary text-primary-foreground",
+                          isToday(day) && "bg-cyan-400 text-[#05070a]",
                           !isToday(day) && inMonth && "text-foreground",
                         )}
                       >
@@ -383,7 +377,7 @@ export function TradingCalendar() {
                         <p
                           className={cn(
                             "text-sm font-semibold",
-                            pnl > 0 ? "text-emerald-500" : pnl < 0 ? "text-rose-500" : "text-amber-500",
+                            pnl > 0 ? "text-emerald-400" : pnl < 0 ? "text-rose-400" : "text-amber-400",
                           )}
                         >
                           {pnl > 0 && "+"}
@@ -401,7 +395,7 @@ export function TradingCalendar() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-cyan-400/10 px-5 py-3 text-xs text-muted-foreground">
           {[
             ["bg-emerald-500", "Profitable"],
             ["bg-rose-500", "Loss"],
@@ -413,11 +407,11 @@ export function TradingCalendar() {
             </div>
           ))}
         </div>
-      </div>
+      </HudPanel>
 
       {selectedDate && (
-        <div className="rounded-2xl border border-border/60 bg-card p-5 shadow-sm">
-          <div className="flex flex-col gap-3 border-b border-border/60 pb-4 sm:flex-row sm:items-center sm:justify-between">
+        <HudPanel className="p-5">
+          <div className="flex flex-col gap-3 border-b border-cyan-400/10 pb-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="font-semibold">{format(selectedDate, "EEEE, MMMM d")}</p>
               <p className="text-sm text-muted-foreground">
@@ -431,10 +425,10 @@ export function TradingCalendar() {
                 className={cn(
                   "flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold",
                   selectedPnL > 0
-                    ? "bg-emerald-500/10 text-emerald-500"
+                    ? "bg-emerald-500/10 text-emerald-400"
                     : selectedPnL < 0
-                      ? "bg-rose-500/10 text-rose-500"
-                      : "bg-amber-500/10 text-amber-500",
+                      ? "bg-rose-500/10 text-rose-400"
+                      : "bg-amber-500/10 text-amber-400",
                 )}
               >
                 {selectedPnL > 0 ? (
@@ -458,7 +452,7 @@ export function TradingCalendar() {
                 const sessionLabel = getTradeSessionLabel(trade.entry_date, timezone)
                 const windowFlags = getTradeWindowFlags(trade.entry_date, analytics?.avoid, timezone)
                 return (
-                <div key={trade.id} className="rounded-xl border border-border/60 bg-muted/20 p-4">
+                <div key={trade.id} className="rounded-xl border border-cyan-400/15 bg-[#05070a]/60 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <p className="font-semibold">{trade.instrument}</p>
                     <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>
@@ -513,7 +507,7 @@ export function TradingCalendar() {
                       <p
                         className={cn(
                           "text-sm font-semibold",
-                          trade.net_pnl >= 0 ? "text-emerald-500" : "text-rose-500",
+                          trade.net_pnl >= 0 ? "text-emerald-400" : "text-rose-400",
                         )}
                       >
                         {trade.net_pnl > 0 && "+"}
@@ -525,7 +519,7 @@ export function TradingCalendar() {
               )})}
             </div>
           )}
-        </div>
+        </HudPanel>
       )}
     </div>
   )

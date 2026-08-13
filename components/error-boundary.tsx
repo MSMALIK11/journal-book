@@ -1,7 +1,7 @@
 "use client"
 
 import React from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel } from "@/components/dashboard/hud-panel"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AlertTriangle, RefreshCw } from "lucide-react"
@@ -28,18 +28,16 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen bg-background flex items-center justify-center p-4">
-          <Card className="w-full max-w-md">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-destructive">
-                <AlertTriangle className="h-5 w-5" />
-                Something went wrong
-              </CardTitle>
-              <CardDescription>
-                The application encountered an error. This might be due to missing configuration.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
+        <div className="min-h-screen bg-background hud-grid flex items-center justify-center p-4">
+          <HudPanel className="w-full max-w-md p-5">
+            <p className="flex items-center gap-2 text-sm font-semibold text-rose-400">
+              <AlertTriangle className="h-5 w-5" />
+              Something went wrong
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              The application encountered an error. This might be due to missing configuration.
+            </p>
+            <div className="mt-4 space-y-4">
               <Alert>
                 <AlertTriangle className="h-4 w-4" />
                 <AlertDescription>{this.state.error?.message || "An unexpected error occurred"}</AlertDescription>
@@ -64,8 +62,8 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
                 <RefreshCw className="mr-2 h-4 w-4" />
                 Try Again
               </Button>
-            </CardContent>
-          </Card>
+            </div>
+          </HudPanel>
         </div>
       )
     }

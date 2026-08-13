@@ -10,7 +10,6 @@ import {
   ChevronDown,
   Clock,
   HelpCircle,
-  Target,
   TrendingDown,
   TrendingUp,
 } from "lucide-react"
@@ -28,10 +27,10 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
+import { WinRateRing } from "@/components/dashboard/sparkline"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Progress } from "@/components/ui/progress"
 import {
   Select,
   SelectContent,
@@ -56,6 +55,7 @@ import {
 import { authFetch } from "@/lib/client-auth"
 import { useActiveAccount } from "@/hooks/use-active-account"
 import { formatHoldDuration, type AnalyticsResult, type PeriodComparison } from "@/lib/trading/analytics"
+import { cn } from "@/lib/utils"
 
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -129,11 +129,9 @@ export function AnalyticsDashboard() {
 
   if (error && !data) {
     return (
-      <Card>
-        <CardContent className="py-12 text-center text-destructive">
-          Failed to load analytics. Please try again.
-        </CardContent>
-      </Card>
+      <HudPanel className="p-8 text-center text-rose-400">
+        Failed to load analytics. Please try again.
+      </HudPanel>
     )
   }
 
@@ -153,20 +151,18 @@ export function AnalyticsDashboard() {
           instruments={instruments}
           timezone={data?.timezone}
         />
-        <Card>
-          <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
-            <BarChart3 className="h-12 w-12 text-muted-foreground" />
-            <div>
-              <p className="font-medium">No closed trades for this filter</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Import trades from Live Sync to see backtest analytics, or add manual journal entries.
-              </p>
-            </div>
-            <Button asChild variant="outline">
-              <Link href="/live-sync">Go to Live Sync</Link>
-            </Button>
-          </CardContent>
-        </Card>
+        <HudPanel className="flex flex-col items-center gap-4 px-6 py-16 text-center">
+          <BarChart3 className="h-12 w-12 text-cyan-400/50" />
+          <div>
+            <p className="font-medium">No closed trades for this filter</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Import trades from Live Sync to see backtest analytics, or add manual journal entries.
+            </p>
+          </div>
+          <Button asChild variant="outline" className="border-cyan-400/30 text-cyan-200">
+            <Link href="/live-sync">Go to Live Sync</Link>
+          </Button>
+        </HudPanel>
       </div>
     )
   }
@@ -192,15 +188,23 @@ export function AnalyticsDashboard() {
       />
 
       {isValidating ? (
-        <p className="text-xs text-muted-foreground">Updating analytics…</p>
+        <p className="text-xs text-cyan-300/70">Updating analytics…</p>
       ) : null}
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as DashboardTab)}>
-        <TabsList className="h-auto flex-wrap">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="time-edge">Time Edge</TabsTrigger>
-          <TabsTrigger value="breakdown">Breakdown</TabsTrigger>
-          <TabsTrigger value="weekly">Weekly</TabsTrigger>
+        <TabsList className="h-auto flex-wrap border border-cyan-400/20 bg-[#0b1016] p-1">
+          <TabsTrigger value="overview" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
+            Overview
+          </TabsTrigger>
+          <TabsTrigger value="time-edge" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
+            Time Edge
+          </TabsTrigger>
+          <TabsTrigger value="breakdown" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
+            Breakdown
+          </TabsTrigger>
+          <TabsTrigger value="weekly" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
+            Weekly
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="mt-6 space-y-6">
@@ -216,12 +220,12 @@ export function AnalyticsDashboard() {
           {(overview.bestMonth || overview.worstMonth) && (
             <div className="flex flex-wrap gap-2">
               {overview.bestMonth ? (
-                <Badge variant="outline" className="text-emerald-600">
+                <Badge variant="outline" className="border-emerald-400/30 text-emerald-400">
                   Best month: {overview.bestMonth.month} · {currency.format(overview.bestMonth.pnl)}
                 </Badge>
               ) : null}
               {overview.worstMonth ? (
-                <Badge variant="outline" className="text-rose-600">
+                <Badge variant="outline" className="border-rose-400/30 text-rose-400">
                   Worst month: {overview.worstMonth.month} · {currency.format(overview.worstMonth.pnl)}
                 </Badge>
               ) : null}
@@ -302,18 +306,25 @@ function FilterBar({
   timezone?: string
 }) {
   return (
-    <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+    <HudPanel className="px-4 py-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <Tabs value={source} onValueChange={(v) => setSource(v as SourceFilter)}>
-        <TabsList>
-          <TabsTrigger value="all">All</TabsTrigger>
-          <TabsTrigger value="tradingview">TradingView</TabsTrigger>
-          <TabsTrigger value="manual">Manual</TabsTrigger>
+        <TabsList className="border border-cyan-400/20 bg-[#05070a]">
+          <TabsTrigger value="all" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
+            All
+          </TabsTrigger>
+          <TabsTrigger value="tradingview" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
+            TradingView
+          </TabsTrigger>
+          <TabsTrigger value="manual" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
+            Manual
+          </TabsTrigger>
         </TabsList>
       </Tabs>
 
       <div className="flex flex-wrap items-center gap-2">
         <Select value={range} onValueChange={(v) => setRange(v as RangePreset)}>
-          <SelectTrigger className="w-[130px]">
+          <SelectTrigger className="w-[130px] border-cyan-400/20 bg-transparent">
             <SelectValue placeholder="Range" />
           </SelectTrigger>
           <SelectContent>
@@ -326,7 +337,7 @@ function FilterBar({
 
         {strategies.length > 0 && (
           <Select value={strategy} onValueChange={setStrategy}>
-            <SelectTrigger className="w-[180px]">
+            <SelectTrigger className="w-[180px] border-cyan-400/20 bg-transparent">
               <SelectValue placeholder="Strategy" />
             </SelectTrigger>
             <SelectContent>
@@ -342,7 +353,7 @@ function FilterBar({
 
         {instruments.length > 0 && (
           <Select value={instrument} onValueChange={setInstrument}>
-            <SelectTrigger className="w-[160px]">
+            <SelectTrigger className="w-[160px] border-cyan-400/20 bg-transparent">
               <SelectValue placeholder="Instrument" />
             </SelectTrigger>
             <SelectContent>
@@ -357,12 +368,13 @@ function FilterBar({
         )}
 
         {timezone ? (
-          <Badge variant="outline" className="text-xs">
+          <Badge variant="outline" className="border-cyan-400/20 text-xs text-cyan-300/80">
             Times in {timezone.replace(/_/g, " ")}
           </Badge>
         ) : null}
       </div>
-    </div>
+      </div>
+    </HudPanel>
   )
 }
 
@@ -390,7 +402,7 @@ function HeroKpiRow({
 }) {
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           title="Net P&L"
           value={currency.format(overview.netPnl)}
@@ -398,16 +410,15 @@ function HeroKpiRow({
           positive={overview.netPnl >= 0}
           icon={overview.netPnl >= 0 ? TrendingUp : TrendingDown}
         />
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <KpiTitle title="Win Rate" />
-            <Target className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{overview.winRate.toFixed(1)}%</div>
-            <Progress value={overview.winRate} className="mt-2" />
-          </CardContent>
-        </Card>
+        <HudPanel className="p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <KpiTitle title="Win Rate" />
+              <p className="mt-2 text-2xl font-semibold text-cyan-300">{overview.winRate.toFixed(1)}%</p>
+            </div>
+            <WinRateRing value={overview.winRate} />
+          </div>
+        </HudPanel>
         <KpiCard
           title="Profit Factor"
           value={pf}
@@ -429,7 +440,7 @@ function HeroKpiRow({
 function MoreMetricsAccordion({ overview }: { overview: AnalyticsResult["overview"] }) {
   return (
     <Accordion type="single" collapsible>
-      <AccordionItem value="more-metrics" className="rounded-xl border px-4">
+      <AccordionItem value="more-metrics" className="hud-panel border-cyan-400/20 px-4">
         <AccordionTrigger className="py-3 hover:no-underline">
           <span className="flex items-center gap-2 text-sm font-medium">
             More metrics
@@ -477,7 +488,7 @@ function KpiTitle({ title }: { title: string }) {
   const tooltip = KPI_TOOLTIPS[title]
   return (
     <div className="flex items-center gap-1.5">
-      <CardTitle className="text-sm font-medium">{title}</CardTitle>
+      <p className="hud-label">{title}</p>
       {tooltip ? (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -510,50 +521,57 @@ function KpiCard({
   icon?: React.ComponentType<{ className?: string }>
 }) {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <KpiTitle title={title} />
-        {Icon ? <Icon className={`h-4 w-4 ${negative ? "text-rose-500" : "text-muted-foreground"}`} /> : null}
-      </CardHeader>
-      <CardContent>
-        <div
-          className={`text-2xl font-bold ${
-            positive ? "text-emerald-600" : negative ? "text-rose-600" : ""
-          }`}
-        >
-          {value}
+    <HudPanel glow={positive ? "green" : negative ? "red" : "cyan"} className="p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <KpiTitle title={title} />
+          <p
+            className={cn(
+              "mt-2 text-2xl font-semibold tracking-tight",
+              positive ? "text-emerald-400" : negative ? "text-rose-400" : "text-cyan-100",
+            )}
+          >
+            {value}
+          </p>
+          {subtitle ? <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p> : null}
         </div>
-        {subtitle ? <p className="text-xs text-muted-foreground">{subtitle}</p> : null}
-      </CardContent>
-    </Card>
+        {Icon ? (
+          <div
+            className={cn(
+              "rounded-lg p-2",
+              negative ? "bg-rose-500/10 text-rose-400" : positive ? "bg-emerald-500/10 text-emerald-400" : "bg-cyan-500/10 text-cyan-300",
+            )}
+          >
+            <Icon className="h-4 w-4" />
+          </div>
+        ) : null}
+      </div>
+    </HudPanel>
   )
 }
 
 function LongShortCard({ overview }: { overview: AnalyticsResult["overview"] }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Long vs Short</CardTitle>
-        <CardDescription>Directional performance for closed trades</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3 text-sm">
+    <HudPanel>
+      <HudPanelHeader title="Long vs Short" description="Directional performance for closed trades" />
+      <div className="space-y-3 p-5 text-sm">
         <div className="flex justify-between">
           <span>Long ({overview.longTrades})</span>
-          <span className={overview.longPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>
+          <span className={overview.longPnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
             {currency.format(overview.longPnl)}
           </span>
         </div>
         <div className="flex justify-between">
           <span>Short ({overview.shortTrades})</span>
-          <span className={overview.shortPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>
+          <span className={overview.shortPnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
             {currency.format(overview.shortPnl)}
           </span>
         </div>
         {overview.openTrades > 0 ? (
           <p className="text-muted-foreground">{overview.openTrades} open trades excluded</p>
         ) : null}
-      </CardContent>
-    </Card>
+      </div>
+    </HudPanel>
   )
 }
 
@@ -570,47 +588,40 @@ function StrategyDeepDive({
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold">Strategy deep dive</h2>
+      <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-cyan-200/80">Strategy deep dive</h2>
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">By strategy</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <HudPanel>
+          <HudPanelHeader title="By strategy" />
+          <div className="p-4">
             {byStrategy.length > 0 ? (
               <BucketTable rows={byStrategy} />
             ) : (
               <p className="text-sm text-muted-foreground">No strategy data for this filter.</p>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </HudPanel>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">By signal</CardTitle>
-            <CardDescription>Entry signals from backtest</CardDescription>
-          </CardHeader>
-          <CardContent>
+        <HudPanel>
+          <HudPanelHeader title="By signal" description="Entry signals from backtest" />
+          <div className="p-4">
             {hasSignalData ? (
               <BucketTable rows={bySignal} />
             ) : (
               <p className="text-sm text-muted-foreground">No signal data for this filter.</p>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </HudPanel>
 
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-base">By instrument</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <HudPanel className="lg:col-span-2">
+          <HudPanelHeader title="By instrument" />
+          <div className="p-4">
             {byInstrument.length > 0 ? (
               <BucketTable rows={byInstrument.slice(0, 10)} />
             ) : (
               <p className="text-sm text-muted-foreground">No instrument data for this filter.</p>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </HudPanel>
       </div>
     </div>
   )
@@ -620,21 +631,21 @@ function BucketTable({ rows }: { rows: AnalyticsResult["byStrategy"] }) {
   return (
     <Table>
       <TableHeader>
-        <TableRow>
-          <TableHead>Name</TableHead>
-          <TableHead className="text-right">Trades</TableHead>
-          <TableHead className="text-right">Win %</TableHead>
-          <TableHead className="text-right">Net P&amp;L</TableHead>
+        <TableRow className="border-cyan-400/10 hover:bg-transparent">
+          <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Name</TableHead>
+          <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Trades</TableHead>
+          <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Win %</TableHead>
+          <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Net P&amp;L</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {rows.map((row) => (
-          <TableRow key={row.key}>
+          <TableRow key={row.key} className="border-cyan-400/10 hover:bg-cyan-400/5">
             <TableCell className="font-medium">{row.label}</TableCell>
             <TableCell className="text-right">{row.trades}</TableCell>
             <TableCell className="text-right">{row.winRate.toFixed(1)}%</TableCell>
             <TableCell
-              className={`text-right ${row.netPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}
+              className={`text-right ${row.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}
             >
               {currency.format(row.netPnl)}
             </TableCell>

@@ -160,35 +160,35 @@
   --radius: 0.5rem;
 }
 
-/* DARK MODE GITHUB STYLE */
+/* DARK MODE — command-center HUD */
 .dark {
-  --background: #0d1117;
-  --foreground: #c9d1d9;
+  --background: #05070a;
+  --foreground: #e6edf3;
 
-  --card: #161b22;
-  --card-foreground: #c9d1d9;
+  --card: #0b1016;
+  --card-foreground: #e6edf3;
 
-  --popover: #161b22;
-  --popover-foreground: #c9d1d9;
+  --popover: #0d141c;
+  --popover-foreground: #e6edf3;
 
-  --primary: #58a6ff;
-  --primary-foreground: #0d1117;
+  --primary: #22d3ee;
+  --primary-foreground: #041016;
 
-  --secondary: #21262d;
-  --secondary-foreground: #c9d1d9;
+  --secondary: #121820;
+  --secondary-foreground: #d7e3ee;
 
-  --muted: #21262d;
-  --muted-foreground: #8b949e;
+  --muted: #10161e;
+  --muted-foreground: #8b9cb3;
 
-  --accent: #1f6feb;
-  --accent-foreground: #ffffff;
+  --accent: #083344;
+  --accent-foreground: #67e8f9;
 
-  --destructive: #f85149;
+  --destructive: #f43f5e;
   --destructive-foreground: #ffffff;
 
-  --border: #30363d;
-  --input: #30363d;
-  --ring: #1f6feb;
+  --border: #1b2a36;
+  --input: #1b2a36;
+  --ring: #22d3ee;
 }
 
 /* Optional extra theme variables if needed */
@@ -227,5 +227,36 @@
 
   body {
     @apply bg-background text-foreground;
+  }
+}
+
+@layer components {
+  .hud-grid {
+    background-image:
+      linear-gradient(rgba(34, 211, 238, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(34, 211, 238, 0.035) 1px, transparent 1px);
+    background-size: 44px 44px;
+  }
+
+  .hud-panel {
+    @apply rounded-xl border bg-card/85 backdrop-blur-sm;
+    border-color: color-mix(in srgb, var(--primary) 22%, var(--border));
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--primary) 8%, transparent),
+      0 12px 40px rgba(0, 0, 0, 0.28);
+  }
+
+  .hud-label {
+    @apply text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground;
+  }
+
+  .hud-live-dot {
+    @apply relative inline-flex h-2 w-2 rounded-full bg-emerald-400;
+    box-shadow: 0 0 10px rgba(52, 211, 153, 0.85);
+  }
+
+  .hud-live-dot::after {
+    content: "";
+    @apply absolute inset-0 animate-ping rounded-full bg-emerald-400/70;
   }
 }

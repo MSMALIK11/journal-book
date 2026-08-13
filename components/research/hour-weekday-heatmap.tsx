@@ -3,7 +3,7 @@
 import { Fragment } from "react"
 import { cn } from "@/lib/utils"
 import type { HeatmapCell } from "@/lib/trading/research"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import { WEEKDAY_ORDER } from "@/lib/trading/sessions"
 
 const currency = new Intl.NumberFormat("en-US", {
@@ -23,7 +23,7 @@ export function HourWeekdayHeatmap({ cells }: Props) {
   )
 
   function cellColor(cell: HeatmapCell) {
-    if (cell.trades === 0) return "bg-muted/30"
+    if (cell.trades === 0) return "bg-cyan-400/5"
     const intensity = Math.min(Math.abs(cell.netPnl) / maxAbsPnl, 1)
     if (cell.netPnl > 0) {
       return intensity > 0.6 ? "bg-emerald-500/70" : "bg-emerald-500/30"
@@ -32,12 +32,12 @@ export function HourWeekdayHeatmap({ cells }: Props) {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Hour × weekday heatmap</CardTitle>
-        <CardDescription>Green = profitable hours, red = losing hours (darker = larger P&L)</CardDescription>
-      </CardHeader>
-      <CardContent className="overflow-x-auto">
+    <HudPanel>
+      <HudPanelHeader
+        title="Hour × weekday heatmap"
+        description="Green = profitable hours, red = losing hours (darker = larger P&L)"
+      />
+      <div className="overflow-x-auto p-4">
         <div className="min-w-[720px]">
           <div className="grid grid-cols-[48px_repeat(24,minmax(0,1fr))] gap-0.5 text-[10px]">
             <div />
@@ -60,7 +60,7 @@ export function HourWeekdayHeatmap({ cells }: Props) {
                           : "No trades"
                       }
                       className={cn(
-                        "aspect-square rounded-sm border border-border/40",
+                        "aspect-square rounded-sm border border-cyan-400/10",
                         cellColor(cell),
                       )}
                     />
@@ -70,7 +70,7 @@ export function HourWeekdayHeatmap({ cells }: Props) {
             ))}
           </div>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </HudPanel>
   )
 }

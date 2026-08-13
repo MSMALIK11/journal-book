@@ -1,7 +1,7 @@
 "use client"
 
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from "recharts"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import {
   ChartContainer,
   ChartTooltip,
@@ -17,7 +17,7 @@ const currency = new Intl.NumberFormat("en-US", {
 })
 
 const chartConfig: ChartConfig = {
-  count: { label: "Trades", color: "hsl(var(--chart-1))" },
+  count: { label: "Trades", color: "#22d3ee" },
 }
 
 type Props = {
@@ -29,27 +29,25 @@ export function PnlDistributionChart({ distribution }: Props) {
     ...bucket,
     fill:
       bucket.label.startsWith("-") || bucket.label.startsWith("<")
-        ? "hsl(0 84% 60%)"
+        ? "#f43f5e"
         : bucket.label.startsWith("$0")
-          ? "hsl(var(--muted-foreground))"
-          : "hsl(142 76% 36%)",
+          ? "#64748b"
+          : "#34d399",
   }))
 
   const totalTrades = distribution.reduce((sum, bucket) => sum + bucket.count, 0)
   if (totalTrades === 0) return null
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>P&amp;L distribution</CardTitle>
-        <CardDescription>
-          How many trades landed in each profit/loss bucket — spot outsized wins or losses
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
+    <HudPanel>
+      <HudPanelHeader
+        title="P&L distribution"
+        description="How many trades landed in each profit/loss bucket — spot outsized wins or losses"
+      />
+      <div className="p-4">
         <ChartContainer config={chartConfig} className="h-[260px] w-full">
           <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid vertical={false} />
+            <CartesianGrid vertical={false} stroke="rgba(34,211,238,0.08)" />
             <XAxis
               dataKey="label"
               tickLine={false}
@@ -83,7 +81,7 @@ export function PnlDistributionChart({ distribution }: Props) {
             </Bar>
           </BarChart>
         </ChartContainer>
-      </CardContent>
-    </Card>
+      </div>
+    </HudPanel>
   )
 }

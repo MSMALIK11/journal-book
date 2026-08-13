@@ -37,11 +37,11 @@ export function SettingsSection({
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <section className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm transition-shadow hover:shadow-md">
+      <section className="hud-panel overflow-hidden">
         <CollapsibleTrigger asChild>
           <button
             type="button"
-            className="flex w-full items-start gap-4 px-5 py-4 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            className="flex w-full items-start gap-4 px-5 py-4 text-left transition-colors hover:bg-cyan-400/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/40"
           >
             <div
               className={cn(
@@ -70,7 +70,7 @@ export function SettingsSection({
         </CollapsibleTrigger>
 
         <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 duration-200">
-          <div className="border-t border-border/60 px-5 pb-5 pt-4">{children}</div>
+          <div className="border-t border-cyan-400/10 px-5 pb-5 pt-4">{children}</div>
         </CollapsibleContent>
       </section>
     </Collapsible>
@@ -89,7 +89,7 @@ export function SettingsRow({ label, description, htmlFor, children, className }
   return (
     <div
       className={cn(
-        "flex items-start justify-between gap-4 rounded-xl border border-border/50 bg-muted/15 px-4 py-3.5 transition-colors hover:bg-muted/30",
+        "flex items-start justify-between gap-4 rounded-xl border border-cyan-400/15 bg-[#05070a]/50 px-4 py-3.5 transition-colors hover:bg-cyan-400/5",
         className,
       )}
     >
@@ -109,7 +109,7 @@ export function SettingsRow({ label, description, htmlFor, children, className }
 export function SettingsGroup({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="space-y-2.5">
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground px-0.5">
+      <p className="hud-label px-0.5">
         {title}
       </p>
       <div className="space-y-2">{children}</div>
@@ -119,7 +119,7 @@ export function SettingsGroup({ title, children }: { title: string; children: Re
 
 export function SettingsHint({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-xl border border-dashed border-border/70 bg-muted/10 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
+    <div className="rounded-xl border border-dashed border-cyan-400/20 bg-cyan-400/5 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
       {children}
     </div>
   )

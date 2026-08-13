@@ -179,18 +179,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { PlusCircle, Eye } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel";
 
 interface Strategy {
   name: string;
@@ -261,9 +255,12 @@ export default function StrategyDashboard() {
   };
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold tracking-tight">Strategy Dashboard</h1>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="hud-label">Playbook</p>
+          <h1 className="mt-1 text-xl font-semibold tracking-tight text-cyan-100">Strategies</h1>
+        </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button variant="default" className="flex items-center gap-2">
@@ -284,6 +281,7 @@ export default function StrategyDashboard() {
                     value={value as string | number}
                     onChange={handleChange}
                     placeholder={`Enter ${key}`}
+                    className="border-cyan-400/20 bg-transparent"
                   />
                 </div>
               ))}
@@ -296,21 +294,22 @@ export default function StrategyDashboard() {
       </div>
 
       <Tabs defaultValue="strategies" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="strategies">Strategies</TabsTrigger>
-          <TabsTrigger value="details">Strategy Details</TabsTrigger>
+        <TabsList className="h-auto flex-wrap border border-cyan-400/20 bg-[#0b1016] p-1">
+          <TabsTrigger value="strategies" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
+            Strategies
+          </TabsTrigger>
+          <TabsTrigger value="details" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
+            Strategy Details
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="strategies">
           <ScrollArea className="max-h-[80vh]">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {strategies.map((strategy, index) => (
-                <Card key={index} className="bg-muted/50 border shadow-sm">
-                  <CardHeader>
-                    <CardTitle className="text-lg font-semibold">{strategy.name}</CardTitle>
-                    <p className="text-xs text-muted-foreground">Strategy Overview</p>
-                  </CardHeader>
-                  <CardContent className="space-y-2 text-sm">
+                <HudPanel key={index} glow={strategy.totalProfit < 0 ? "red" : "green"}>
+                  <HudPanelHeader title={strategy.name} description="Strategy overview" />
+                  <div className="space-y-2 p-5 text-sm">
                     <p><strong>Profit Factor:</strong> {strategy.profitFactor}</p>
                     <p><strong>Risk/Trade:</strong> {strategy.riskPerTrade}</p>
                     <p><strong>Time Frame:</strong> {strategy.timeFrame || "-"}</p>
@@ -318,30 +317,28 @@ export default function StrategyDashboard() {
                     <p><strong>Notes:</strong> {strategy.notes || "-"}</p>
                     <p>
                       <strong>Total Profit:</strong>{" "}
-                      <span className={strategy.totalProfit < 0 ? "text-red-500" : "text-green-600"}>
+                      <span className={strategy.totalProfit < 0 ? "text-rose-400" : "text-emerald-400"}>
                         ${strategy.totalProfit.toLocaleString()}
                       </span>
                     </p>
                     <div>
-                      <p>Win Rate</p>
+                      <p className="hud-label mb-2">Win Rate</p>
                       <Progress value={strategy.winRate} />
                     </div>
-                  </CardContent>
-                  <CardFooter>
-                    <Button variant="outline" className="w-full flex items-center gap-2">
-                      <Eye className="w-4 h-4" /> View Details
+                    <Button variant="outline" className="mt-2 w-full border-cyan-400/20">
+                      <Eye className="mr-2 h-4 w-4" /> View Details
                     </Button>
-                  </CardFooter>
-                </Card>
+                  </div>
+                </HudPanel>
               ))}
             </div>
           </ScrollArea>
         </TabsContent>
 
         <TabsContent value="details">
-          <div className="text-sm text-muted-foreground">
+          <HudPanel className="p-5 text-sm text-muted-foreground">
             Add more insights or analytics related to strategy performance here.
-          </div>
+          </HudPanel>
         </TabsContent>
       </Tabs>
     </div>

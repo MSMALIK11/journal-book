@@ -22,7 +22,7 @@ import {
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import {
   Dialog,
   DialogContent,
@@ -395,45 +395,43 @@ export function TradeForm() {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-3xl border border-border/60 bg-card/70 p-5 shadow-sm backdrop-blur sm:p-6">
+      <HudPanel className="p-5 sm:p-6">
         <Link
           href="/trades"
-          className="mb-4 inline-flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="mb-4 inline-flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-cyan-200"
         >
           <ArrowLeft className="h-4 w-4" />
           Trade history
         </Link>
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <Badge className="mb-3 bg-primary/10 text-primary hover:bg-primary/10">New journal entry</Badge>
-            <h1 className="text-3xl font-semibold tracking-tight">Add a trade</h1>
+            <p className="hud-label mb-2">New journal entry</p>
+            <h1 className="text-2xl font-semibold tracking-tight text-cyan-100">Add a trade</h1>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
               Capture the execution first, then add the context that will make the review useful.
             </p>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <ShieldCheck className="h-4 w-4 text-emerald-500" />
+            <ShieldCheck className="h-4 w-4 text-emerald-400" />
             Required fields are marked with *
           </div>
         </div>
-      </div>
+      </HudPanel>
 
       <form onSubmit={handleSubmit(onSubmit)} noValidate>
         <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div className="space-y-5">
-            <Card className="overflow-hidden rounded-2xl border-border/60 shadow-sm">
-              <CardHeader className="border-b border-border/60 bg-muted/20">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <HudPanel>
+              <HudPanelHeader
+                title="Trade details"
+                description="Instrument, direction, timing, and execution"
+                action={
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-300">
                     <BarChart3 className="h-4 w-4" />
                   </div>
-                  <div>
-                    <CardTitle className="text-base">Trade details</CardTitle>
-                    <p className="mt-0.5 text-xs text-muted-foreground">Instrument, direction, timing, and execution</p>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-6 p-5 sm:p-6">
+                }
+              />
+              <div className="space-y-6 p-5 sm:p-6">
                 <div className="grid gap-5 md:grid-cols-2">
                   <div>
                     <FieldLabel htmlFor="instrument">Instrument</FieldLabel>
@@ -500,7 +498,7 @@ export function TradeForm() {
                                 </span>
                               </SelectItem>
                             ))}
-                            <SelectItem value="__add_symbol__" className="mt-1 border-t border-border/60 pt-2 text-primary">
+                            <SelectItem value="__add_symbol__" className="mt-1 border-t border-cyan-400/15 pt-2 text-primary">
                               <span className="flex items-center gap-2 font-medium">
                                 <Plus className="h-4 w-4" />
                                 Add new symbol
@@ -582,7 +580,7 @@ export function TradeForm() {
                   </div>
                 </div>
 
-                <div className="border-t border-border/60 pt-6">
+                <div className="border-t border-cyan-400/15 pt-6">
                   <p className="mb-4 text-sm font-semibold">Timing and execution</p>
                   <div className="grid gap-5 md:grid-cols-2">
                     <div>
@@ -705,7 +703,7 @@ export function TradeForm() {
                   </div>
                 </div>
 
-                <div className="border-t border-border/60 pt-6">
+                <div className="border-t border-cyan-400/15 pt-6">
                   <FieldLabel htmlFor="setup_notes" optional>Setup notes</FieldLabel>
                   <Textarea
                     id="setup_notes"
@@ -715,22 +713,20 @@ export function TradeForm() {
                   />
                   <FieldMessage message={errors.setup_notes?.message} />
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </HudPanel>
 
-            <Card className="overflow-hidden rounded-2xl border-border/60 shadow-sm">
-              <CardHeader className="border-b border-border/60 bg-muted/20">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-500/10 text-violet-500">
+            <HudPanel>
+              <HudPanelHeader
+                title="Review and psychology"
+                description="Optional context that improves future decisions"
+                action={
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-500/10 text-violet-300">
                     <CheckCircle2 className="h-4 w-4" />
                   </div>
-                  <div>
-                    <CardTitle className="text-base">Review and psychology</CardTitle>
-                    <p className="mt-0.5 text-xs text-muted-foreground">Optional context that improves future decisions</p>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-6 p-5 sm:p-6">
+                }
+              />
+              <div className="space-y-6 p-5 sm:p-6">
                 <div className="grid gap-5 md:grid-cols-2">
                   <div>
                     <FieldLabel htmlFor="emotion_tag" optional>Emotion before entry</FieldLabel>
@@ -778,7 +774,7 @@ export function TradeForm() {
                       name="confidence_rating"
                       control={control}
                       render={({ field }) => (
-                        <div className="rounded-xl border border-border/60 px-4 py-3">
+                        <div className="rounded-xl border border-cyan-400/15 px-4 py-3">
                           <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
                             <span>Low</span>
                             <span className="font-semibold text-foreground">{field.value}/10</span>
@@ -851,20 +847,18 @@ export function TradeForm() {
                   <p className="mt-1.5 text-xs text-muted-foreground">Up to 10 tags, separated by commas.</p>
                   <FieldMessage message={errors.tags?.message} />
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </HudPanel>
           </div>
 
           <aside className="space-y-4 xl:sticky xl:top-6">
-            <Card className="overflow-hidden rounded-2xl border-border/60 shadow-sm">
-              <CardHeader className="border-b border-border/60 bg-muted/20">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <CircleDollarSign className="h-4 w-4 text-primary" />
-                  Trade summary
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4 p-5">
-                <div className="rounded-xl bg-muted/40 p-4">
+            <HudPanel>
+              <HudPanelHeader
+                title="Trade summary"
+                action={<CircleDollarSign className="h-4 w-4 text-cyan-300" />}
+              />
+              <div className="space-y-4 p-5">
+                <div className="rounded-xl border border-cyan-400/15 bg-[#05070a]/60 p-4">
                   <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Live P&amp;L</p>
                   <p
                     className={cn(
@@ -872,8 +866,8 @@ export function TradeForm() {
                       metrics.pnl === null
                         ? "text-muted-foreground"
                         : metrics.pnl >= 0
-                          ? "text-emerald-500"
-                          : "text-rose-500",
+                          ? "text-emerald-400"
+                          : "text-rose-400",
                     )}
                   >
                     {metrics.pnl === null
@@ -892,7 +886,7 @@ export function TradeForm() {
                 </div>
 
                 <div className="grid grid-cols-3 gap-3">
-                  <div className="rounded-xl border border-border/60 p-3">
+                  <div className="rounded-xl border border-cyan-400/15 p-3">
                     <p className="text-xs text-muted-foreground">Price move</p>
                     <p className="mt-2 text-sm font-semibold">
                       {metrics.difference === null
@@ -900,18 +894,18 @@ export function TradeForm() {
                         : `${metrics.difference > 0 ? "+" : ""}${metrics.difference.toFixed(Number(values.decimal_places) || 2)}`}
                     </p>
                   </div>
-                  <div className="rounded-xl border border-border/60 p-3">
+                  <div className="rounded-xl border border-cyan-400/15 p-3">
                     <p className="text-xs text-muted-foreground">Pips</p>
                     <p className="mt-2 text-sm font-semibold">{metrics.pips ?? "—"}</p>
                   </div>
-                  <div className="rounded-xl border border-border/60 p-3">
+                  <div className="rounded-xl border border-cyan-400/15 p-3">
                     <p className="text-xs text-muted-foreground">Ticks</p>
                     <p className="mt-2 text-sm font-semibold">{metrics.ticks ?? "—"}</p>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-xl border border-border/60 p-3">
+                  <div className="rounded-xl border border-cyan-400/15 p-3">
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <ShieldCheck className="h-3.5 w-3.5" />
                       <span className="text-xs">Risk amount</span>
@@ -920,7 +914,7 @@ export function TradeForm() {
                       {metrics.riskAmount !== null ? currency.format(metrics.riskAmount) : "—"}
                     </p>
                   </div>
-                  <div className="rounded-xl border border-border/60 p-3">
+                  <div className="rounded-xl border border-cyan-400/15 p-3">
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Target className="h-3.5 w-3.5" />
                       <span className="text-xs">Risk %</span>
@@ -932,13 +926,13 @@ export function TradeForm() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-xl border border-border/60 p-3">
+                  <div className="rounded-xl border border-cyan-400/15 p-3">
                     <p className="text-xs text-muted-foreground">R multiple</p>
                     <p className="mt-2 text-sm font-semibold">
                       {metrics.riskReward ? `${metrics.riskReward.toFixed(2)}R` : "—"}
                     </p>
                   </div>
-                  <div className="rounded-xl border border-border/60 p-3">
+                  <div className="rounded-xl border border-cyan-400/15 p-3">
                     <p className="text-xs text-muted-foreground">Position value</p>
                     <p className="mt-2 text-sm font-semibold">
                       {metrics.positionValue !== null ? currency.format(metrics.positionValue) : "—"}
@@ -946,14 +940,14 @@ export function TradeForm() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between rounded-xl border border-border/60 p-3">
+                <div className="flex items-center justify-between rounded-xl border border-cyan-400/15 p-3">
                   <span className="text-sm text-muted-foreground">Target reward</span>
                   <span className="font-semibold">
                     {metrics.reward !== null ? currency.format(metrics.reward) : "—"}
                   </span>
                 </div>
 
-                <div className="space-y-2 border-t border-border/60 pt-4 text-xs text-muted-foreground">
+                <div className="space-y-2 border-t border-cyan-400/15 pt-4 text-xs text-muted-foreground">
                   <div className="flex items-center justify-between">
                     <span>Instrument</span>
                     <span className="max-w-36 truncate font-medium text-foreground">{values.instrument || "Not set"}</span>
@@ -993,10 +987,10 @@ export function TradeForm() {
                     </Badge>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </HudPanel>
 
-            <div className="rounded-2xl border border-border/60 bg-card p-4 shadow-sm">
+            <HudPanel className="p-4">
               <p className="text-sm font-medium">Before you save</p>
               <ul className="mt-3 space-y-2 text-xs text-muted-foreground">
                 {[
@@ -1005,12 +999,12 @@ export function TradeForm() {
                   "Review notes are honest and actionable",
                 ].map((item) => (
                   <li key={item} className="flex gap-2">
-                    <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+                    <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-300" />
                     {item}
                   </li>
                 ))}
               </ul>
-            </div>
+            </HudPanel>
           </aside>
         </div>
 

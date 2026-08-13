@@ -1,7 +1,7 @@
 "use client"
 
 import type { AnalyticsRecords, AnalyticsResult } from "@/lib/trading/analytics"
-import { Card, CardContent } from "@/components/ui/card"
+import { HudPanel } from "@/components/dashboard/hud-panel"
 
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -37,12 +37,11 @@ export function PerformanceSummary({ overview, records, bestSession, weakestDay 
   const edgeLine = edgeParts.length ? edgeParts.join(" · ") : null
 
   return (
-    <Card className="border-primary/20 bg-primary/5">
-      <CardContent className="space-y-1 py-4">
-        <p className="text-sm font-medium leading-relaxed text-foreground">{headline}</p>
-        {edgeLine ? <p className="text-sm text-muted-foreground">{edgeLine}</p> : null}
-        {streakLine ? <p className="text-sm text-muted-foreground">{streakLine}</p> : null}
-      </CardContent>
-    </Card>
+    <HudPanel glow={overview.netPnl >= 0 ? "green" : "red"} className="px-5 py-4">
+      <p className="hud-label mb-2">Performance summary</p>
+      <p className="text-sm font-medium leading-relaxed text-cyan-100">{headline}</p>
+      {edgeLine ? <p className="mt-1 text-sm text-muted-foreground">{edgeLine}</p> : null}
+      {streakLine ? <p className="mt-1 text-sm text-muted-foreground">{streakLine}</p> : null}
+    </HudPanel>
   )
 }

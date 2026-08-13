@@ -70,25 +70,25 @@ export function AuthForm() {
   }
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-10">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(9,105,218,0.12),transparent_35%)]" />
-      <div className="relative grid w-full max-w-5xl overflow-hidden rounded-3xl border border-border/60 bg-card shadow-2xl lg:grid-cols-[0.9fr_1.1fr]">
-        <section className="hidden flex-col justify-between bg-muted/30 p-10 lg:flex">
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#05070a] hud-grid px-4 py-10">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_35%)]" />
+      <div className="relative grid w-full max-w-5xl overflow-hidden rounded-xl border border-cyan-400/20 bg-card/85 shadow-[0_12px_40px_rgba(0,0,0,0.28)] lg:grid-cols-[0.9fr_1.1fr]">
+        <section className="hidden flex-col justify-between border-r border-cyan-400/15 bg-[#06080c] p-10 lg:flex">
           <div>
             <div className="flex items-center gap-3">
-              <div className="rounded-xl bg-primary p-2.5 text-primary-foreground">
+              <div className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 p-2.5 text-cyan-300">
                 <TrendingUp className="h-5 w-5" />
               </div>
-              <span className="text-lg font-semibold">Trading Journal</span>
+              <span className="text-lg font-semibold text-cyan-100">Trading Journal</span>
             </div>
-            <h1 className="mt-16 text-4xl font-semibold leading-tight tracking-tight">
+            <h1 className="mt-16 text-4xl font-semibold leading-tight tracking-tight text-cyan-50">
               Improve your process, one trade at a time.
             </h1>
             <p className="mt-4 max-w-sm text-sm leading-6 text-muted-foreground">
               Securely log executions, review your decisions, and turn trading data into repeatable discipline.
             </p>
           </div>
-          <div className="flex items-center gap-3 rounded-2xl border border-border/60 bg-background/60 p-4">
+          <div className="flex items-center gap-3 rounded-xl border border-cyan-400/20 bg-[#05070a]/70 p-4">
             <ShieldCheck className="h-5 w-5 shrink-0 text-emerald-500" />
             <p className="text-xs leading-5 text-muted-foreground">
               Passwords are hashed and your session is stored in a secure httpOnly cookie.
@@ -99,19 +99,19 @@ export function AuthForm() {
         <Card className="border-0 bg-transparent shadow-none">
           <CardHeader className="px-6 pb-2 pt-8 sm:px-10 sm:pt-10">
             <div className="mb-5 flex items-center gap-2 lg:hidden">
-              <div className="rounded-lg bg-primary p-2 text-primary-foreground">
+              <div className="rounded-lg border border-cyan-400/30 bg-cyan-500/10 p-2 text-cyan-300">
                 <TrendingUp className="h-4 w-4" />
               </div>
-              <span className="font-semibold">Trading Journal</span>
+              <span className="font-semibold text-cyan-100">Trading Journal</span>
             </div>
-            <CardTitle className="text-2xl">Access your journal</CardTitle>
+            <CardTitle className="text-2xl text-cyan-100">Access your journal</CardTitle>
             <CardDescription>Sign in or create your private trading workspace.</CardDescription>
           </CardHeader>
           <CardContent className="px-6 pb-8 sm:px-10 sm:pb-10">
             <Tabs value={mode} onValueChange={changeMode} className="mt-5">
-              <TabsList className="grid h-11 w-full grid-cols-2">
-                <TabsTrigger value="signin">Sign in</TabsTrigger>
-                <TabsTrigger value="signup">Create account</TabsTrigger>
+              <TabsList className="grid h-11 w-full grid-cols-2 border border-cyan-400/20 bg-[#05070a]">
+                <TabsTrigger value="signin" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">Sign in</TabsTrigger>
+                <TabsTrigger value="signup" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">Create account</TabsTrigger>
               </TabsList>
 
               <form onSubmit={submit}>

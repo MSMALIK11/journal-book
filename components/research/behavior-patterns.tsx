@@ -1,6 +1,6 @@
 "use client"
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import {
   Table,
   TableBody,
@@ -10,6 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import type { BehaviorStats, ResearchResult } from "@/lib/trading/research"
+import { cn } from "@/lib/utils"
 
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -25,7 +26,7 @@ type Props = {
 export function BehaviorPatterns({ behavior, journal }: Props) {
   return (
     <div className="space-y-6">
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
         <BehaviorCard
           title="After a win"
           description="Next trade win rate"
@@ -62,7 +63,7 @@ export function BehaviorPatterns({ behavior, journal }: Props) {
         />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-3 md:grid-cols-2">
         <BehaviorCard
           title="Heavy days (3+ trades)"
           description="Average daily P&L"
@@ -85,12 +86,12 @@ export function BehaviorPatterns({ behavior, journal }: Props) {
         />
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Journal patterns</CardTitle>
-          <CardDescription>From manual trades with emotion, plan, and mistake tags</CardDescription>
-        </CardHeader>
-        <CardContent>
+      <HudPanel>
+        <HudPanelHeader
+          title="Journal patterns"
+          description="From manual trades with emotion, plan, and mistake tags"
+        />
+        <div className="p-4">
           {!journal.hasManualJournalData ? (
             <p className="text-sm text-muted-foreground">
               Add manual trades with journal fields for psychology insights. TradingView sync uses
@@ -104,8 +105,8 @@ export function BehaviorPatterns({ behavior, journal }: Props) {
               <JournalTable title="Confidence" rows={journal.byConfidence} />
             </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </HudPanel>
     </div>
   )
 }
@@ -124,16 +125,12 @@ function BehaviorCard({
   negative?: boolean
 }) {
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p className={`text-2xl font-bold ${negative ? "text-rose-600" : ""}`}>{value}</p>
-        <p className="text-xs text-muted-foreground">{sub}</p>
-      </CardContent>
-    </Card>
+    <HudPanel glow={negative ? "red" : "cyan"} className="p-5">
+      <p className="hud-label">{title}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      <p className={cn("mt-2 text-2xl font-semibold", negative ? "text-rose-400" : "text-cyan-100")}>{value}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{sub}</p>
+    </HudPanel>
   )
 }
 
@@ -158,19 +155,19 @@ function JournalTable({
       <p className="mb-2 text-sm font-medium">{title}</p>
       <Table>
         <TableHeader>
-          <TableRow>
-            <TableHead>Tag</TableHead>
-            <TableHead className="text-right">Trades</TableHead>
-            <TableHead className="text-right">P&L</TableHead>
+          <TableRow className="border-cyan-400/10 hover:bg-transparent">
+            <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Tag</TableHead>
+            <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Trades</TableHead>
+            <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">P&L</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.map((row) => (
-            <TableRow key={row.label}>
+            <TableRow key={row.label} className="border-cyan-400/10 hover:bg-cyan-400/5">
               <TableCell>{row.label}</TableCell>
               <TableCell className="text-right">{row.trades}</TableCell>
               <TableCell
-                className={`text-right ${row.netPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}
+                className={`text-right ${row.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}
               >
                 {currency.format(row.netPnl)}
               </TableCell>

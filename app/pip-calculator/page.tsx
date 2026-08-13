@@ -1,14 +1,14 @@
-// app/pip-calculator/page.tsx
 "use client"
 
 import { useState, useEffect } from "react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
+import { HudPanel } from "@/components/dashboard/hud-panel"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { coins } from "@/lib/symbols"
+
+const tabTriggerClass = "data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200"
 
 export default function PipCalculatorPage() {
   const [symbol, setSymbol] = useState("EURUSD")
@@ -49,125 +49,129 @@ export default function PipCalculatorPage() {
   }
 
   return (
-    <div className="max-w-4xl  p-6 space-y-6">
-      <h1 className="text-3xl font-bold">Pip & Risk Calculator</h1>
+    <div className="mx-auto max-w-4xl space-y-6">
+      <p className="hud-label">Tools</p>
+      <h1 className="text-xl font-semibold tracking-tight text-cyan-100">Pip & Risk Calculator</h1>
 
       <Tabs defaultValue="pip">
-        <TabsList>
-          <TabsTrigger value="pip">Pip Calculator</TabsTrigger>
-          <TabsTrigger value="profit">Profit/Loss</TabsTrigger>
-          <TabsTrigger value="lot">Lot Sizing</TabsTrigger>
+        <TabsList className="h-auto flex-wrap border border-cyan-400/20 bg-[#0b1016] p-1">
+          <TabsTrigger value="pip" className={tabTriggerClass}>Pip Calculator</TabsTrigger>
+          <TabsTrigger value="profit" className={tabTriggerClass}>Profit/Loss</TabsTrigger>
+          <TabsTrigger value="lot" className={tabTriggerClass}>Lot Sizing</TabsTrigger>
         </TabsList>
 
         <TabsContent value="pip">
-          <Card className="mt-4">
-            <CardContent className="p-6 space-y-4">
-              <div className="grid md:grid-cols-2 gap-4">
-                <div>
-                  <Label>Symbol</Label>
-                  <select
-                    value={symbol}
-                    onChange={(e) => setSymbol(e.target.value)}
-                    className="w-full border rounded p-2"
-                  >
-                    {coins.map((coin) => (
-                      <option key={coin.symbol} value={coin.symbol}>
-                        {coin.symbol} ({coin.type})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <Label>Lot Size</Label>
-                  <Input
-                    type="number"
-                    value={lotSize}
-                    min={0.01}
-                    step={0.01}
-                    onChange={(e) => setLotSize(Number(e.target.value))}
-                  />
-                </div>
+          <HudPanel className="mt-4 space-y-4 p-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Symbol</Label>
+                <select
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value)}
+                  className="w-full rounded-md border border-cyan-400/20 bg-transparent p-2 text-sm"
+                >
+                  {coins.map((coin) => (
+                    <option key={coin.symbol} value={coin.symbol}>
+                      {coin.symbol} ({coin.type})
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              <Button onClick={handlePipCalc}>Calculate Pip Value</Button>
-
-              <div className="text-xl font-semibold">
-                Pip Value: <span className="text-green-600">{pipValue.toFixed(2)} USD</span>
+              <div className="space-y-2">
+                <Label>Lot Size</Label>
+                <Input
+                  type="number"
+                  value={lotSize}
+                  min={0.01}
+                  step={0.01}
+                  onChange={(e) => setLotSize(Number(e.target.value))}
+                  className="border-cyan-400/20 bg-transparent"
+                />
               </div>
-            </CardContent>
-          </Card>
+            </div>
+
+            <Button onClick={handlePipCalc}>Calculate Pip Value</Button>
+
+            <div className="text-xl font-semibold text-cyan-100">
+              Pip Value: <span className="text-emerald-400">{pipValue.toFixed(2)} USD</span>
+            </div>
+            {pipResult ? (
+              <p className="text-sm text-muted-foreground">Calculated result: {pipResult.toFixed(2)}</p>
+            ) : null}
+          </HudPanel>
         </TabsContent>
 
         <TabsContent value="profit">
-          <Card className="mt-4">
-            <CardContent className="p-6 space-y-4">
-              <div className="grid md:grid-cols-2 gap-4">
-                <div>
-                  <Label>Entry Price</Label>
-                  <Input
-                    type="number"
-                    value={entryPrice}
-                    onChange={(e) => setEntryPrice(Number(e.target.value))}
-                  />
-                </div>
-
-                <div>
-                  <Label>Exit Price</Label>
-                  <Input
-                    type="number"
-                    value={exitPrice}
-                    onChange={(e) => setExitPrice(Number(e.target.value))}
-                  />
-                </div>
+          <HudPanel className="mt-4 space-y-4 p-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Entry Price</Label>
+                <Input
+                  type="number"
+                  value={entryPrice}
+                  onChange={(e) => setEntryPrice(Number(e.target.value))}
+                  className="border-cyan-400/20 bg-transparent"
+                />
               </div>
 
-              <Button onClick={handleProfitLossCalc}>Calculate Profit/Loss</Button>
-
-              <div className="text-xl font-semibold">
-                Result: <span className="text-blue-600">{profitLoss.toFixed(2)} USD</span>
+              <div className="space-y-2">
+                <Label>Exit Price</Label>
+                <Input
+                  type="number"
+                  value={exitPrice}
+                  onChange={(e) => setExitPrice(Number(e.target.value))}
+                  className="border-cyan-400/20 bg-transparent"
+                />
               </div>
-            </CardContent>
-          </Card>
+            </div>
+
+            <Button onClick={handleProfitLossCalc}>Calculate Profit/Loss</Button>
+
+            <div className="text-xl font-semibold text-cyan-100">
+              Result: <span className="text-cyan-300">{profitLoss.toFixed(2)} USD</span>
+            </div>
+          </HudPanel>
         </TabsContent>
 
         <TabsContent value="lot">
-          <Card className="mt-4">
-            <CardContent className="p-6 space-y-4">
-              <div className="grid md:grid-cols-2 gap-4">
-                <div>
-                  <Label>Account Size ($)</Label>
-                  <Input
-                    type="number"
-                    value={accountSize}
-                    onChange={(e) => setAccountSize(Number(e.target.value))}
-                  />
-                </div>
-                <div>
-                  <Label>Risk %</Label>
-                  <Input
-                    type="number"
-                    value={riskPercent}
-                    onChange={(e) => setRiskPercent(Number(e.target.value))}
-                  />
-                </div>
-                <div>
-                  <Label>Stop Loss (pips)</Label>
-                  <Input
-                    type="number"
-                    value={stopLossPips}
-                    onChange={(e) => setStopLossPips(Number(e.target.value))}
-                  />
-                </div>
+          <HudPanel className="mt-4 space-y-4 p-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Account Size ($)</Label>
+                <Input
+                  type="number"
+                  value={accountSize}
+                  onChange={(e) => setAccountSize(Number(e.target.value))}
+                  className="border-cyan-400/20 bg-transparent"
+                />
               </div>
-
-              <Button onClick={handleLotRecommendation}>Calculate Lot Size</Button>
-
-              <div className="text-xl font-semibold">
-                 Recommended Lot: <span className="text-purple-600">{recommendedLot}</span>
+              <div className="space-y-2">
+                <Label>Risk %</Label>
+                <Input
+                  type="number"
+                  value={riskPercent}
+                  onChange={(e) => setRiskPercent(Number(e.target.value))}
+                  className="border-cyan-400/20 bg-transparent"
+                />
               </div>
-            </CardContent>
-          </Card>
+              <div className="space-y-2">
+                <Label>Stop Loss (pips)</Label>
+                <Input
+                  type="number"
+                  value={stopLossPips}
+                  onChange={(e) => setStopLossPips(Number(e.target.value))}
+                  className="border-cyan-400/20 bg-transparent"
+                />
+              </div>
+            </div>
+
+            <Button onClick={handleLotRecommendation}>Calculate Lot Size</Button>
+
+            <div className="text-xl font-semibold text-cyan-100">
+              Recommended Lot: <span className="text-violet-300">{recommendedLot}</span>
+            </div>
+          </HudPanel>
         </TabsContent>
       </Tabs>
     </div>

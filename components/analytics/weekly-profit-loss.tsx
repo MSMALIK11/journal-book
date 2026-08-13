@@ -8,7 +8,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import {
   ChartContainer,
   ChartTooltip,
@@ -31,7 +31,7 @@ const currency = new Intl.NumberFormat("en-US", {
 })
 
 const chartConfig: ChartConfig = {
-  netPnl: { label: "Net P&L", color: "hsl(var(--chart-1))" },
+  netPnl: { label: "Net P&L", color: "#22d3ee" },
 }
 
 function WeekTooltip({
@@ -44,12 +44,12 @@ function WeekTooltip({
   if (!active || !payload?.length) return null
   const w = payload[0].payload
   return (
-    <div className="rounded-lg border bg-background p-3 text-sm shadow-md">
-      <p className="font-medium">{w.label}</p>
+    <div className="rounded-lg border border-cyan-400/20 bg-[#0b1016] p-3 text-sm shadow-md">
+      <p className="font-medium text-cyan-100">{w.label}</p>
       <p className="text-muted-foreground">{w.trades} trades · {w.winRate.toFixed(0)}% win rate</p>
-      <p className="text-emerald-600">Profit: {currency.format(w.grossProfit)}</p>
-      <p className="text-rose-600">Loss: {currency.format(w.grossLoss)}</p>
-      <p className={w.netPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>
+      <p className="text-emerald-400">Profit: {currency.format(w.grossProfit)}</p>
+      <p className="text-rose-400">Loss: {currency.format(w.grossLoss)}</p>
+      <p className={w.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
         Net: {currency.format(w.netPnl)}
       </p>
     </div>
@@ -63,18 +63,16 @@ type Props = {
 export function WeeklyProfitLoss({ byWeek }: Props) {
   if (!byWeek.length) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Weekly profit &amp; loss</CardTitle>
-          <CardDescription>No closed trades to group by week</CardDescription>
-        </CardHeader>
-      </Card>
+      <HudPanel className="p-5">
+        <p className="text-sm font-semibold">Weekly profit & loss</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">No closed trades to group by week</p>
+      </HudPanel>
     )
   }
 
   const chartData = byWeek.map((w) => ({
     ...w,
-    fill: w.netPnl >= 0 ? "hsl(142 76% 36%)" : "hsl(0 84% 60%)",
+    fill: w.netPnl >= 0 ? "#34d399" : "#f43f5e",
   }))
 
   const totals = byWeek.reduce(
@@ -89,43 +87,37 @@ export function WeeklyProfitLoss({ byWeek }: Props) {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">Weekly profit &amp; loss</h2>
-        <p className="text-sm text-muted-foreground">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-cyan-200/80">
+          Weekly profit &amp; loss
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">
           P&amp;L grouped by calendar week (Mon–Sun, your timezone)
         </p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Total weekly profit</CardDescription>
-            <CardTitle className="text-xl text-emerald-600">{currency.format(totals.profit)}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Total weekly loss</CardDescription>
-            <CardTitle className="text-xl text-rose-600">{currency.format(totals.loss)}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Net across weeks</CardDescription>
-            <CardTitle className={`text-xl ${totals.net >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-              {currency.format(totals.net)}
-            </CardTitle>
-          </CardHeader>
-        </Card>
+        <HudPanel glow="green" className="p-5">
+          <p className="hud-label">Total weekly profit</p>
+          <p className="mt-2 text-xl font-semibold text-emerald-400">{currency.format(totals.profit)}</p>
+        </HudPanel>
+        <HudPanel glow="red" className="p-5">
+          <p className="hud-label">Total weekly loss</p>
+          <p className="mt-2 text-xl font-semibold text-rose-400">{currency.format(totals.loss)}</p>
+        </HudPanel>
+        <HudPanel glow={totals.net >= 0 ? "green" : "red"} className="p-5">
+          <p className="hud-label">Net across weeks</p>
+          <p className={`mt-2 text-xl font-semibold ${totals.net >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {currency.format(totals.net)}
+          </p>
+        </HudPanel>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Weekly net P&amp;L</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <HudPanel>
+        <HudPanelHeader title="Weekly net P&L" />
+        <div className="p-4">
           <ChartContainer config={chartConfig} className="h-[280px] w-full">
             <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-              <CartesianGrid vertical={false} />
+              <CartesianGrid vertical={false} stroke="rgba(34,211,238,0.08)" />
               <XAxis
                 dataKey="label"
                 tickLine={false}
@@ -151,37 +143,35 @@ export function WeeklyProfitLoss({ byWeek }: Props) {
               </Bar>
             </BarChart>
           </ChartContainer>
-        </CardContent>
-      </Card>
+        </div>
+      </HudPanel>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Week-by-week breakdown</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto">
+      <HudPanel>
+        <HudPanelHeader title="Week-by-week breakdown" />
+        <div className="overflow-x-auto p-4">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Week</TableHead>
-                <TableHead className="text-right">Trades</TableHead>
-                <TableHead className="text-right">Profit</TableHead>
-                <TableHead className="text-right">Loss</TableHead>
-                <TableHead className="text-right">Net P&amp;L</TableHead>
+              <TableRow className="border-cyan-400/10 hover:bg-transparent">
+                <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Week</TableHead>
+                <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Trades</TableHead>
+                <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Profit</TableHead>
+                <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Loss</TableHead>
+                <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Net P&amp;L</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {[...byWeek].reverse().map((week) => (
-                <TableRow key={week.key}>
+                <TableRow key={week.key} className="border-cyan-400/10 hover:bg-cyan-400/5">
                   <TableCell className="font-medium whitespace-nowrap">{week.label}</TableCell>
                   <TableCell className="text-right">{week.trades}</TableCell>
-                  <TableCell className="text-right text-emerald-600">
+                  <TableCell className="text-right text-emerald-400">
                     {currency.format(week.grossProfit)}
                   </TableCell>
-                  <TableCell className="text-right text-rose-600">
+                  <TableCell className="text-right text-rose-400">
                     {currency.format(week.grossLoss)}
                   </TableCell>
                   <TableCell
-                    className={`text-right font-medium ${week.netPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}
+                    className={`text-right font-medium ${week.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}
                   >
                     {currency.format(week.netPnl)}
                   </TableCell>
@@ -189,8 +179,8 @@ export function WeeklyProfitLoss({ byWeek }: Props) {
               ))}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
+        </div>
+      </HudPanel>
     </div>
   )
 }

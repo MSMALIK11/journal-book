@@ -11,9 +11,9 @@ import { ResearchDashboardSkeleton } from "@/components/research/research-dashbo
 import { ResearchInsights } from "@/components/research/research-insights"
 import { StyleProfileCard } from "@/components/research/style-profile"
 import { WhatIfTab } from "@/components/research/what-if-tab"
+import { HudPanel } from "@/components/dashboard/hud-panel"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
 import {
   Select,
   SelectContent,
@@ -35,6 +35,8 @@ const currency = new Intl.NumberFormat("en-US", {
   currency: "USD",
   maximumFractionDigits: 0,
 })
+
+const tabTriggerClass = "data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200"
 
 const fetcher = async (url: string) => {
   const response = await authFetch(url)
@@ -80,11 +82,9 @@ export function ResearchDashboard() {
 
   if (error && !data) {
     return (
-      <Card>
-        <CardContent className="py-12 text-center text-destructive">
-          Failed to load research insights. Please try again.
-        </CardContent>
-      </Card>
+      <HudPanel className="p-8 text-center text-rose-400">
+        Failed to load research insights. Please try again.
+      </HudPanel>
     )
   }
 
@@ -104,21 +104,19 @@ export function ResearchDashboard() {
           instruments={data?.instruments ?? []}
           timezone={data?.timezone}
         />
-        <Card>
-          <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
-            <Microscope className="h-12 w-12 text-muted-foreground" />
-            <div>
-              <p className="font-medium">Not enough closed trades for pattern research</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Sync trades from Live Sync or add manual entries, then return here to discover your
-                trading style and market patterns.
-              </p>
-            </div>
-            <Button asChild variant="outline">
-              <Link href="/live-sync">Go to Live Sync</Link>
-            </Button>
-          </CardContent>
-        </Card>
+        <HudPanel className="flex flex-col items-center gap-4 px-6 py-16 text-center">
+          <Microscope className="h-12 w-12 text-cyan-400/50" />
+          <div>
+            <p className="font-medium">Not enough closed trades for pattern research</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Sync trades from Live Sync or add manual entries, then return here to discover your
+              trading style and market patterns.
+            </p>
+          </div>
+          <Button asChild variant="outline" className="border-cyan-400/30 text-cyan-200">
+            <Link href="/live-sync">Go to Live Sync</Link>
+          </Button>
+        </HudPanel>
       </div>
     )
   }
@@ -139,17 +137,17 @@ export function ResearchDashboard() {
         timezone={data.timezone}
       />
 
-      {isValidating ? <p className="text-xs text-muted-foreground">Updating patterns…</p> : null}
+      {isValidating ? <p className="text-xs text-cyan-300/70">Updating patterns…</p> : null}
 
       {data.comparison ? <ComparisonLine comparison={data.comparison} /> : null}
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as ResearchTab)}>
-        <TabsList className="h-auto flex-wrap">
-          <TabsTrigger value="style">Style</TabsTrigger>
-          <TabsTrigger value="market">Market</TabsTrigger>
-          <TabsTrigger value="behavior">Behavior</TabsTrigger>
-          <TabsTrigger value="insights">Insights</TabsTrigger>
-          <TabsTrigger value="whatif">What if</TabsTrigger>
+        <TabsList className="h-auto flex-wrap border border-cyan-400/20 bg-[#0b1016] p-1">
+          <TabsTrigger value="style" className={tabTriggerClass}>Style</TabsTrigger>
+          <TabsTrigger value="market" className={tabTriggerClass}>Market</TabsTrigger>
+          <TabsTrigger value="behavior" className={tabTriggerClass}>Behavior</TabsTrigger>
+          <TabsTrigger value="insights" className={tabTriggerClass}>Insights</TabsTrigger>
+          <TabsTrigger value="whatif" className={tabTriggerClass}>What if</TabsTrigger>
         </TabsList>
 
         <TabsContent value="style" className="mt-6">
@@ -205,67 +203,69 @@ function FilterBar({
   timezone?: string
 }) {
   return (
-    <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-      <Tabs value={source} onValueChange={(v) => setSource(v as SourceFilter)}>
-        <TabsList>
-          <TabsTrigger value="all">All</TabsTrigger>
-          <TabsTrigger value="tradingview">TradingView</TabsTrigger>
-          <TabsTrigger value="manual">Manual</TabsTrigger>
-        </TabsList>
-      </Tabs>
+    <HudPanel className="px-4 py-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <Tabs value={source} onValueChange={(v) => setSource(v as SourceFilter)}>
+          <TabsList className="border border-cyan-400/20 bg-[#05070a]">
+            <TabsTrigger value="all" className={tabTriggerClass}>All</TabsTrigger>
+            <TabsTrigger value="tradingview" className={tabTriggerClass}>TradingView</TabsTrigger>
+            <TabsTrigger value="manual" className={tabTriggerClass}>Manual</TabsTrigger>
+          </TabsList>
+        </Tabs>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Select value={range} onValueChange={(v) => setRange(v as RangePreset)}>
-          <SelectTrigger className="w-[130px]">
-            <SelectValue placeholder="Range" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="7d">Last 7 days</SelectItem>
-            <SelectItem value="30d">Last 30 days</SelectItem>
-            <SelectItem value="90d">Last 90 days</SelectItem>
-            <SelectItem value="all">All time</SelectItem>
-          </SelectContent>
-        </Select>
-
-        {strategies.length > 0 ? (
-          <Select value={strategy} onValueChange={setStrategy}>
-            <SelectTrigger className="w-[180px]">
-              <SelectValue placeholder="Strategy" />
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={range} onValueChange={(v) => setRange(v as RangePreset)}>
+            <SelectTrigger className="w-[130px] border-cyan-400/20 bg-transparent">
+              <SelectValue placeholder="Range" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All strategies</SelectItem>
-              {strategies.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s}
-                </SelectItem>
-              ))}
+              <SelectItem value="7d">Last 7 days</SelectItem>
+              <SelectItem value="30d">Last 30 days</SelectItem>
+              <SelectItem value="90d">Last 90 days</SelectItem>
+              <SelectItem value="all">All time</SelectItem>
             </SelectContent>
           </Select>
-        ) : null}
 
-        {instruments.length > 0 ? (
-          <Select value={instrument} onValueChange={setInstrument}>
-            <SelectTrigger className="w-[160px]">
-              <SelectValue placeholder="Instrument" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All instruments</SelectItem>
-              {instruments.map((item) => (
-                <SelectItem key={item} value={item}>
-                  {item}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : null}
+          {strategies.length > 0 ? (
+            <Select value={strategy} onValueChange={setStrategy}>
+              <SelectTrigger className="w-[180px] border-cyan-400/20 bg-transparent">
+                <SelectValue placeholder="Strategy" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All strategies</SelectItem>
+                {strategies.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {s}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
 
-        {timezone ? (
-          <Badge variant="outline" className="text-xs">
-            Times in {timezone.replace(/_/g, " ")}
-          </Badge>
-        ) : null}
+          {instruments.length > 0 ? (
+            <Select value={instrument} onValueChange={setInstrument}>
+              <SelectTrigger className="w-[160px] border-cyan-400/20 bg-transparent">
+                <SelectValue placeholder="Instrument" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All instruments</SelectItem>
+                {instruments.map((item) => (
+                  <SelectItem key={item} value={item}>
+                    {item}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+
+          {timezone ? (
+            <Badge variant="outline" className="border-cyan-400/20 text-xs text-cyan-300/80">
+              Times in {timezone.replace(/_/g, " ")}
+            </Badge>
+          ) : null}
+        </div>
       </div>
-    </div>
+    </HudPanel>
   )
 }
 

@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { getCurrentUser, getProfile, updateProfile } from "@/lib/client-auth"
 import { useToast } from "@/hooks/use-toast"
@@ -72,13 +72,9 @@ export function ProfileSetup() {
   }
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-background">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle>Complete Your Profile</CardTitle>
-          <CardDescription>Set up your trading preferences to get started</CardDescription>
-        </CardHeader>
-        <CardContent>
+    <HudPanel>
+      <HudPanelHeader title="Complete your profile" description="Set up your trading preferences to get started" />
+      <div className="p-5">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="name">Full Name</Label>
@@ -106,7 +102,7 @@ export function ProfileSetup() {
                 value={profile.trading_style}
                 onValueChange={(value) => setProfile({ ...profile, trading_style: value })}
               >
-                <SelectTrigger>
+                <SelectTrigger className="border-cyan-400/20 bg-transparent">
                   <SelectValue placeholder="Select trading style" />
                 </SelectTrigger>
                 <SelectContent>
@@ -123,7 +119,7 @@ export function ProfileSetup() {
                 value={profile.risk_profile}
                 onValueChange={(value) => setProfile({ ...profile, risk_profile: value })}
               >
-                <SelectTrigger>
+                <SelectTrigger className="border-cyan-400/20 bg-transparent">
                   <SelectValue placeholder="Select risk profile" />
                 </SelectTrigger>
                 <SelectContent>
@@ -138,8 +134,7 @@ export function ProfileSetup() {
               {loading ? "Saving..." : "Complete Setup"}
             </Button>
           </form>
-        </CardContent>
-      </Card>
-    </div>
+      </div>
+    </HudPanel>
   )
 }

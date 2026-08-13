@@ -6,7 +6,6 @@ import useSWR from "swr"
 import { format, isToday, parseISO } from "date-fns"
 import {
   BarChart3,
-  BellRing,
   ChevronDown,
   Download,
   Loader2,
@@ -17,7 +16,6 @@ import {
   TrendingUp,
   Wifi,
   WifiOff,
-  Zap,
 } from "lucide-react"
 import {
   AlertDialog,
@@ -32,7 +30,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HudPanel } from "@/components/dashboard/hud-panel"
+import { MiniBars, Sparkline, WinRateRing } from "@/components/dashboard/sparkline"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,14 +44,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { authFetch } from "@/lib/client-auth"
 import { formatExtensionSyncSummary, requestTvChartRefresh } from "@/lib/client-extension-sync"
 import { useActiveAccount } from "@/hooks/use-active-account"
-import { useTradeSyncEvent, useTradeSyncConnection } from "@/hooks/use-trade-sync-event"
+import { useTradeSyncEvent } from "@/hooks/use-trade-sync-event"
 import { useLiveSyncAutoRefresh } from "@/hooks/use-live-sync-auto-refresh"
 import { useToast } from "@/hooks/use-toast"
 import {
   DEFAULT_LIVE_SYNC_POLL_SECONDS,
-  formatLiveSyncPollLabel,
   getLiveSyncPollSeconds,
 } from "@/lib/live-sync-settings"
+import { cn } from "@/lib/utils"
 type SyncTrade = {
   id: string
   instrument: string
@@ -116,8 +115,6 @@ export function LiveSyncDashboard() {
     void mutateStatus()
   }, [mutate, mutateStatus])
 
-  const sseConnected = useTradeSyncConnection()
-
   useEffect(() => {
     const updatePoll = () => setPollSeconds(getLiveSyncPollSeconds())
     updatePoll()
@@ -127,7 +124,7 @@ export function LiveSyncDashboard() {
 
   const trades = tradesData?.trades ?? []
 
-  const { isSyncing, lastError: syncError } = useLiveSyncAutoRefresh({
+  const { lastError: syncError } = useLiveSyncAutoRefresh({
     enabled: Boolean(activeAccountId),
     pollSeconds,
     onComplete: (result) => {
@@ -249,15 +246,41 @@ export function LiveSyncDashboard() {
   const stats = useMemo(() => {
     const closed = trades.filter((trade) => typeof trade.net_pnl === "number")
     const wins = closed.filter((trade) => (trade.net_pnl ?? 0) > 0)
-    const todayTrades = trades.filter((trade) => isToday(parseISO(trade.entry_date)))
+    const losses = closed.filter((trade) => (trade.net_pnl ?? 0) < 0)
+    const todayTrades = trades.filter((trade) => {
+      try {
+        return isToday(parseISO(trade.entry_date))
+      } catch {
+        return false
+      }
+    })
     const todayPnl = todayTrades.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0)
+    const totalPnl = closed.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0)
     const lastTrade = trades[0]
+    const recentClosed = [...closed].slice(0, 18).reverse()
+    let run = 0
+    const pnlSpark = recentClosed.map((trade) => (run += trade.net_pnl ?? 0))
+    const dayCounts: number[] = []
+    for (let offset = 6; offset >= 0; offset -= 1) {
+      const day = new Date()
+      day.setDate(day.getDate() - offset)
+      const key = format(day, "yyyy-MM-dd")
+      dayCounts.push(trades.filter((trade) => trade.entry_date.slice(0, 10) === key).length)
+    }
 
     return {
       total: trades.length,
+      wins: wins.length,
+      losses: losses.length,
       winRate: closed.length ? (wins.length / closed.length) * 100 : 0,
       todayPnl,
+      totalPnl,
+      bestTrade: wins.length ? Math.max(...wins.map((trade) => trade.net_pnl ?? 0)) : 0,
+      worstTrade: losses.length ? Math.min(...losses.map((trade) => trade.net_pnl ?? 0)) : 0,
       lastTradeTime: lastTrade ? format(parseISO(lastTrade.entry_date), "MMM d, HH:mm") : "—",
+      pnlSpark,
+      dayCounts,
+      recent: trades.slice(0, 8),
     }
   }, [trades])
 
@@ -399,195 +422,128 @@ export function LiveSyncDashboard() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {activeAccount ? (
-          <p className="text-sm text-muted-foreground">
-            Viewing account: <span className="font-medium text-foreground">{activeAccount.name}</span>
-          </p>
-        ) : (
-          <span />
-        )}
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            size="sm"
-            className="gap-1.5"
-            disabled={isRefreshingTv}
-            title="Reload TradingView chart (same as F5) and sync trades"
-            onClick={() => void handleRefreshTv()}
-          >
-            {isRefreshingTv ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="h-3.5 w-3.5" />
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <HudPanel glow={statusData?.connected ? "green" : "none"} className="p-5">
+          <p className="hud-label">Extension Status</p>
+          <p
+            className={cn(
+              "mt-2 flex items-center gap-2 text-lg font-semibold",
+              statusData?.connected ? "text-emerald-400" : "text-muted-foreground",
             )}
-            {isRefreshingTv ? "Refreshing TV…" : "Refresh"}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            onClick={() => window.dispatchEvent(new Event("jb-test-trade-alarm"))}
           >
-            <BellRing className="h-3.5 w-3.5" />
-            Test alarm
-          </Button>
-        </div>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Extension status</CardDescription>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              {statusData?.connected ? (
-                <>
-                  <Wifi className="h-4 w-4 text-emerald-500" />
-                  Extension connected
-                </>
-              ) : (
-                <>
-                  <WifiOff className="h-4 w-4 text-muted-foreground" />
-                  Extension offline
-                </>
-              )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1 text-sm text-muted-foreground">
-            {statusError ? (
-              <p className="text-xs text-rose-500">
-                {statusError instanceof Error ? statusError.message : "Unable to read extension status"}
-              </p>
-            ) : null}
-            <p>
-              Last heartbeat:{" "}
-              {statusData?.last_heartbeat
-                ? format(parseISO(statusData.last_heartbeat), "HH:mm:ss")
-                : "Never"}
+            {statusData?.connected ? <Wifi className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
+            {statusData?.connected ? "Extension connected" : "Extension offline"}
+          </p>
+          {statusError ? (
+            <p className="mt-2 text-xs text-rose-400">
+              {statusError instanceof Error ? statusError.message : "Unable to read extension status"}
             </p>
-            <p>
-              Extension bridge:{" "}
-              <span
-                className={
-                  bridgeReady || statusData?.connected ? "text-emerald-600" : "text-amber-600"
-                }
-              >
-                {bridgeReady
-                  ? "Active"
-                  : statusData?.connected
-                    ? "Active (background sync)"
-                    : "Not detected — reload extension"}
-              </span>
-            </p>
-            {!statusData?.connected ? (
-              <p className="text-xs text-amber-600">
-                Offline usually means the extension is asleep. Keep this page or a TradingView chart tab
-                open with your sync key configured.
-              </p>
-            ) : null}
-            {syncError &&
-            !/list of trades|waiting for list|overview|ka-table|0 rows/i.test(syncError) ? (
-              <p className="text-xs text-rose-600 mt-2">Last sync error: {syncError}</p>
-            ) : null}
-          </CardContent>
-        </Card>
+          ) : null}
+          <p className="mt-2 text-xs text-muted-foreground">
+            Heartbeat:{" "}
+            {statusData?.last_heartbeat ? format(parseISO(statusData.last_heartbeat), "HH:mm:ss") : "Never"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Bridge:{" "}
+            <span className={bridgeReady || statusData?.connected ? "text-emerald-400" : "text-amber-400"}>
+              {bridgeReady
+                ? "Active"
+                : statusData?.connected
+                  ? "Active (background sync)"
+                  : "Not detected — reload extension"}
+            </span>
+          </p>
+          {syncError &&
+          !/list of trades|waiting for list|overview|ka-table|0 rows/i.test(syncError) ? (
+            <p className="mt-2 text-xs text-rose-400">Last sync error: {syncError}</p>
+          ) : null}
+        </HudPanel>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Synced trades</CardDescription>
-            <CardTitle className="text-2xl">{stats.total}</CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            From TradingView Strategy Tester
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Today&apos;s P&amp;L</CardDescription>
-            <CardTitle
-              className={`text-2xl ${
-                stats.todayPnl >= 0 ? "text-emerald-500" : "text-rose-500"
-              }`}
-            >
-              {stats.todayPnl >= 0 ? "+" : ""}
-              {currency.format(stats.todayPnl)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Closed trades entered today
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Win rate</CardDescription>
-            <CardTitle className="text-2xl">{stats.winRate.toFixed(1)}%</CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Last trade: {stats.lastTradeTime}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between gap-4">
+        <HudPanel className="p-5">
+          <div className="flex items-start justify-between gap-3">
             <div>
-              <CardTitle className="flex items-center gap-2">
-                <Radio className="h-4 w-4" />
-                Live trade feed
-              </CardTitle>
+              <p className="hud-label">Synced Trades</p>
+              <p className="mt-2 text-3xl font-semibold text-cyan-100">{stats.total}</p>
+              <p className="mt-1 text-xs text-muted-foreground">From Strategy Tester</p>
             </div>
-            <div className="flex items-center gap-2">
-              {isRefreshingTv ? (
-                <Badge variant="outline" className="gap-1 text-amber-600">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Reloading TV
-                </Badge>
-              ) : isSyncing ? (
-                <Badge variant="outline" className="gap-1 text-amber-600">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Syncing
-                </Badge>
-              ) : null}
-              {pollSeconds > 0 ? (
-                <Badge variant="outline" className="gap-1 text-primary">
-                  <Radio className="h-3 w-3" />
-                  {formatLiveSyncPollLabel(pollSeconds)}
-                </Badge>
-              ) : (
-                <Badge variant="outline" className="text-muted-foreground">
-                  Auto-sync off
-                </Badge>
-              )}
-              <Badge
-                variant="outline"
-                className={`gap-1 ${sseConnected ? "text-emerald-600" : "text-muted-foreground"}`}
+            <MiniBars values={stats.dayCounts} />
+          </div>
+        </HudPanel>
+
+        <HudPanel glow={stats.todayPnl >= 0 ? "green" : "red"} className="p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="hud-label">Today&apos;s P&amp;L</p>
+              <p
+                className={cn(
+                  "mt-2 text-3xl font-semibold",
+                  stats.todayPnl >= 0 ? "text-emerald-400" : "text-rose-400",
+                )}
               >
-                <Zap className="h-3 w-3" />
-                {sseConnected ? "Live" : "Connecting…"}
-              </Badge>
+                {stats.todayPnl >= 0 ? "+" : ""}
+                {currency.format(stats.todayPnl)}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">Closed trades entered today</p>
+            </div>
+            <Sparkline values={stats.pnlSpark} color={stats.todayPnl >= 0 ? "#34d399" : "#f43f5e"} />
+          </div>
+        </HudPanel>
+
+        <HudPanel className="p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="hud-label">Win Rate</p>
+              <p className="mt-2 text-3xl font-semibold text-cyan-300">{stats.winRate.toFixed(1)}%</p>
+              <p className="mt-1 text-xs text-muted-foreground">Last trade: {stats.lastTradeTime}</p>
+            </div>
+            <WinRateRing value={stats.winRate} />
+          </div>
+        </HudPanel>
+      </div>
+
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(280px,0.38fr)]">
+        <HudPanel>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cyan-400/10 px-5 py-4">
+            <p className="flex items-center gap-2 text-sm font-semibold">
+              <Radio className="h-4 w-4 text-cyan-300" />
+              Live trade feed
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="gap-1.5 border-cyan-400/40 bg-cyan-400/10 text-cyan-200 hover:bg-cyan-400/20 hover:text-cyan-100"
+                disabled={isRefreshingTv}
+                title="Reload TradingView chart (same as F5) and sync trades"
+                onClick={() => void handleRefreshTv()}
+              >
+                {isRefreshingTv ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                {isRefreshingTv ? "Refreshing TV…" : "Refresh"}
+              </Button>
               {trades.length > 0 && (
                 <div className="inline-flex rounded-md shadow-sm">
                   <Button
                     variant="outline"
                     size="sm"
-                    className="gap-1 rounded-r-none border-r-0"
+                    className="gap-1 rounded-r-none border-r-0 border-cyan-400/20"
                     disabled={tradesLoading}
                     onClick={() => void handleSaveToLiveSyncFolder("today")}
                   >
                     <Download className="h-3 w-3" />
-                    Save to TradingJournal
+                    Save
                   </Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button
                         variant="outline"
                         size="sm"
-                        className="rounded-l-none px-2"
+                        className="rounded-l-none border-cyan-400/20 px-2"
                         disabled={tradesLoading}
                         aria-label="Export options"
                       >
@@ -604,21 +560,17 @@ export function LiveSyncDashboard() {
                       {availableExportMonths.length > 0 ? (
                         <>
                           <DropdownMenuSeparator />
-                          <DropdownMenuLabel className="text-xs text-muted-foreground font-normal">
+                          <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
                             Months with data
                           </DropdownMenuLabel>
                           {availableExportMonths.map((month) => (
                             <DropdownMenuItem
                               key={month.monthKey}
-                              onClick={() =>
-                                void handleSaveToLiveSyncFolder("month", month.monthKey)
-                              }
+                              onClick={() => void handleSaveToLiveSyncFolder("month", month.monthKey)}
                             >
                               <span className="flex w-full items-center justify-between gap-3">
                                 <span>{month.label}</span>
-                                <span className="text-xs text-muted-foreground">
-                                  {month.count}
-                                </span>
+                                <span className="text-xs text-muted-foreground">{month.count}</span>
                               </span>
                             </DropdownMenuItem>
                           ))}
@@ -629,10 +581,10 @@ export function LiveSyncDashboard() {
                 </div>
               )}
               {trades.length > 0 && (
-                <Button asChild variant="secondary" size="sm" className="gap-1">
+                <Button asChild variant="outline" size="sm" className="gap-1 border-cyan-400/20">
                   <Link href="/analytics">
                     <BarChart3 className="h-3 w-3" />
-                    View analytics
+                    Analytics
                   </Link>
                 </Button>
               )}
@@ -641,7 +593,7 @@ export function LiveSyncDashboard() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="gap-1 text-destructive hover:text-destructive"
+                    className="gap-1 border-rose-400/20 text-rose-400 hover:text-rose-300"
                     disabled={tradesLoading || trades.length === 0}
                   >
                     <Trash2 className="h-3 w-3" />
@@ -674,91 +626,178 @@ export function LiveSyncDashboard() {
               </AlertDialog>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Instrument</TableHead>
-                <TableHead>Direction</TableHead>
-                <TableHead>Entry</TableHead>
-                <TableHead>Exit</TableHead>
-                <TableHead>Signal</TableHead>
-                <TableHead>P&amp;L</TableHead>
-                <TableHead>Return</TableHead>
-                <TableHead>Commission</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {tradesLoading && (
-                <TableRow>
-                  <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
-                    Loading synced trades...
-                  </TableCell>
+
+          <div className="max-h-[min(50vh,28rem)] overflow-auto [&_[data-slot=table-container]]:overflow-visible">
+            <Table>
+              <TableHeader className="sticky top-0 z-10 bg-card">
+                <TableRow className="border-cyan-400/10 hover:bg-transparent">
+                  <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Instrument</TableHead>
+                  <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Direction</TableHead>
+                  <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Entry</TableHead>
+                  <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Exit</TableHead>
+                  <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Signal</TableHead>
+                  <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">P&amp;L</TableHead>
+                  <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Return</TableHead>
+                  <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Commission</TableHead>
                 </TableRow>
-              )}
-              {!tradesLoading && trades.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
-                    No TradingView trades yet. Install the extension and run an import from Strategy Tester.
-                  </TableCell>
-                </TableRow>
-              )}
-              {trades.map((trade) => (
-                <TableRow key={trade.id}>
-                  <TableCell className="font-medium">{trade.instrument}</TableCell>
-                  <TableCell>
-                    <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>
+              </TableHeader>
+              <TableBody>
+                {tradesLoading && (
+                  <TableRow>
+                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
+                      Loading synced trades...
+                    </TableCell>
+                  </TableRow>
+                )}
+                {!tradesLoading && trades.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
+                      No TradingView trades yet. Install the extension and run an import from Strategy Tester.
+                    </TableCell>
+                  </TableRow>
+                )}
+                {trades.map((trade) => (
+                  <TableRow key={trade.id} className="border-cyan-400/10 hover:bg-cyan-400/5">
+                    <TableCell className="font-medium">{trade.instrument}</TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "px-1.5 py-0 text-[10px]",
+                          trade.trade_type === "Buy"
+                            ? "border-cyan-400/30 text-cyan-300"
+                            : "border-rose-400/30 text-rose-300",
+                        )}
+                      >
+                        {trade.trade_type === "Buy" ? "Long" : "Short"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <div className="text-sm">{format(parseISO(trade.entry_date), "MMM d, HH:mm")}</div>
+                      <div className="text-xs text-muted-foreground">{currency.format(trade.entry_price)}</div>
+                    </TableCell>
+                    <TableCell>
+                      {trade.exit_date && trade.exit_price ? (
+                        <>
+                          <div className="text-sm">{format(parseISO(trade.exit_date), "MMM d, HH:mm")}</div>
+                          <div className="text-xs text-muted-foreground">{currency.format(trade.exit_price)}</div>
+                        </>
+                      ) : (
+                        <span className="text-amber-400">Open</span>
+                      )}
+                    </TableCell>
+                    <TableCell>{trade.signal || "—"}</TableCell>
+                    <TableCell>
+                      {typeof trade.net_pnl === "number" ? (
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 font-semibold",
+                            trade.net_pnl >= 0 ? "text-emerald-400" : "text-rose-400",
+                          )}
+                        >
+                          {trade.net_pnl >= 0 ? (
+                            <TrendingUp className="h-3 w-3" />
+                          ) : (
+                            <TrendingDown className="h-3 w-3" />
+                          )}
+                          {currency.format(trade.net_pnl)}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {typeof trade.return_pct === "number"
+                        ? `${trade.return_pct >= 0 ? "+" : ""}${trade.return_pct.toFixed(2)}%`
+                        : "—"}
+                    </TableCell>
+                    <TableCell>
+                      {typeof trade.commission === "number" ? currency.format(trade.commission) : "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </HudPanel>
+
+        <HudPanel>
+          <div className="border-b border-cyan-400/10 px-5 py-4">
+            <p className="text-sm font-semibold">List of trades</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">Latest synced positions</p>
+          </div>
+          <div className="max-h-[min(50vh,28rem)] divide-y divide-cyan-400/10 overflow-y-auto">
+            {stats.recent.map((trade) => (
+              <div key={trade.id} className="flex items-center justify-between gap-3 px-5 py-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-sm font-semibold">{trade.instrument}</p>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "px-1.5 py-0 text-[9px]",
+                        trade.trade_type === "Buy"
+                          ? "border-cyan-400/30 text-cyan-300"
+                          : "border-rose-400/30 text-rose-300",
+                      )}
+                    >
                       {trade.trade_type === "Buy" ? "Long" : "Short"}
                     </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="text-sm">{format(parseISO(trade.entry_date), "MMM d, HH:mm")}</div>
-                    <div className="text-xs text-muted-foreground">{currency.format(trade.entry_price)}</div>
-                  </TableCell>
-                  <TableCell>
-                    {trade.exit_date && trade.exit_price ? (
-                      <>
-                        <div className="text-sm">{format(parseISO(trade.exit_date), "MMM d, HH:mm")}</div>
-                        <div className="text-xs text-muted-foreground">{currency.format(trade.exit_price)}</div>
-                      </>
-                    ) : (
-                      "Open"
-                    )}
-                  </TableCell>
-                  <TableCell>{trade.signal || "—"}</TableCell>
-                  <TableCell>
-                    {typeof trade.net_pnl === "number" ? (
-                      <span
-                        className={`inline-flex items-center gap-1 ${
-                          trade.net_pnl >= 0 ? "text-emerald-500" : "text-rose-500"
-                        }`}
-                      >
-                        {trade.net_pnl >= 0 ? (
-                          <TrendingUp className="h-3 w-3" />
-                        ) : (
-                          <TrendingDown className="h-3 w-3" />
-                        )}
-                        {currency.format(trade.net_pnl)}
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {typeof trade.return_pct === "number"
-                      ? `${trade.return_pct >= 0 ? "+" : ""}${trade.return_pct.toFixed(2)}%`
-                      : "—"}
-                  </TableCell>
-                  <TableCell>
-                    {typeof trade.commission === "number" ? currency.format(trade.commission) : "—"}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+                  </div>
+                  <p className="mt-1 truncate text-xs text-muted-foreground">
+                    {trade.strategy || "TradingView"} · {format(parseISO(trade.entry_date), "MMM d")}
+                  </p>
+                </div>
+                <p
+                  className={cn(
+                    "shrink-0 text-sm font-semibold",
+                    typeof trade.net_pnl === "number"
+                      ? trade.net_pnl >= 0
+                        ? "text-emerald-400"
+                        : "text-rose-400"
+                      : "text-amber-400",
+                  )}
+                >
+                  {typeof trade.net_pnl === "number"
+                    ? `${trade.net_pnl > 0 ? "+" : ""}${currency.format(trade.net_pnl)}`
+                    : "Open"}
+                </p>
+              </div>
+            ))}
+            {!tradesLoading && stats.recent.length === 0 ? (
+              <p className="px-5 py-8 text-center text-xs text-muted-foreground">No synced trades yet</p>
+            ) : null}
+          </div>
+        </HudPanel>
+      </div>
+
+      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-cyan-400/20 bg-cyan-400/10 sm:grid-cols-3 xl:grid-cols-6">
+        {[
+          { label: "Total Trades", value: String(stats.total) },
+          { label: "Winning Trades", value: String(stats.wins) },
+          { label: "Losing Trades", value: String(stats.losses) },
+          {
+            label: "Best Trade",
+            value: stats.bestTrade ? `+${currency.format(stats.bestTrade)}` : "—",
+            tone: "text-emerald-400",
+          },
+          {
+            label: "Worst Trade",
+            value: stats.worstTrade ? currency.format(stats.worstTrade) : "—",
+            tone: "text-rose-400",
+          },
+          {
+            label: "Total P&L",
+            value: `${stats.totalPnl >= 0 ? "+" : ""}${currency.format(stats.totalPnl)}`,
+            tone: stats.totalPnl >= 0 ? "text-emerald-400" : "text-rose-400",
+          },
+        ].map((item) => (
+          <div key={item.label} className="bg-card/90 px-4 py-3">
+            <p className="hud-label">{item.label}</p>
+            <p className={cn("mt-1 text-sm font-semibold", item.tone)}>{item.value}</p>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
