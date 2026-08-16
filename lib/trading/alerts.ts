@@ -49,6 +49,7 @@ export type AlertCategory =
   | "drawdown_warning"
   | "weekly_momentum"
   | "session_boundary"
+  | "new_trade"
 
 export type AlertContext = {
   hour?: number
@@ -158,6 +159,7 @@ const CATEGORY_URGENCY: Partial<Record<AlertCategory, number>> = {
   session_key: 1.2,
   research_edge: 1.2,
   analytics_best: 1,
+  new_trade: 6,
 }
 
 function extractNetPnl(alert: TradingAlertPayload): number {
@@ -233,6 +235,8 @@ function filterByPreferences(
         return preferences.weeklyMomentumAlerts
       case "session_boundary":
         return preferences.sessionBoundaryAlerts
+      case "new_trade":
+        return true
       default:
         return true
     }

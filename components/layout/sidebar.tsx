@@ -12,6 +12,7 @@ import {
   LogOut,
   Menu,
   Microscope,
+  Newspaper,
   PlusCircle,
   Radio,
   Settings,
@@ -32,6 +33,7 @@ const navigation = [
   { name: "Strategy", href: "/strategy", icon: FileText },
   { name: "Analytics", href: "/analytics", icon: BarChart3, description: "Backtest & performance insights" },
   { name: "Research", href: "/research", icon: Microscope, description: "Patterns & trading style" },
+  { name: "News", href: "/news", icon: Newspaper, description: "Forex Factory economic calendar" },
   { name: "Calendar", href: "/calendar", icon: Calendar },
   { name: "Settings", href: "/settings", icon: Settings },
 ]
@@ -52,7 +54,7 @@ export function Sidebar() {
 
   return (
     <>
-      <div className="lg:hidden fixed top-3 left-3 z-50">
+      <div className="lg:hidden fixed top-3 left-3 z-[90]">
         <Button variant="outline" size="icon" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
           {isMobileMenuOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
         </Button>
@@ -60,8 +62,8 @@ export function Sidebar() {
 
       <div
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-cyan-400/15 bg-[#06080c] transition-transform duration-200 ease-in-out lg:translate-x-0",
-          isMobileMenuOpen ? "translate-x-0" : "-translate-x-full",
+          "pointer-events-auto fixed inset-y-0 left-0 z-[80] flex w-64 flex-col border-r border-cyan-400/15 bg-[#06080c] transition-transform duration-200 ease-in-out",
+          isMobileMenuOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
         )}
       >
         <div className="flex h-16 items-center border-b border-cyan-400/15 px-4">
@@ -72,9 +74,13 @@ export function Sidebar() {
           <AccountSwitcher className="border-cyan-400/20 bg-transparent text-cyan-100 hover:bg-cyan-400/10" />
         </div>
 
-        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
+        <nav className="relative z-[1] flex-1 space-y-1 overflow-y-auto px-3 py-4">
           {navigation.map((item) => {
-            const isActive = pathname === item.href
+            const isActive =
+              item.href === "/trades"
+                ? pathname === "/trades"
+                : pathname === item.href || pathname.startsWith(`${item.href}/`)
+
             return (
               <Link
                 key={item.name}
@@ -87,7 +93,15 @@ export function Sidebar() {
                     ? "border-cyan-400 bg-cyan-400/10 text-cyan-200"
                     : "border-transparent text-muted-foreground hover:bg-cyan-400/5 hover:text-cyan-100",
                 )}
-                onClick={() => setIsMobileMenuOpen(false)}
+                onPointerDown={(event) => {
+                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+                    return
+                  }
+                  setIsMobileMenuOpen(false)
+                  if (pathname !== item.href) {
+                    router.push(item.href)
+                  }
+                }}
               >
                 <item.icon className="h-4 w-4 shrink-0" />
                 {item.name}
@@ -110,7 +124,10 @@ export function Sidebar() {
       </div>
 
       {isMobileMenuOpen ? (
-        <div className="fixed inset-0 z-40 bg-black/60 lg:hidden" onClick={() => setIsMobileMenuOpen(false)} />
+        <div
+          className="fixed inset-0 z-[70] bg-black/60 lg:hidden"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
       ) : null}
     </>
   )

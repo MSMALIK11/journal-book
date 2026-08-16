@@ -51,6 +51,7 @@ import {
   DEFAULT_LIVE_SYNC_POLL_SECONDS,
   getLiveSyncPollSeconds,
 } from "@/lib/live-sync-settings"
+import { formatTradeSignal } from "@/lib/trading/trade-display"
 import { cn } from "@/lib/utils"
 type SyncTrade = {
   id: string
@@ -686,7 +687,7 @@ export function LiveSyncDashboard() {
                         <span className="text-amber-400">Open</span>
                       )}
                     </TableCell>
-                    <TableCell>{trade.signal || "—"}</TableCell>
+                    <TableCell>{formatTradeSignal(trade.signal)}</TableCell>
                     <TableCell>
                       {typeof trade.net_pnl === "number" ? (
                         <span

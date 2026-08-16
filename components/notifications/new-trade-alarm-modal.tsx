@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
+import { formatTradeSignal } from "@/lib/trading/trade-display"
 import type { TradeMomentAdvice } from "@/lib/trading/trade-moment-advice"
 import type { ImportedTradeSnapshot } from "@/lib/sync-events"
 
@@ -68,6 +69,7 @@ export function NewTradeAlarmModal({ open, alarm, onStop }: NewTradeAlarmModalPr
   const VerdictIcon = verdictStyle.icon
   const isLong = trade.trade_type === "Buy"
   const entryTime = format(parseISO(trade.entry_date), "MMM d, HH:mm:ss")
+  const signalLabel = formatTradeSignal(trade.signal)
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onStop()}>
@@ -114,10 +116,10 @@ export function NewTradeAlarmModal({ open, alarm, onStop }: NewTradeAlarmModalPr
                 <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Entry</p>
                 <p className="font-medium tabular-nums">{trade.entry_price}</p>
               </div>
-              {trade.signal ? (
+              {signalLabel !== "—" ? (
                 <div>
                   <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Signal</p>
-                  <p className="font-medium">{trade.signal}</p>
+                  <p className="font-medium">{signalLabel}</p>
                 </div>
               ) : null}
             </div>

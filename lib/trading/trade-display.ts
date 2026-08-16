@@ -21,6 +21,13 @@ export function tradeSideLabel(tradeType: "Buy" | "Sell"): "Long" | "Short" {
   return tradeType === "Buy" ? "Long" : "Short"
 }
 
+/** Placeholder "Open" belongs in Exit, not Signal. */
+export function formatTradeSignal(signal?: string | null): string {
+  const text = (signal || "").trim()
+  if (!text || text.toLowerCase() === "open") return "—"
+  return text
+}
+
 const GENERIC_SYNC_STRATEGY = "TradingView Strategy"
 
 /** Hide the default extension strategy label; show custom strategy names only. */

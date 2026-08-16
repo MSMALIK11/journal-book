@@ -1,7 +1,7 @@
 import type { AssetType } from "@/lib/instruments"
 import { ASSET_TYPE_DEFAULTS, getQuantityMode, INSTRUMENTS } from "@/lib/instruments"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
-import { isOpenTvTrade } from "@/lib/trading/tradingview-open"
+import { isOpenTvSignal, isOpenTvTrade } from "@/lib/trading/tradingview-open"
 import {
   buildExternalId,
   parseTradingViewDatetime,
@@ -41,6 +41,17 @@ function parseTradingViewDate(value: string) {
   return parseTradingViewDatetime(value)
 }
 
+
+function pickStoredSignal(trade: TradingViewTradeInput, open: boolean) {
+  const entry = (trade.entry.signal || "").trim()
+  const exit = (trade.exit?.signal || "").trim()
+  if (open) {
+    if (entry && !isOpenTvSignal(entry)) return entry
+    if (exit && !isOpenTvSignal(exit)) return exit
+    return undefined
+  }
+  return exit || entry || undefined
+}
 
 export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string, accountId: string) {
   const instrument = resolveInstrumentSpec(trade.instrument, trade.assetType)
@@ -95,7 +106,7 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
     net_pnl: trade.netPnl,
     return_pct: trade.returnPct,
     commission: trade.commission,
-    signal: open ? "Open" : trade.exit?.signal || trade.entry.signal || undefined,
+    signal: pickStoredSignal(trade, open),
     strategy: trade.strategy || undefined,
     source: "tradingview" as const,
     external_id,

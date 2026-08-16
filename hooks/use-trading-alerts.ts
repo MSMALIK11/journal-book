@@ -53,6 +53,10 @@ export function useTradingAlerts() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ includeDigest }),
         })
+      } catch {
+        // Coaching evaluate can fail; still reload stored new-trade alerts.
+      }
+      try {
         await mutate()
       } catch {
         // silent — next poll retries

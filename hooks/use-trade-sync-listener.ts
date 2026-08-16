@@ -27,8 +27,8 @@ type Options = {
 // The instant paths are the extension DOM event and SSE; this poll only covers
 // events those miss (e.g. SSE landing on another Next.js worker). So it backs
 // right off while SSE is healthy instead of hammering the DB every few hundred ms.
-const POLL_SSE_UP_MS = 5_000
-const POLL_SSE_DOWN_MS = 2_000
+const POLL_SSE_UP_MS = 1_500
+const POLL_SSE_DOWN_MS = 1_000
 const POLL_HIDDEN_MS = 30_000
 // On mount the stored event is history, so anything older than this is used only
 // as a baseline — otherwise every page load replays the last trade's alarm.

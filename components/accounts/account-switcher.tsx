@@ -33,6 +33,7 @@ export function AccountSwitcher({ className }: { className?: string }) {
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button
+          type="button"
           variant="outline"
           className={cn("w-full justify-between border-cyan-400/20 bg-transparent text-left font-normal", className)}
         >
@@ -43,7 +44,7 @@ export function AccountSwitcher({ className }: { className?: string }) {
           <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-56">
+      <DropdownMenuContent align="start" sideOffset={6} className="z-[120] w-56">
         <DropdownMenuLabel>Trading accounts</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {accounts.map((account) => (

@@ -45,20 +45,11 @@ function shouldConsiderAlarm(data: {
   updated?: number
   latestTrade?: ImportedTradeSnapshot
 }) {
-  if (resolveOpenTradeForAlarm(data.latestTrade)) return true
-  // Brand-new rows may need a DB fetch when the snapshot was a mixed batch.
   if ((data.imported ?? 0) > 0) return true
+  if (resolveOpenTradeForAlarm(data.latestTrade)) return true
+  // New fill that was merged into an existing row — still notify once per trade id.
+  if ((data.updated ?? 0) > 0 && data.latestTrade) return true
   return false
-}
-
-/** Sync often lands after TV already closed the row — still ring for fresh fills. */
-function isRecentImportedFill(trade: ImportedTradeSnapshot, eventAt?: string) {
-  const entryMs = new Date(trade.entry_date).getTime()
-  const refMs = eventAt ? new Date(eventAt).getTime() : Date.now()
-  if (!Number.isFinite(entryMs) || !Number.isFinite(refMs)) return false
-  const ageMs = refMs - entryMs
-  // Same session / trading day — not a multi-day history import dump.
-  return ageMs >= -60_000 && ageMs <= 12 * 60 * 60_000
 }
 
 function readSeenKeys(): Set<string> {
@@ -81,7 +72,7 @@ function writeSeenKeys(keys: Set<string>) {
   }
 }
 
-async function fetchLatestOpenTrade(
+async function fetchLatestAlarmTrade(
   accountId: string,
 ): Promise<(ImportedTradeSnapshot & { createdAt?: string }) | null> {
   try {
@@ -94,16 +85,17 @@ async function fetchLatestOpenTrade(
     const open = trades.find((trade: { is_open?: boolean; signal?: string; exit_date?: string | null; tags?: string[] }) =>
       isOpenSyncedTrade(trade),
     )
-    if (!open) return null
+    const chosen = open || trades[0]
+    if (!chosen) return null
     return {
-      id: String(open.id || open._id || ""),
-      instrument: String(open.instrument || ""),
-      trade_type: String(open.trade_type || ""),
-      entry_date: String(open.entry_date || ""),
-      entry_price: Number(open.entry_price || 0),
-      signal: open.signal ?? "Open",
-      is_open: true,
-      createdAt: open.createdAt ? String(open.createdAt) : undefined,
+      id: String(chosen.id || chosen._id || ""),
+      instrument: String(chosen.instrument || ""),
+      trade_type: String(chosen.trade_type || ""),
+      entry_date: String(chosen.entry_date || ""),
+      entry_price: Number(chosen.entry_price || 0),
+      signal: chosen.signal ?? (chosen.is_open ? "Open" : chosen.signal),
+      is_open: Boolean(open) || chosen.is_open === true,
+      createdAt: chosen.createdAt ? String(chosen.createdAt) : undefined,
     }
   } catch {
     return null
@@ -191,25 +183,23 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
       // 1) Live open from the sync event (best case — what worked for the 01:15 fill).
       let trade = resolveOpenTradeForAlarm(payload.latestTrade)
 
-      // 2) New import that already closed on TV before sync landed. After the first
-      // open alarm, later fills were often createdAsClosed in Mongo — old logic
-      // returned here and never rang again.
-      if (
-        !trade &&
-        (payload.imported ?? 0) > 0 &&
-        payload.latestTrade &&
-        isRecentImportedFill(payload.latestTrade, payload.eventAt)
-      ) {
+      // 2) Any newly imported row — including longs TV labeled as closed/side-only.
+      if (!trade && payload.latestTrade && (payload.imported ?? 0) > 0) {
         trade = payload.latestTrade
       }
 
-      // 3) Mixed batch: event snapshot was closed but an open exists on that account.
-      if (!trade && targetAccountId && !payload.force && (payload.imported ?? 0) > 0) {
-        const candidate = await fetchLatestOpenTrade(targetAccountId)
+      // 3) Update of a live (or just-synced) fill when the first import event was missed.
+      if (!trade && payload.latestTrade && (payload.updated ?? 0) > 0) {
+        trade = payload.latestTrade
+      }
+
+      // 4) Mixed batch: event snapshot missing — load newest/open from that account.
+      if (!trade && targetAccountId && !payload.force && ((payload.imported ?? 0) > 0 || (payload.updated ?? 0) > 0)) {
+        const candidate = await fetchLatestAlarmTrade(targetAccountId)
         if (candidate) {
           const createdMs = candidate.createdAt ? new Date(candidate.createdAt).getTime() : NaN
           const eventMs = payload.eventAt ? new Date(payload.eventAt).getTime() : Date.now()
-          if (!Number.isFinite(createdMs) || Math.abs(eventMs - createdMs) <= 5 * 60_000) {
+          if (!Number.isFinite(createdMs) || Math.abs(eventMs - createdMs) <= 15 * 60_000) {
             trade = candidate
           }
         }

@@ -135,9 +135,10 @@
       .trim()
       .toLowerCase()
     if (sig === "open") return true
-    if (String(trade.entry?.signal || "")
+    const entrySig = String(trade.entry?.signal || "")
       .trim()
-      .toLowerCase() === "open") return true
+      .toLowerCase()
+    if (entrySig === "open" && !(trade.exit.datetime && trade.exit.price != null)) return true
     return false
   }
 

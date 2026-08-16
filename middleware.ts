@@ -12,6 +12,7 @@ const protectedPrefixes = [
   "/strategy",
   "/pip-calculator",
   "/settings",
+  "/news",
 ]
 
 export async function middleware(request: NextRequest) {
@@ -63,5 +64,6 @@ export const config = {
     "/strategy/:path*",
     "/pip-calculator/:path*",
     "/settings/:path*",
+    "/news/:path*",
   ],
 }

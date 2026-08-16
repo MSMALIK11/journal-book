@@ -5,12 +5,15 @@ export function isOpenTvSignal(signal?: string | null) {
 
 export function isOpenTvTrade(trade: {
   entry?: { signal?: string }
-  exit?: { signal?: string } | null
+  exit?: { datetime?: string; price?: number; signal?: string } | null
 }) {
   if (!trade.exit) return true
+  // A real close has an exit time + price. "Open" in the signal cell is TV's
+  // still-running marker, even when it also paints a mark-to-market price.
   if (isOpenTvSignal(trade.exit.signal)) return true
-  // TV sometimes renders "Open" in the entry half of the signal cell.
-  if (isOpenTvSignal(trade.entry?.signal)) return true
+  if (isOpenTvSignal(trade.entry?.signal) && !(trade.exit.datetime && trade.exit.price)) {
+    return true
+  }
   return false
 }
 
@@ -19,7 +22,8 @@ export function isOpenSyncedTrade(trade: {
   signal?: string | null
   tags?: string[] | null
 }) {
-  if (!trade.exit_date) return true
-  if (isOpenTvSignal(trade.signal)) return true
-  return (trade.tags || []).some((tag) => isOpenTvSignal(tag))
+  // Exit timestamp is the source of truth. Leftover signal "Open" must not keep
+  // a closed row stuck after TV sends the fill.
+  if (trade.exit_date) return false
+  return true
 }

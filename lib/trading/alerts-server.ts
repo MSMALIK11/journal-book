@@ -131,6 +131,39 @@ export async function persistAlerts(
   return created
 }
 
+export async function persistNewTradeAlert(
+  userId: string,
+  accountId: string,
+  trade: {
+    id: string
+    instrument: string
+    trade_type: string
+    entry_price: number
+    is_open?: boolean
+  },
+  accountName?: string,
+) {
+  const side = trade.trade_type === "Buy" ? "Long" : "Short"
+  const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
+  try {
+    await persistAlerts(userId, accountId, [
+      {
+        key: `new-trade:${trade.id}`,
+        category: "new_trade",
+        severity: "info",
+        title: trade.is_open === false ? `New ${side} synced` : `New ${side} opened`,
+        message: `${trade.instrument} ${side} @ ${price}${accountName ? ` · ${accountName}` : ""}`,
+        metric: trade.instrument,
+        action: "Review it in Live Sync and Trade History.",
+        context: { instrument: trade.instrument },
+        priority: 200,
+      },
+    ])
+  } catch (error) {
+    console.error("Failed to persist new-trade alert:", error)
+  }
+}
+
 export async function evaluateAndPersistAlerts(
   userId: string,
   accountId: string,
@@ -217,16 +250,29 @@ export async function getAlertsForAccount(
       }
     : null
 
-  const [stored, unreadCount] = await Promise.all([
+  const [stored, unreadCount, recentNewTrades] = await Promise.all([
     TradingAlert.find({ userId, accountId }).sort({ triggeredAt: -1 }).limit(limit).lean(),
     TradingAlert.countDocuments({ userId, accountId, read: false }),
+    TradingAlert.find({
+      userId,
+      accountId,
+      category: "new_trade",
+      read: false,
+      triggeredAt: { $gte: new Date(Date.now() - 24 * 60 * 60_000) },
+    })
+      .sort({ triggeredAt: -1 })
+      .limit(8)
+      .lean(),
   ])
+
+  const newTradeActive = recentNewTrades.map(formatAlert)
+  const mergedActive = [...newTradeActive, ...active.filter((item) => item.category !== "new_trade")]
 
   const zones = getCurrentMomentZones(trades, { timezone, instrumentLabel })
   const verdict = buildCoachingVerdict(allPayloads, zones)
 
   return {
-    active,
+    active: mergedActive,
     topAction,
     history: stored.map(formatAlert),
     unreadCount,

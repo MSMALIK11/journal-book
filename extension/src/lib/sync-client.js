@@ -44,7 +44,8 @@ JBSync.isOpenTrade = function isOpenTrade(trade) {
   if (!trade.exit) return true
   const exitSig = (trade.exit.signal || "").trim().toLowerCase()
   const entrySig = (trade.entry?.signal || "").trim().toLowerCase()
-  if (exitSig === "open" || entrySig === "open") return true
+  if (exitSig === "open") return true
+  if (entrySig === "open" && !(trade.exit.datetime && trade.exit.price)) return true
   return false
 }
 

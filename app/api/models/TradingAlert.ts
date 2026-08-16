@@ -20,6 +20,11 @@ export type AlertCategory =
   | "session_deadzone"
   | "session_overlap"
   | "session_key"
+  | "avoidance_impact"
+  | "drawdown_warning"
+  | "weekly_momentum"
+  | "session_boundary"
+  | "new_trade"
 
 export interface ITradingAlert {
   _id?: string
@@ -65,6 +70,11 @@ const TradingAlertSchema = new Schema<ITradingAlert>(
         "session_deadzone",
         "session_overlap",
         "session_key",
+        "avoidance_impact",
+        "drawdown_warning",
+        "weekly_momentum",
+        "session_boundary",
+        "new_trade",
       ],
       required: true,
     },

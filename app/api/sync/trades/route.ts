@@ -16,6 +16,7 @@ import { recordTradeSyncEvent } from "@/lib/sync-last-event"
 import { withSyncCors } from "@/lib/sync-cors"
 import { getSyncAuth } from "@/lib/sync-auth"
 import { touchSyncHeartbeat } from "@/lib/sync-heartbeat"
+import { persistNewTradeAlert } from "@/lib/trading/alerts-server"
 import { tradingViewSyncSchema } from "@/lib/validations/tradingview-sync"
 
 function mergeSyncedTrade(
@@ -296,6 +297,7 @@ export async function POST(request: NextRequest) {
         if (isOpen) {
           latestOpenImportedByAccount[accountId] = snapshot
         }
+        await persistNewTradeAlert(auth.userId, accountId, snapshot, targetAccount.name)
         continue
       }
 
