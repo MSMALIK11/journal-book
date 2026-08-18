@@ -15,6 +15,9 @@ export const ANALYTICS_TRADE_SELECT =
 export const RESEARCH_TRADE_SELECT =
   "entry_date exit_date net_pnl return_pct commission strategy instrument trade_type signal source emotion_tag confidence_rating followed_plan mistake_tag tags stop_loss target quantity"
 
+export const FUNDED_TRADE_SELECT =
+  "entry_date exit_date net_pnl return_pct commission strategy instrument trade_type signal source entry_price stop_loss target quantity asset_type"
+
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
 export function validateDateRange(startDate: string | null, endDate: string | null) {

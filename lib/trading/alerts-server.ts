@@ -164,6 +164,38 @@ export async function persistNewTradeAlert(
   }
 }
 
+export async function persistClosedTradeAlert(
+  userId: string,
+  accountId: string,
+  trade: {
+    id: string
+    instrument: string
+    trade_type: string
+    entry_price: number
+  },
+  accountName?: string,
+) {
+  const side = trade.trade_type === "Buy" ? "Long" : "Short"
+  const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
+  try {
+    await persistAlerts(userId, accountId, [
+      {
+        key: `trade-closed:${trade.id}`,
+        category: "new_trade",
+        severity: "info",
+        title: `${side} closed`,
+        message: `${trade.instrument} ${side} @ ${price}${accountName ? ` · ${accountName}` : ""}`,
+        metric: trade.instrument,
+        action: "Review the closed trade in Live Sync and Trade History.",
+        context: { instrument: trade.instrument },
+        priority: 180,
+      },
+    ])
+  } catch (error) {
+    console.error("Failed to persist closed-trade alert:", error)
+  }
+}
+
 export async function evaluateAndPersistAlerts(
   userId: string,
   accountId: string,

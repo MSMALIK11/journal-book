@@ -30,19 +30,47 @@ export async function findExistingSyncedTrade(
     if (
       entryDelta <= ENTRY_MATCH_TOLERANCE_MS &&
       legacyMatch.instrument === mapped.instrument &&
-      legacyMatch.trade_type === mapped.trade_type
+      legacyMatch.trade_type === mapped.trade_type &&
+      !isClosedMismatch(legacyMatch, mapped)
     ) {
       return legacyMatch
     }
   }
 
-  return Trade.findOne({
+  const exact = await Trade.findOne({
     userId,
     source: "tradingview",
     instrument: mapped.instrument,
     entry_date: mapped.entry_date,
     trade_type: mapped.trade_type,
   })
+  if (exact && !isClosedMismatch(exact, mapped)) return exact
+
+  const entryMs = mapped.entry_date.getTime()
+  if (!Number.isFinite(entryMs)) return null
+
+  const fuzzy = await Trade.findOne({
+    userId,
+    source: "tradingview",
+    instrument: mapped.instrument,
+    trade_type: mapped.trade_type,
+    entry_date: {
+      $gte: new Date(entryMs - ENTRY_MATCH_TOLERANCE_MS),
+      $lte: new Date(entryMs + ENTRY_MATCH_TOLERANCE_MS),
+    },
+  }).sort({ updatedAt: -1 })
+  if (fuzzy && !isClosedMismatch(fuzzy, mapped)) return fuzzy
+  return null
+}
+
+/** A new TV Open must not reuse a different closed row — that counts as update and skips the alarm. */
+function isClosedMismatch(
+  existing: { exit_date?: Date | null; external_id?: string | null },
+  mapped: MappedTrade,
+) {
+  if (mapped.exit_date) return false
+  if (!existing.exit_date) return false
+  return existing.external_id !== mapped.external_id
 }
 
 export function shouldMigrateExternalId(existing: { external_id?: string | null }, mapped: MappedTrade) {

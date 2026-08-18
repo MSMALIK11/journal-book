@@ -18,8 +18,8 @@ import { isOpenTvSignal, isOpenSyncedTrade } from "@/lib/trading/tradingview-ope
 import type { MomentZoneSnapshot } from "@/lib/trading/trade-zones"
 
 const TRADE_ALARM_PREFS_KEY = "/api/settings/trade-alarm"
-const SEEN_ALARM_KEYS = "jb-seen-trade-alarms"
-const CATCHUP_WINDOW_MS = 60 * 60_000
+const SEEN_ALARM_KEYS = "jb-seen-trade-alarms-v2"
+const CATCHUP_WINDOW_MS = 2 * 60_000
 
 const preferencesFetcher = async (url: string) => {
   const response = await authFetch(url)
@@ -45,16 +45,13 @@ function shouldConsiderAlarm(data: {
   updated?: number
   latestTrade?: ImportedTradeSnapshot
 }) {
-  if ((data.imported ?? 0) > 0) return true
-  if (resolveOpenTradeForAlarm(data.latestTrade)) return true
-  // New fill that was merged into an existing row — still notify once per trade id.
-  if ((data.updated ?? 0) > 0 && data.latestTrade) return true
-  return false
+  return (data.imported ?? 0) > 0
 }
 
 function readSeenKeys(): Set<string> {
+  if (typeof window === "undefined") return new Set()
   try {
-    const raw = sessionStorage.getItem(SEEN_ALARM_KEYS)
+    const raw = window.localStorage.getItem(SEEN_ALARM_KEYS) || window.sessionStorage.getItem(SEEN_ALARM_KEYS)
     if (!raw) return new Set()
     const parsed = JSON.parse(raw)
     return new Set(Array.isArray(parsed) ? parsed.map(String) : [])
@@ -64,12 +61,23 @@ function readSeenKeys(): Set<string> {
 }
 
 function writeSeenKeys(keys: Set<string>) {
+  const serialized = JSON.stringify([...keys].slice(-80))
   try {
-    sessionStorage.setItem(SEEN_ALARM_KEYS, JSON.stringify([...keys].slice(-40))
-    )
+    window.localStorage.setItem(SEEN_ALARM_KEYS, serialized)
   } catch {
-    // private mode / quota
+    try {
+      window.sessionStorage.setItem(SEEN_ALARM_KEYS, serialized)
+    } catch {
+      // private mode / quota
+    }
   }
+}
+
+function tradeAlarmKeys(accountId: string, trade: ImportedTradeSnapshot) {
+  return [
+    `${accountId}:${trade.id}:${trade.entry_date}:alarm`,
+    `${accountId}:${trade.instrument}:${trade.entry_date}:${trade.trade_type}:alarm`,
+  ].filter((key) => !key.includes("::") && !key.endsWith(":undefined:alarm"))
 }
 
 async function fetchLatestAlarmTrade(
@@ -103,10 +111,11 @@ async function fetchLatestAlarmTrade(
 }
 
 export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
-  const { activeAccountId, switchAccount, refresh, switchVersion, revalidateSyncedData } = useActiveAccount()
+  const { activeAccountId, switchAccount } = useActiveAccount()
   const [alarm, setAlarm] = useState<NewTradeAlarmState | null>(null)
   const [open, setOpen] = useState(false)
-  const seenImportKeysRef = useRef<Set<string>>(new Set())
+  const seenImportKeysRef = useRef<Set<string>>(readSeenKeys())
+  const inflightAlarmKeysRef = useRef<Set<string>>(new Set())
   const preferencesRef = useRef(DEFAULT_TRADE_ALARM_PREFERENCES)
   const catchupDoneRef = useRef(false)
 
@@ -118,10 +127,6 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     preferencesRef.current = preferences
   }, [preferences])
-
-  useEffect(() => {
-    seenImportKeysRef.current = readSeenKeys()
-  }, [])
 
   // Browsers block audio until a user gesture — unlock once so alarms can ring.
   useEffect(() => {
@@ -154,8 +159,26 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
     for (const key of keys) {
       if (!key) continue
       seenImportKeysRef.current.add(key)
+      inflightAlarmKeysRef.current.delete(key)
     }
     writeSeenKeys(seenImportKeysRef.current)
+  }, [])
+
+  const isClaimed = useCallback((keys: string[]) => {
+    return keys.some(
+      (key) => seenImportKeysRef.current.has(key) || inflightAlarmKeysRef.current.has(key),
+    )
+  }, [])
+
+  const claimKeys = useCallback((keys: string[]) => {
+    if (!keys.length) return true
+    if (isClaimed(keys)) return false
+    for (const key of keys) inflightAlarmKeysRef.current.add(key)
+    return true
+  }, [isClaimed])
+
+  const releaseKeys = useCallback((keys: string[]) => {
+    for (const key of keys) inflightAlarmKeysRef.current.delete(key)
   }, [])
 
   const triggerAlarm = useCallback(
@@ -173,12 +196,14 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
       if (!prefs.enabled && !payload.force) return
       if (!payload.force && !shouldConsiderAlarm(payload)) return
 
-      const dedupeKey =
-        payload.eventId ||
-        `${payload.accountId}:${payload.latestTrade?.id ?? "none"}:${payload.latestTrade?.entry_date ?? ""}:import`
-      if (!payload.force && seenImportKeysRef.current.has(dedupeKey)) return
-
       const targetAccountId = payload.accountId || activeAccountId || ""
+      const earlyKeys =
+        !payload.force && payload.latestTrade
+          ? tradeAlarmKeys(targetAccountId, payload.latestTrade)
+          : []
+
+      // In-memory claim only — persist after the alarm actually starts.
+      if (earlyKeys.length && !claimKeys(earlyKeys)) return
 
       // 1) Live open from the sync event (best case — what worked for the 01:15 fill).
       let trade = resolveOpenTradeForAlarm(payload.latestTrade)
@@ -188,13 +213,8 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         trade = payload.latestTrade
       }
 
-      // 3) Update of a live (or just-synced) fill when the first import event was missed.
-      if (!trade && payload.latestTrade && (payload.updated ?? 0) > 0) {
-        trade = payload.latestTrade
-      }
-
-      // 4) Mixed batch: event snapshot missing — load newest/open from that account.
-      if (!trade && targetAccountId && !payload.force && ((payload.imported ?? 0) > 0 || (payload.updated ?? 0) > 0)) {
+      // 3) Mixed batch: event snapshot missing — load newest/open from that account.
+      if (!trade && targetAccountId && !payload.force && (payload.imported ?? 0) > 0) {
         const candidate = await fetchLatestAlarmTrade(targetAccountId)
         if (candidate) {
           const createdMs = candidate.createdAt ? new Date(candidate.createdAt).getTime() : NaN
@@ -216,14 +236,19 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
           is_open: true,
         }
       }
-      if (!trade) return
+      if (!trade) {
+        releaseKeys(earlyKeys)
+        return
+      }
 
-      // Dedupe by the actual trade identity — never block trade B because trade A already rang.
-      const finalKey = `${payload.accountId}:${trade.id}:${trade.entry_date}:alarm`
-      if (!payload.force && seenImportKeysRef.current.has(finalKey)) return
-      if (!payload.force) markSeen(finalKey, dedupeKey)
+      const finalKeys = payload.force ? [] : tradeAlarmKeys(targetAccountId, trade)
+      const newKeys = finalKeys.filter((key) => !earlyKeys.includes(key))
+      if (newKeys.length && !claimKeys(newKeys)) {
+        releaseKeys(earlyKeys)
+        return
+      }
+      if (!payload.force) markSeen(...earlyKeys, ...finalKeys)
 
-      // Fire modal + sound immediately — refresh can follow.
       let advice = buildFallbackTradeAdvice({ isUpdate: false })
       setAlarm({
         trade,
@@ -242,14 +267,9 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         try {
           if (targetAccountId && targetAccountId !== activeAccountId) {
             await switchAccount(targetAccountId)
-          } else {
-            await revalidateSyncedData()
-            await refresh()
           }
 
-          const alertsResponse = await authFetch(
-            `/api/alerts?limit=1&account=${targetAccountId}&v=${switchVersion}`,
-          )
+          const alertsResponse = await authFetch(`/api/alerts?limit=1&account=${targetAccountId}`)
           const alertsData = await alertsResponse.json()
           const zones = alertsData.zones as MomentZoneSnapshot | undefined
           if (zones) {
@@ -261,7 +281,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         }
       })()
     },
-    [activeAccountId, markSeen, revalidateSyncedData, refresh, startSound, switchAccount, switchVersion],
+    [activeAccountId, claimKeys, markSeen, releaseKeys, startSound, switchAccount],
   )
 
   const onSyncEvent = useCallback(
@@ -333,13 +353,17 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         const ageMs = event.at ? Date.now() - new Date(event.at).getTime() : CATCHUP_WINDOW_MS + 1
         if (ageMs > CATCHUP_WINDOW_MS) return
 
+        if (event.latestTrade) {
+          const keys = tradeAlarmKeys(event.accountId || "", event.latestTrade)
+          if (keys.some((key) => seenImportKeysRef.current.has(key))) return
+        }
+
         await triggerAlarm({
           accountId: event.accountId || "",
           accountName: event.accountName,
           imported: event.imported,
           updated: event.updated,
           latestTrade: event.latestTrade,
-          eventId: `catchup:${event.eventId}`,
           eventAt: event.at,
         })
       } catch {

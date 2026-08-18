@@ -57,9 +57,18 @@ export function SyncAccountAutoSwitch() {
             description: `${imported} new trade(s) from TradingView`,
           })
         } else if (updated > 0) {
+          const closed = data.latestTrade?.is_open === false
           toast({
-            title: data.accountName ? `Trade closed/updated · ${data.accountName}` : "Trade closed/updated",
-            description: `${updated} trade(s) updated from TradingView`,
+            title: data.accountName
+              ? closed
+                ? `Trade closed · ${data.accountName}`
+                : `Trade updated · ${data.accountName}`
+              : closed
+                ? "Trade closed"
+                : "Trade updated",
+            description: closed
+              ? `${updated} trade(s) closed on TradingView`
+              : `${updated} trade(s) updated from TradingView`,
           })
         }
       })()

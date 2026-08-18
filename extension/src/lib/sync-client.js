@@ -44,8 +44,7 @@ JBSync.isOpenTrade = function isOpenTrade(trade) {
   if (!trade.exit) return true
   const exitSig = (trade.exit.signal || "").trim().toLowerCase()
   const entrySig = (trade.entry?.signal || "").trim().toLowerCase()
-  if (exitSig === "open") return true
-  if (entrySig === "open" && !(trade.exit.datetime && trade.exit.price)) return true
+  if (exitSig === "open" || entrySig === "open") return true
   return false
 }
 
@@ -86,16 +85,27 @@ JBSync.dropSupersededOpenTrades = function dropSupersededOpenTrades(trades) {
       return false
     }
 
-    if (
-      Number.isFinite(trade.tradeNumber) &&
-      Number.isFinite(maxClosedTradeNumber) &&
-      trade.tradeNumber < maxClosedTradeNumber
-    ) {
-      return false
-    }
-
     return true
   })
+}
+
+JBSync.rowFingerprint = function rowFingerprint(row) {
+  const symbol = String(row.instrument || "")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toUpperCase()
+  const entryMs = new Date(row.entry_date || "").getTime()
+  const bucket = Number.isFinite(entryMs) ? Math.round(entryMs / 60_000) : 0
+  const direction = String(row.trade_type || "").toLowerCase() === "buy" ? "long" : "short"
+  return `${symbol}:${bucket}:${direction}`
+}
+
+JBSync.tradeFingerprint = function tradeFingerprint(trade) {
+  const symbol = String(trade.instrument || "")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toUpperCase()
+  const entryMs = JBSync.tradeEntryMs(trade)
+  const bucket = Number.isFinite(entryMs) ? Math.round(entryMs / 60_000) : 0
+  return `${symbol}:${bucket}:${trade.direction || ""}`
 }
 
 JBSync.fetchKnownTradeSnapshot = async function fetchKnownTradeSnapshot(config, options = {}) {
@@ -114,26 +124,43 @@ JBSync.fetchKnownTradeSnapshot = async function fetchKnownTradeSnapshot(config, 
 
   const ids = new Set()
   const openIds = new Set()
+  const fps = new Set()
+  const openFps = new Set()
   for (const trade of data.trades || []) {
-    if (!trade.external_id) continue
-    ids.add(trade.external_id)
-    if (trade.is_open) openIds.add(trade.external_id)
+    if (trade.external_id) {
+      ids.add(trade.external_id)
+      if (trade.is_open) openIds.add(trade.external_id)
+    }
+    const fp = JBSync.rowFingerprint(trade)
+    if (fp) {
+      fps.add(fp)
+      if (trade.is_open) openFps.add(fp)
+    }
   }
-  return { ids, openIds }
+  return { ids, openIds, fps, openFps }
 }
 
-JBSync.tradeNeedsRefresh = function tradeNeedsRefresh(trade, snapshot, latestTradeNumber) {
-  if (latestTradeNumber != null && trade.tradeNumber === latestTradeNumber) return true
-
+JBSync.tradeNeedsRefresh = function tradeNeedsRefresh(trade, snapshot) {
   const extId = JBSync.buildExternalId(trade)
   const legacyId = `tv:${JBSync.strategySlug(trade.strategy || "")}:${trade.tradeNumber}`
-  const known = snapshot.ids.has(extId) || snapshot.ids.has(legacyId)
-  const wasOpenOnServer = snapshot.openIds.has(extId) || snapshot.openIds.has(legacyId)
+  const fp = JBSync.tradeFingerprint(trade)
+  const known =
+    snapshot.ids.has(extId) ||
+    snapshot.ids.has(legacyId) ||
+    Boolean(snapshot.openFps?.has(fp))
+  const wasOpenOnServer =
+    snapshot.openIds.has(extId) ||
+    snapshot.openIds.has(legacyId) ||
+    Boolean(snapshot.openFps?.has(fp))
+  const openOnTv = JBSync.isOpenTrade(trade)
 
   if (!known) return true
-  if (JBSync.isOpenTrade(trade)) return true
-  // Exit/close on TV while journal still has this trade open — must sync for UI refresh.
-  if (wasOpenOnServer) return true
+  // Still open on both sides — ignore floating P&L ticks.
+  if (openOnTv && wasOpenOnServer) return false
+  // TV still Open but journal stored a fake exit — repair once.
+  if (openOnTv && !wasOpenOnServer) return true
+  // Real close: TV exited a row the journal still has open.
+  if (!openOnTv && wasOpenOnServer) return true
   return false
 }
 
@@ -766,6 +793,7 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
   let updated = 0
   let skipped = 0
   let deduped = 0
+  let eventId = ""
   const byAccount = {}
   const accountsCreated = new Set()
 
@@ -779,6 +807,7 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
     updated += result.updated || 0
     skipped += result.skipped || 0
     deduped += result.deduped || 0
+    if (result.eventId) eventId = result.eventId
 
     for (const name of result.accountsCreated || []) {
       accountsCreated.add(name)
@@ -810,6 +839,7 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
     skipped,
     deduped,
     closedStale,
+    eventId,
     byAccount,
     accountsCreated: [...accountsCreated],
   }
@@ -937,6 +967,25 @@ JBSync.journalOriginPattern = function journalOriginPattern(apiUrl) {
   }
 }
 
+JBSync.normalizeLatestTrade = function normalizeLatestTrade(rawLatest, fallbackClosed) {
+  if (!rawLatest) {
+    return fallbackClosed ? { is_open: false } : undefined
+  }
+  const isOpen =
+    rawLatest.is_open === true
+      ? true
+      : rawLatest.is_open === false
+        ? false
+        : String(rawLatest.signal || "")
+            .trim()
+            .toLowerCase() === "open"
+  return {
+    ...rawLatest,
+    signal: rawLatest.signal || (isOpen ? "Open" : rawLatest.signal),
+    is_open: isOpen,
+  }
+}
+
 JBSync.notifyJournalTabs = async function notifyJournalTabs(payload, apiUrl) {
   try {
     const origin = JBSync.journalOriginPattern(apiUrl)
@@ -1031,8 +1080,7 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
 
   const stamped = list.map((trade) => ({ ...trade, instrument: symbol, strategy: trade.strategy || "TradingView Strategy" }))
   const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: 1500 })
-  const latestTradeNumber = Math.max(...stamped.map((trade) => Number(trade.tradeNumber) || 0))
-  const newOrUpdated = stamped.filter((trade) => JBSync.tradeNeedsRefresh(trade, snapshot, latestTradeNumber))
+  const newOrUpdated = stamped.filter((trade) => JBSync.tradeNeedsRefresh(trade, snapshot))
 
   if (!newOrUpdated.length) {
     return {
@@ -1055,22 +1103,16 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     const topAccount = Object.entries(syncResult.byAccount || {}).sort(
       (a, b) => (b[1].imported || 0) + (b[1].updated || 0) - ((a[1].imported || 0) + (a[1].updated || 0)),
     )[0]
-    const rawLatest = topAccount?.[1]?.latestTrade
-    const latestTrade = rawLatest
-      ? {
-          ...rawLatest,
-          signal: rawLatest.signal || (rawLatest.is_open ? "Open" : rawLatest.signal),
-          is_open:
-            rawLatest.is_open === true ||
-            String(rawLatest.signal || "")
-              .trim()
-              .toLowerCase() === "open",
-        }
-      : undefined
+    const latestTrade = JBSync.normalizeLatestTrade(
+      topAccount?.[1]?.latestTrade,
+      syncResult.imported === 0 && (syncResult.updated > 0 || closedStale > 0),
+    )
 
     await JBSync.notifyJournalTabs(
       {
-        eventId: `cap-${Date.now()}-${syncResult.imported}-${syncResult.updated}-${closedStale}`,
+        eventId:
+          syncResult.eventId ||
+          `cap-${topAccount?.[0] || "acc"}-${latestTrade?.id || "none"}-${syncResult.imported}-${syncResult.updated}`,
         imported: syncResult.imported,
         updated: syncResult.updated,
         accountId: topAccount?.[0],
@@ -1174,9 +1216,7 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
   }
 
   const latestTradeNumber = Math.max(...result.trades.map((trade) => trade.tradeNumber))
-  const newOrUpdated = result.trades.filter((trade) =>
-    JBSync.tradeNeedsRefresh(trade, snapshot, latestTradeNumber),
-  )
+  const newOrUpdated = result.trades.filter((trade) => JBSync.tradeNeedsRefresh(trade, snapshot))
 
   // If List of trades has closed rows and zero opens, drop journal opens that exited.
   const scrapedOpens = result.trades.filter((trade) => JBSync.isOpenTrade(trade))
@@ -1199,10 +1239,6 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
       syncResult.closedStale > 0
         ? `Cleared ${syncResult.closedStale} closed trade(s)`
         : "No new trades"
-  } else {
-    const reconcile = await JBSync.reconcileOpenTrades(config, result.trades, chartSymbol)
-    syncResult.closedStale = reconcile.closedStale || 0
-    syncResult.updated = reconcile.updated || syncResult.closedStale || 0
   }
 
   const closedStale = syncResult.closedStale || 0
@@ -1232,22 +1268,16 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
       (a, b) => (b[1].imported || 0) + (b[1].updated || 0) - ((a[1].imported || 0) + (a[1].updated || 0)),
     )[0]
 
-    const rawLatest = topAccount?.[1]?.latestTrade
-    const latestTrade = rawLatest
-      ? {
-          ...rawLatest,
-          signal: rawLatest.signal || (rawLatest.is_open ? "Open" : rawLatest.signal),
-          is_open:
-            rawLatest.is_open === true ||
-            String(rawLatest.signal || "")
-              .trim()
-              .toLowerCase() === "open",
-        }
-      : undefined
+    const latestTrade = JBSync.normalizeLatestTrade(
+      topAccount?.[1]?.latestTrade,
+      syncResult.imported === 0 && (syncResult.updated > 0 || closedStale > 0),
+    )
 
     await JBSync.notifyJournalTabs(
       {
-        eventId: `ext-${Date.now()}-${syncResult.imported}-${syncResult.updated}-${closedStale}`,
+        eventId:
+          syncResult.eventId ||
+          `ext-${topAccount?.[0] || "acc"}-${latestTrade?.id || "none"}-${syncResult.imported}-${syncResult.updated}`,
         imported: syncResult.imported,
         updated: syncResult.updated,
         accountId: topAccount?.[0],

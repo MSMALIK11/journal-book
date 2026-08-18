@@ -8,12 +8,9 @@ export function isOpenTvTrade(trade: {
   exit?: { datetime?: string; price?: number; signal?: string } | null
 }) {
   if (!trade.exit) return true
-  // A real close has an exit time + price. "Open" in the signal cell is TV's
-  // still-running marker, even when it also paints a mark-to-market price.
-  if (isOpenTvSignal(trade.exit.signal)) return true
-  if (isOpenTvSignal(trade.entry?.signal) && !(trade.exit.datetime && trade.exit.price)) {
-    return true
-  }
+  // TV paints a live mark-to-market price/time on the Open row. Signal "Open"
+  // means the position is still running — never treat that as a close.
+  if (isOpenTvSignal(trade.exit.signal) || isOpenTvSignal(trade.entry?.signal)) return true
   return false
 }
 

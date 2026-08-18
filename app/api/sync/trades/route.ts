@@ -8,7 +8,7 @@ import {
   purgeSupersededOpenTrades,
   reconcileStaleOpenTrades,
 } from "@/lib/trading/reconcile-open-trades"
-import { isOpenSyncedTrade, isOpenTvSignal, isOpenTvTrade } from "@/lib/trading/tradingview-open"
+import { isOpenSyncedTrade, isOpenTvTrade } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
 import { publishAccountsUpdated, publishTradesUpdated } from "@/lib/sync-events"
@@ -16,7 +16,7 @@ import { recordTradeSyncEvent } from "@/lib/sync-last-event"
 import { withSyncCors } from "@/lib/sync-cors"
 import { getSyncAuth } from "@/lib/sync-auth"
 import { touchSyncHeartbeat } from "@/lib/sync-heartbeat"
-import { persistNewTradeAlert } from "@/lib/trading/alerts-server"
+import { persistClosedTradeAlert, persistNewTradeAlert } from "@/lib/trading/alerts-server"
 import { tradingViewSyncSchema } from "@/lib/validations/tradingview-sync"
 
 function mergeSyncedTrade(
@@ -65,6 +65,11 @@ function syncedTradeChanged(
   if (!mapped.exit_date && existing.exit_date) return true
   if (mapped.exit_price != null && existing.exit_price !== mapped.exit_price) return true
   if (!mapped.exit_date && existing.exit_price != null) return true
+
+  // Still open on both sides — ignore floating P&L / return / commission ticks.
+  const stillOpen = !mapped.exit_date && !existing.exit_date
+  if (stillOpen) return false
+
   if (typeof mapped.net_pnl === "number" && existing.net_pnl !== mapped.net_pnl) return true
   if (typeof mapped.return_pct === "number" && existing.return_pct !== mapped.return_pct) return true
   if (typeof mapped.commission === "number" && existing.commission !== mapped.commission) return true
@@ -140,12 +145,21 @@ export async function POST(request: NextRequest) {
         if (symbol) {
           const account = resolveAccountForInstrument(accounts, symbol)
           const accountId = String(account._id)
+          const latestTrade = {
+            id: `closed:${accountId}`,
+            instrument: symbol,
+            trade_type: "Buy",
+            entry_date: new Date().toISOString(),
+            entry_price: 0,
+            is_open: false,
+          }
           const event = await recordTradeSyncEvent(auth.userId, {
             accountId,
             accountName: account.name,
             imported: 0,
             updated: closedStale,
             skipped: 0,
+            latestTrade,
           })
           publishTradesUpdated(auth.userId, accountId, {
             eventId: event.eventId,
@@ -153,6 +167,7 @@ export async function POST(request: NextRequest) {
             updated: closedStale,
             skipped: 0,
             accountName: account.name,
+            latestTrade,
           })
         }
       }
@@ -183,6 +198,7 @@ export async function POST(request: NextRequest) {
     let imported = 0
     let updated = 0
     let skipped = 0
+    let lastEventId: string | undefined
     const byAccount: Record<string, { name: string; imported: number; updated: number; skipped: number }> = {}
     const touchedAccounts = new Set<string>()
     type TradeSnapshot = {
@@ -283,7 +299,7 @@ export async function POST(request: NextRequest) {
         imported += 1
         byAccount[accountId].imported += 1
         touchedAccounts.add(accountId)
-        const isOpen = isOpenSyncedTrade(mapped) || isOpenTvSignal(mapped.signal)
+        const isOpen = !mapped.exit_date
         const snapshot: TradeSnapshot = {
           id: String(created._id),
           instrument: mapped.instrument,
@@ -302,19 +318,24 @@ export async function POST(request: NextRequest) {
       }
 
       if (syncedTradeChanged(existing, mapped)) {
+        const wasOpen = !existing.exit_date
         mergeSyncedTrade(existing, mapped, accountId)
         await existing.save()
         updated += 1
         byAccount[accountId].updated += 1
         touchedAccounts.add(accountId)
-        latestUpdatedByAccount[accountId] = {
+        const snapshot: TradeSnapshot = {
           id: String(existing._id),
           instrument: mapped.instrument,
           trade_type: mapped.trade_type,
           entry_date: mapped.entry_date.toISOString(),
           entry_price: mapped.entry_price,
           signal: mapped.signal ?? null,
-          is_open: isOpenSyncedTrade(mapped) || isOpenTvSignal(mapped.signal),
+          is_open: !mapped.exit_date,
+        }
+        latestUpdatedByAccount[accountId] = snapshot
+        if (wasOpen && mapped.exit_date) {
+          await persistClosedTradeAlert(auth.userId, accountId, snapshot, targetAccount.name)
         }
       } else if (existing.accountId !== accountId) {
         existing.accountId = accountId
@@ -396,6 +417,7 @@ export async function POST(request: NextRequest) {
           // Opens for alarm; updates/closes still carry a snapshot so UI can refresh.
           latestTrade,
         })
+        lastEventId = event.eventId
 
         publishTradesUpdated(auth.userId, accountId, {
           eventId: event.eventId,
@@ -437,6 +459,7 @@ export async function POST(request: NextRequest) {
         deduped,
         reassigned,
         closedStale,
+        eventId: lastEventId,
         accountsCreated: newAccounts.map((account) => account.name),
         newAccounts,
         switchToAccountId:

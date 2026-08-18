@@ -35,10 +35,19 @@ const POLL_HIDDEN_MS = 30_000
 const STALE_EVENT_MS = 2 * 60_000
 
 /** SSE + extension DOM event + DB poll backup — reliable UI refresh after TV sync. */
+function logicalSyncKey(detail: TradeSyncEventDetail) {
+  const tradeId = detail.latestTrade?.id || ""
+  const entry = detail.latestTrade?.entry_date || ""
+  const phase = detail.latestTrade?.is_open === false ? "closed" : "open"
+  return `${detail.accountId || ""}:${tradeId}:${entry}:${detail.imported ?? 0}:${detail.updated ?? 0}:${phase}`
+}
+
 export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChange }: Options) {
   const onEventRef = useRef(onEvent)
   const onConnectionChangeRef = useRef(onConnectionChange)
   const lastEventIdRef = useRef<string | null>(null)
+  const lastLogicalKeyRef = useRef<string | null>(null)
+  const lastServerEventIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     onEventRef.current = onEvent
@@ -55,7 +64,15 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
     }
 
     if (detail.eventId && detail.eventId === lastEventIdRef.current) return
+
+    const key = logicalSyncKey(detail)
+    if (key === lastLogicalKeyRef.current) {
+      if (detail.eventId) lastEventIdRef.current = detail.eventId
+      return
+    }
+
     if (detail.eventId) lastEventIdRef.current = detail.eventId
+    lastLogicalKeyRef.current = key
 
     const imported = detail.imported ?? 0
     const updated = detail.updated ?? 0
@@ -79,8 +96,10 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
       if (!detail) return
       handleEvent({
         type: "trades_updated",
-        eventId: detail.eventId || `dom-${Date.now()}`,
         ...detail,
+        eventId:
+          detail.eventId ||
+          `dom-${detail.accountId || "acc"}-${detail.latestTrade?.id || "none"}-${detail.imported ?? 0}-${detail.updated ?? 0}`,
       })
     }
 
@@ -91,16 +110,26 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
         const response = await authFetch("/api/sync/last-event")
         const data = await response.json()
         if (!response.ok || !data.event?.eventId) return
-        if (data.event.eventId === lastEventIdRef.current) return
 
+        const serverEventId = String(data.event.eventId)
+        if (serverEventId === lastServerEventIdRef.current) return
+        if (serverEventId === lastEventIdRef.current) {
+          lastServerEventIdRef.current = serverEventId
+          return
+        }
+
+        const alreadyHadLiveEvent = Boolean(lastEventIdRef.current)
         const wasPrimed = primed
         primed = true
+        lastServerEventIdRef.current = serverEventId
+
         if (!wasPrimed) {
           const ageMs = data.event.at ? Date.now() - new Date(data.event.at).getTime() : 0
-          if (ageMs > STALE_EVENT_MS) {
-            lastEventIdRef.current = data.event.eventId
-            return
-          }
+          lastLogicalKeyRef.current =
+            lastLogicalKeyRef.current || logicalSyncKey({ type: "trades_updated", ...data.event })
+          if (!lastEventIdRef.current) lastEventIdRef.current = serverEventId
+          // History, or DOM/SSE already delivered this fill — do not replay the alarm.
+          if (alreadyHadLiveEvent || ageMs > STALE_EVENT_MS) return
         }
 
         handleEvent({ type: "trades_updated", ...data.event })
