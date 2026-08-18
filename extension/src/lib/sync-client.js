@@ -1,6 +1,29 @@
 // Shared scrape helpers — loaded by popup (script tag) and background (importScripts).
 var JBSync = (globalThis.JBSync = globalThis.JBSync || {})
 
+JBSync.IMPORT_ALL_LOCK_MS = 15 * 60 * 1000
+
+JBSync.markImportAllLock = async function markImportAllLock(active, ttlMs) {
+  const until = active ? Date.now() + (Number(ttlMs) > 0 ? Number(ttlMs) : JBSync.IMPORT_ALL_LOCK_MS) : 0
+  try {
+    await chrome.storage.session.set({ jbImportAllUntil: until })
+  } catch {
+    await chrome.storage.local.set({ jbImportAllUntil: until })
+  }
+}
+
+JBSync.isImportAllLockActive = async function isImportAllLockActive() {
+  let until = 0
+  try {
+    const stored = await chrome.storage.session.get("jbImportAllUntil")
+    until = Number(stored.jbImportAllUntil) || 0
+  } catch {
+    const stored = await chrome.storage.local.get("jbImportAllUntil")
+    until = Number(stored.jbImportAllUntil) || 0
+  }
+  return until > Date.now()
+}
+
 JBSync.tradeKey = function tradeKey(trade) {
   const inst = (trade.instrument || "UNK").replace(/[^A-Za-z0-9]/g, "").toUpperCase()
   const entry = trade.entry?.datetime || ""
@@ -392,6 +415,12 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
   const allFrames = scrapeMode === "full"
   const target = { tabId: tab.id, allFrames }
 
+  if (scrapeMode === "full") {
+    await JBSync.markImportAllLock(true)
+  } else if (await JBSync.isImportAllLockActive()) {
+    return { trades: [], skippedDueToImportAll: true, instrument: chartSymbol }
+  }
+
   await chrome.scripting.executeScript({
     target: { tabId: tab.id, allFrames: false },
     world: "MAIN",
@@ -632,6 +661,16 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
       error: `Scrape failed: ${error.message}. Reload extension + refresh TradingView (F5).`,
       debug: { frameDebug },
     }
+  } finally {
+    await chrome.scripting
+      .executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        func: () => {
+          window.__JB_IMPORT_ALL__ = false
+          window.__JB_SCRAPE_MODE__ = "light"
+        },
+      })
+      .catch(() => {})
   }
 }
 
@@ -1028,6 +1067,8 @@ JBSync.notifyJournalTabs = async function notifyJournalTabs(payload, apiUrl) {
 
 JBSync.maybeRunRequestedRefresh = async function maybeRunRequestedRefresh(config) {
   if (!config.syncToken) return null
+  // Leave the Live Sync queue pending until Import All finishes.
+  if (await JBSync.isImportAllLockActive()) return null
 
   const request = await JBSync.checkRefreshRequest(config)
   if (!request.requested) return null
@@ -1169,6 +1210,18 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
     trades: [],
     error: error?.message || "Scrape failed",
   }))
+
+  if (result?.skippedDueToImportAll) {
+    return {
+      imported: 0,
+      updated: 0,
+      skipped: 0,
+      closedStale: 0,
+      byAccount: {},
+      paused: true,
+      message: "Paused while Import all runs",
+    }
+  }
 
   // If Strategy Tester grid is empty/stale, fall back to network-captured trades.
   if (!result?.trades?.length && captured.trades.length) {

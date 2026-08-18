@@ -50,6 +50,18 @@ function setButtonsDisabled(disabled) {
   }
 }
 
+function sendBackground(type, extra = {}) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type, ...extra }, (res) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message))
+        return
+      }
+      resolve(res || {})
+    })
+  })
+}
+
 async function saveRefreshResult(syncResult, result) {
   const { sessionImported = 0 } = await chrome.storage.local.get("sessionImported")
   const accountMsg = JBSync.formatByAccountMessage(syncResult.byAccount)
@@ -93,7 +105,7 @@ document.getElementById("testScrape").addEventListener("click", async () => {
   setButtonsDisabled(true)
 
   try {
-    const result = await JBSync.scrapeFromActiveTab(false)
+    const result = await sendBackground("TEST_SCRAPE")
     const count = result?.trades?.length ?? 0
     const debug = result?.debug || {}
 
@@ -132,8 +144,11 @@ document.getElementById("refreshNew").addEventListener("click", async () => {
       lastError: "",
     })
 
-    const syncResult = await JBSync.refreshNewTrades(config)
-    const msg = await saveRefreshResult(syncResult, syncResult.result)
+    const syncResult = await sendBackground("REFRESH_NEW_TRADES")
+    if (syncResult.error && !syncResult.imported && !syncResult.updated) {
+      throw new Error(syncResult.error)
+    }
+    const msg = await saveRefreshResult(syncResult, syncResult.result || syncResult)
 
     statusEl.textContent = msg
     statusEl.style.color = syncResult.message === "No new trades" ? "#8b949e" : "#1a7f37"
@@ -158,9 +173,14 @@ document.getElementById("importAll").addEventListener("click", async () => {
   errorEl.textContent = ""
   setButtonsDisabled(true)
 
+  let importLockHeld = false
   try {
     const config = await JBSync.getConfig()
     if (!config.syncToken) throw new Error("Add sync key in extension Options")
+
+    const begin = await sendBackground("BEGIN_IMPORT_ALL")
+    if (begin.error) throw new Error(begin.error)
+    importLockHeld = true
 
     await chrome.storage.local.set({
       importStatus: "running",
@@ -177,6 +197,9 @@ document.getElementById("importAll").addEventListener("click", async () => {
     })
     const msg = await saveRefreshResult(syncResult, result)
 
+    await sendBackground("END_IMPORT_ALL", { result: syncResult })
+    importLockHeld = false
+
     statusEl.textContent = msg
     statusEl.style.color = "#1a7f37"
   } catch (error) {
@@ -188,6 +211,9 @@ document.getElementById("importAll").addEventListener("click", async () => {
     statusEl.textContent = error.message
     statusEl.style.color = "#f85149"
   } finally {
+    if (importLockHeld) {
+      await sendBackground("END_IMPORT_ALL").catch(() => {})
+    }
     setButtonsDisabled(false)
     await loadStatus()
   }

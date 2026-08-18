@@ -1,14 +1,17 @@
 /* global JBSync */
-const VERSION = "1.16.4"
+const VERSION = "1.16.5"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 120
 const LOCAL_JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
 const JOURNAL_SCRIPT_ID = "jb-journal-bridge-dynamic"
+const IMPORT_ALL_MAX_MS = 15 * 60 * 1000
 
 importScripts("../lib/symbol-utils.js", "../lib/sync-client.js")
 
 let syncInFlight = false
+let importAllInFlight = false
+let importAllWatchdog = null
 let refreshInFlight = false
 let captureSyncTimer = null
 let captureSyncPending = false
@@ -19,6 +22,55 @@ let lastRefreshCheckAt = 0
 const JOURNAL_SYNC_MIN_MS = 3_000
 const TABLE_SYNC_MIN_MS = 350
 const REFRESH_CHECK_MIN_MS = 5_000
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForSyncIdle(timeoutMs = 45_000) {
+  const started = Date.now()
+  while (syncInFlight && Date.now() - started < timeoutMs) {
+    await sleep(200)
+  }
+  return !syncInFlight
+}
+
+async function isImportAllBlocking() {
+  if (importAllInFlight) return true
+  return JBSync.isImportAllLockActive()
+}
+
+async function beginImportAllLock() {
+  importAllInFlight = true
+  await JBSync.markImportAllLock(true, IMPORT_ALL_MAX_MS)
+  if (importAllWatchdog) clearTimeout(importAllWatchdog)
+  importAllWatchdog = setTimeout(() => {
+    importAllInFlight = false
+    importAllWatchdog = null
+    void JBSync.markImportAllLock(false)
+  }, IMPORT_ALL_MAX_MS)
+}
+
+async function endImportAllLock() {
+  importAllInFlight = false
+  if (importAllWatchdog) {
+    clearTimeout(importAllWatchdog)
+    importAllWatchdog = null
+  }
+  await JBSync.markImportAllLock(false)
+}
+
+function drainPendingCapture() {
+  if (pendingCapturePayload) {
+    const pending = pendingCapturePayload
+    pendingCapturePayload = null
+    captureSyncPending = false
+    void syncCapturePayload(pending)
+  } else if (captureSyncPending) {
+    captureSyncPending = false
+    scheduleCaptureSync()
+  }
+}
 
 async function journalOrigin() {
   try {
@@ -169,6 +221,15 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 async function runRefreshCheck() {
   if (refreshInFlight) return
+  if (await isImportAllBlocking()) {
+    try {
+      const config = await JBSync.getConfig()
+      if (config.syncToken) await JBSync.sendHeartbeat(config).catch(() => {})
+    } catch {
+      // ignore
+    }
+    return
+  }
 
   refreshInFlight = true
   lastRefreshCheckAt = Date.now()
@@ -205,6 +266,18 @@ async function sendHeartbeatIfConfigured() {
 }
 
 async function runAutoSync(source) {
+  if (importAllInFlight || (await isImportAllBlocking())) {
+    if (
+      source === "capture" ||
+      source === "alarm" ||
+      source === "journal" ||
+      source === "table"
+    ) {
+      captureSyncPending = true
+    }
+    return null
+  }
+
   if (syncInFlight) {
     if (
       source === "capture" ||
@@ -245,20 +318,18 @@ async function runAutoSync(source) {
     return null
   } finally {
     syncInFlight = false
-    if (pendingCapturePayload) {
-      const pending = pendingCapturePayload
-      pendingCapturePayload = null
-      captureSyncPending = false
-      void syncCapturePayload(pending)
-    } else if (captureSyncPending) {
-      captureSyncPending = false
-      scheduleCaptureSync()
-    }
+    drainPendingCapture()
   }
 }
 
 /** Instant open/exit path — POST captured trades and ping journal UI immediately. */
 async function syncCapturePayload(payload) {
+  if (importAllInFlight || (await isImportAllBlocking())) {
+    pendingCapturePayload = payload
+    captureSyncPending = true
+    return null
+  }
+
   if (syncInFlight) {
     pendingCapturePayload = payload
     captureSyncPending = true
@@ -317,6 +388,16 @@ async function syncCapturePayload(payload) {
 }
 
 async function handlePollTick(autoSync) {
+  if (await isImportAllBlocking()) {
+    try {
+      const config = await JBSync.getConfig()
+      if (config.syncToken) await JBSync.sendHeartbeat(config)
+    } catch {
+      // ignore — Import All owns the table
+    }
+    return
+  }
+
   if (!autoSync) {
     try {
       const config = await JBSync.getConfig()
@@ -436,6 +517,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "TV_TABLE_CHANGED") {
+    // Import All scrolls the same table — do not start a light scrape mid-import.
+    if (importAllInFlight) {
+      sendResponse({ ok: true, skipped: true })
+      return false
+    }
     // List of trades DOM changed — sync fast for open/exit UI update.
     if (Date.now() - lastTableSyncAt >= TABLE_SYNC_MIN_MS) {
       lastTableSyncAt = Date.now()
@@ -468,6 +554,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "CHECK_REFRESH_REQUEST") {
     void (async () => {
+      if (await isImportAllBlocking()) {
+        try {
+          const config = await JBSync.getConfig()
+          if (config.syncToken) await JBSync.sendHeartbeat(config)
+        } catch {
+          // ignore
+        }
+        sendResponse({ ok: true, skipped: true })
+        return
+      }
       await runRefreshCheck()
       // Journal tab wake — throttled trade sync (TV content timers often sleep in background).
       if (Date.now() - lastJournalSyncAt >= JOURNAL_SYNC_MIN_MS) {
@@ -479,9 +575,89 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true
   }
 
+  if (message.type === "BEGIN_IMPORT_ALL") {
+    void (async () => {
+      try {
+        if (importAllInFlight) {
+          sendResponse({ ok: false, error: "Import all already running" })
+          return
+        }
+        // Block new polls immediately, then wait for any light scrape already in flight.
+        importAllInFlight = true
+        await waitForSyncIdle(45_000)
+        if (syncInFlight) {
+          importAllInFlight = false
+          sendResponse({ ok: false, error: "Live sync is busy. Wait a moment and retry Import All." })
+          return
+        }
+        await beginImportAllLock()
+        sendResponse({ ok: true })
+      } catch (error) {
+        importAllInFlight = false
+        await JBSync.markImportAllLock(false).catch(() => {})
+        sendResponse({ ok: false, error: error?.message || "Could not start Import all" })
+      }
+    })()
+    return true
+  }
+
+  if (message.type === "END_IMPORT_ALL") {
+    void (async () => {
+      try {
+        const config = await JBSync.getConfig()
+        if (message.result && config.syncToken) {
+          await JBSync.completeRefreshRequest(config, message.result).catch(() => {})
+        }
+        await endImportAllLock()
+        drainPendingCapture()
+        sendResponse({ ok: true })
+      } catch (error) {
+        await endImportAllLock().catch(() => {})
+        sendResponse({ ok: false, error: error?.message || "Could not finish Import all" })
+      }
+    })()
+    return true
+  }
+
+  if (message.type === "TEST_SCRAPE") {
+    void (async () => {
+      try {
+        if (await isImportAllBlocking()) {
+          sendResponse({ trades: [], error: "Import all is running — try Test scrape after it finishes" })
+          return
+        }
+        await waitForSyncIdle(15_000)
+        if (syncInFlight || importAllInFlight) {
+          sendResponse({ trades: [], error: "Live sync is busy. Retry in a moment." })
+          return
+        }
+        syncInFlight = true
+        try {
+          const result = await JBSync.scrapeFromActiveTab(false)
+          sendResponse(result)
+        } finally {
+          syncInFlight = false
+          drainPendingCapture()
+        }
+      } catch (error) {
+        sendResponse({ trades: [], error: error?.message || "Scrape failed" })
+      }
+    })()
+    return true
+  }
+
   if (message.type === "REFRESH_NEW_TRADES" || message.type === "RELOAD_TV_AND_SYNC") {
     void (async () => {
       try {
+        if (await isImportAllBlocking()) {
+          sendResponse({
+            ok: false,
+            error: "Import all in progress",
+            paused: true,
+          })
+          return
+        }
+
         const config = await JBSync.getConfig()
         if (!config.syncToken) {
           sendResponse({ ok: false, error: "Add sync key in extension Options" })
@@ -497,17 +673,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           return
         }
 
-        const syncResult =
-          message.type === "RELOAD_TV_AND_SYNC"
-            ? await JBSync.refreshNewTradesAfterTvReload(config)
-            : await (async () => {
-                await injectTvHooks(tab.id)
-                return JBSync.refreshNewTrades(config)
-              })()
-        await JBSync.completeRefreshRequest(config, syncResult).catch(() => {})
+        await waitForSyncIdle(15_000)
+        if (syncInFlight) {
+          sendResponse({ ok: false, error: "Live sync is busy. Retry in a moment." })
+          return
+        }
+
+        syncInFlight = true
+        let syncResult
+        try {
+          syncResult =
+            message.type === "RELOAD_TV_AND_SYNC"
+              ? await JBSync.refreshNewTradesAfterTvReload(config)
+              : await (async () => {
+                  await injectTvHooks(tab.id)
+                  return JBSync.refreshNewTrades(config)
+                })()
+        } finally {
+          syncInFlight = false
+        }
+
+        if (!syncResult?.paused) {
+          await JBSync.completeRefreshRequest(config, syncResult).catch(() => {})
+        }
         sendResponse({ ok: !syncResult?.error, ...syncResult })
+        drainPendingCapture()
       } catch (error) {
+        syncInFlight = false
         sendResponse({ ok: false, error: error?.message || "Sync failed" })
+        drainPendingCapture()
       }
     })()
     return true

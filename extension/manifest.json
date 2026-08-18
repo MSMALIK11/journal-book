@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Journal Book - TradingView Sync",
-  "version": "1.16.4",
+  "version": "1.16.5",
   "description": "Sync TradingView Strategy Tester trades to journal-book without refreshing TV",
   "permissions": ["storage", "tabs", "scripting", "alarms"],
   "host_permissions": [
