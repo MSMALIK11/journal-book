@@ -24,6 +24,7 @@ import { playTradeAlarmSound, stopTradeAlarmSound } from "@/lib/trade-alarm-soun
 import { useToast } from "@/hooks/use-toast"
 import { refreshTradeAlarmPreferences } from "@/components/notifications/new-trade-alarm-provider"
 import { cn } from "@/lib/utils"
+import { useActiveAccount } from "@/hooks/use-active-account"
 
 const SOUND_MODE_OPTIONS: Array<{
   value: TradeAlarmSoundMode
@@ -44,10 +45,12 @@ const SOUND_MODE_OPTIONS: Array<{
 
 export function TradeAlarmSettings() {
   const { toast } = useToast()
+  const { activeAccountId } = useActiveAccount()
   const [preferences, setPreferences] = useState<TradeAlarmPreferences>(DEFAULT_TRADE_ALARM_PREFERENCES)
   const [loading, setLoading] = useState(true)
   const [savingKey, setSavingKey] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
+  const [testingFull, setTestingFull] = useState(false)
 
   function stopTestSound() {
     stopTradeAlarmSound()
@@ -291,17 +294,50 @@ export function TradeAlarmSettings() {
             type="button"
             variant="default"
             className="w-full gap-1.5"
-            disabled={loading}
+            disabled={loading || testingFull}
             onClick={() => {
-              window.dispatchEvent(new Event("jb-test-trade-alarm"))
+              void (async () => {
+                setTestingFull(true)
+                window.dispatchEvent(new Event("jb-test-trade-alarm"))
+                try {
+                  const response = await authFetch("/api/settings/telegram", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      action: "demo",
+                      accountId: activeAccountId || undefined,
+                    }),
+                  })
+                  const data = await response.json().catch(() => ({}))
+                  if (!response.ok) {
+                    toast({
+                      title: "Alarm playing — Telegram not sent",
+                      description: data.error || "Connect Telegram first, then try again.",
+                      variant: "destructive",
+                    })
+                    return
+                  }
+                  toast({
+                    title: "Full test sent",
+                    description: data.message || "Modal + sound here, demo trade on Telegram.",
+                  })
+                } catch (error) {
+                  toast({
+                    title: "Alarm playing — Telegram not sent",
+                    description: error instanceof Error ? error.message : "Unknown error",
+                    variant: "destructive",
+                  })
+                } finally {
+                  setTestingFull(false)
+                }
+              })()
             }}
           >
             <BellRing className="h-4 w-4" />
-            Test full alarm (modal + sound)
+            {testingFull ? "Sending full test…" : "Test full alarm (modal + sound + Telegram)"}
           </Button>
           <SettingsHint>
-            Full alarm uses the same path as a real open-trade sync. If this works but live fills
-            stay silent, the sync event is not reaching the page — keep Live Sync open.
+            Plays the alarm here and sends a demo trade to Telegram if it is connected.
           </SettingsHint>
         </div>
       </div>

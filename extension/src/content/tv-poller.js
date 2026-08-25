@@ -1,5 +1,8 @@
 /* global chrome */
 ;(function initTvPoller() {
+  if (window.__JB_TV_POLLER__) return
+  window.__JB_TV_POLLER__ = true
+
   let timer = null
   let lastInterval = null
 

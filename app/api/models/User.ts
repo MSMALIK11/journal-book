@@ -15,6 +15,7 @@ export interface IUser {
   sync_poll_interval_seconds?: number;
   sync_refresh_requested_at?: Date;
   sync_refresh_last_result?: Record<string, unknown>;
+  sync_extension_id?: string;
   sync_last_trade_event?: {
     eventId?: string;
     at?: string;
@@ -44,6 +45,12 @@ export interface IUser {
     enabled?: boolean;
     soundMode?: "once" | "manual";
     soundId?: "urgent-simple-tone-loop" | "classic-alarm";
+  };
+  telegramPreferences?: {
+    enabled?: boolean;
+    chatId?: string;
+    notifyOpen?: boolean;
+    notifyClose?: boolean;
   };
   autoExportPreferences?: {
     enabled?: boolean;
@@ -114,6 +121,10 @@ const UserSchema = new Schema<IUser>(
     sync_refresh_last_result: {
       type: Schema.Types.Mixed,
     },
+    sync_extension_id: {
+      type: String,
+      maxlength: 64,
+    },
     sync_last_trade_event: {
       type: Schema.Types.Mixed,
     },
@@ -122,6 +133,10 @@ const UserSchema = new Schema<IUser>(
       default: {},
     },
     tradeAlarmPreferences: {
+      type: Schema.Types.Mixed,
+      default: {},
+    },
+    telegramPreferences: {
       type: Schema.Types.Mixed,
       default: {},
     },

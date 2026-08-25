@@ -6,6 +6,7 @@ import { AlertSettings } from "@/components/settings/alert-settings"
 import { LiveSyncSettings } from "@/components/settings/live-sync-settings"
 import { AutoExportSettings } from "@/components/settings/auto-export-settings"
 import { TradeAlarmSettings } from "@/components/settings/trade-alarm-settings"
+import { TelegramSettings } from "@/components/settings/telegram-settings"
 import { HudPanel } from "@/components/dashboard/hud-panel"
 
 export function SettingsPageContent() {
@@ -20,8 +21,7 @@ export function SettingsPageContent() {
             <p className="hud-label">System</p>
             <h1 className="mt-1 text-xl font-semibold tracking-tight text-cyan-100">Settings</h1>
             <p className="mt-1.5 max-w-xl text-sm text-muted-foreground leading-relaxed">
-              Expand a section to configure accounts, alerts, trade alarms, and live sync. Changes save
-              automatically.
+              Expand a section to configure accounts, alerts, and live sync. Changes save automatically.
             </p>
           </div>
         </div>
@@ -30,6 +30,7 @@ export function SettingsPageContent() {
       <div className="space-y-3">
         <AccountsSettings />
         <TradeAlarmSettings />
+        <TelegramSettings />
         <AlertSettings />
         <LiveSyncSettings />
         <AutoExportSettings />

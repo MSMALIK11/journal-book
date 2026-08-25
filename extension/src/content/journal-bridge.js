@@ -1,14 +1,21 @@
 // Bridges Live Sync page ↔ extension background (CustomEvent on shared DOM).
 (function () {
+  if (window.__JB_JOURNAL_BRIDGE__) return
+  window.__JB_JOURNAL_BRIDGE__ = true
+
   function ensureMarker() {
     let marker = document.getElementById("jb-extension-bridge")
-    if (marker) return marker
+    if (marker) {
+      marker.setAttribute("data-extension-id", chrome.runtime.id)
+      return marker
+    }
 
     marker = document.createElement("div")
     marker.id = "jb-extension-bridge"
     marker.setAttribute("data-ready", "1")
+    marker.setAttribute("data-extension-id", chrome.runtime.id)
     marker.style.display = "none"
-    ;(document.body || document.documentElement).appendChild(marker)
+    document.documentElement.appendChild(marker)
     return marker
   }
 

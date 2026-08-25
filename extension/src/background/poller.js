@@ -1,5 +1,5 @@
 /* global JBSync */
-const VERSION = "1.16.5"
+const VERSION = "1.17.15"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 120
@@ -12,6 +12,7 @@ importScripts("../lib/symbol-utils.js", "../lib/sync-client.js")
 let syncInFlight = false
 let importAllInFlight = false
 let importAllWatchdog = null
+let userSyncHoldCount = 0
 let refreshInFlight = false
 let captureSyncTimer = null
 let captureSyncPending = false
@@ -40,6 +41,23 @@ async function isImportAllBlocking() {
   return JBSync.isImportAllLockActive()
 }
 
+function isUserSyncHolding() {
+  return userSyncHoldCount > 0
+}
+
+async function isBackgroundSyncPaused() {
+  if (importAllInFlight || userSyncHoldCount > 0) return true
+  return JBSync.isImportAllLockActive()
+}
+
+function acquireUserSyncHold() {
+  userSyncHoldCount += 1
+}
+
+function releaseUserSyncHold() {
+  userSyncHoldCount = Math.max(0, userSyncHoldCount - 1)
+}
+
 async function beginImportAllLock() {
   importAllInFlight = true
   await JBSync.markImportAllLock(true, IMPORT_ALL_MAX_MS)
@@ -61,6 +79,7 @@ async function endImportAllLock() {
 }
 
 function drainPendingCapture() {
+  if (importAllInFlight || userSyncHoldCount > 0) return
   if (pendingCapturePayload) {
     const pending = pendingCapturePayload
     pendingCapturePayload = null
@@ -180,13 +199,9 @@ async function injectHooksOnOpenTvTabs() {
 
 async function injectBridgeOnJournalTabs() {
   try {
-    const config = await JBSync.getConfig()
-    const origin = JBSync.journalOriginPattern(config.apiUrl)
-    const tabs = await chrome.tabs.query({
-      url: origin ? [origin] : ["http://localhost/*", "http://127.0.0.1/*"],
-    })
+    const tabs = await chrome.tabs.query({})
     for (const tab of tabs) {
-      if (tab.id) void injectJournalBridge(tab.id)
+      if (tab.id && (await isJournalTabUrl(tab.url))) void injectJournalBridge(tab.id)
     }
   } catch {
     // ignore
@@ -221,7 +236,7 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 async function runRefreshCheck() {
   if (refreshInFlight) return
-  if (await isImportAllBlocking()) {
+  if (await isBackgroundSyncPaused()) {
     try {
       const config = await JBSync.getConfig()
       if (config.syncToken) await JBSync.sendHeartbeat(config).catch(() => {})
@@ -266,7 +281,7 @@ async function sendHeartbeatIfConfigured() {
 }
 
 async function runAutoSync(source) {
-  if (importAllInFlight || (await isImportAllBlocking())) {
+  if (await isBackgroundSyncPaused()) {
     if (
       source === "capture" ||
       source === "alarm" ||
@@ -324,7 +339,7 @@ async function runAutoSync(source) {
 
 /** Instant open/exit path — POST captured trades and ping journal UI immediately. */
 async function syncCapturePayload(payload) {
-  if (importAllInFlight || (await isImportAllBlocking())) {
+  if (await isBackgroundSyncPaused()) {
     pendingCapturePayload = payload
     captureSyncPending = true
     return null
@@ -388,7 +403,7 @@ async function syncCapturePayload(payload) {
 }
 
 async function handlePollTick(autoSync) {
-  if (await isImportAllBlocking()) {
+  if (await isBackgroundSyncPaused()) {
     try {
       const config = await JBSync.getConfig()
       if (config.syncToken) await JBSync.sendHeartbeat(config)
@@ -437,6 +452,7 @@ chrome.runtime.onStartup.addListener(() => {
 })
 
 void ensureJournalBridgeRegistration()
+void injectBridgeOnJournalTabs()
 // SW can wake without onStartup — re-arm alarms so poll backup never goes missing.
 void syncAlarmFromSettings()
 
@@ -487,7 +503,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 })
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "PING") {
     sendResponse({ ok: true, version: VERSION })
     return false
@@ -517,8 +533,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "TV_TABLE_CHANGED") {
-    // Import All scrolls the same table — do not start a light scrape mid-import.
-    if (importAllInFlight) {
+    // Import All / user refresh owns the table — do not start a light scrape mid-run.
+    if (importAllInFlight || isUserSyncHolding()) {
       sendResponse({ ok: true, skipped: true })
       return false
     }
@@ -554,7 +570,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "CHECK_REFRESH_REQUEST") {
     void (async () => {
-      if (await isImportAllBlocking()) {
+      if (await isBackgroundSyncPaused()) {
         try {
           const config = await JBSync.getConfig()
           if (config.syncToken) await JBSync.sendHeartbeat(config)
@@ -584,11 +600,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         // Block new polls immediately, then wait for any light scrape already in flight.
         importAllInFlight = true
-        await waitForSyncIdle(45_000)
+        await waitForSyncIdle(90_000)
         if (syncInFlight) {
-          importAllInFlight = false
-          sendResponse({ ok: false, error: "Live sync is busy. Wait a moment and retry Import All." })
-          return
+          await waitForSyncIdle(30_000)
         }
         await beginImportAllLock()
         sendResponse({ ok: true })
@@ -621,26 +635,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "TEST_SCRAPE") {
     void (async () => {
+      acquireUserSyncHold()
       try {
         if (await isImportAllBlocking()) {
           sendResponse({ trades: [], error: "Import all is running — try Test scrape after it finishes" })
           return
         }
-        await waitForSyncIdle(15_000)
-        if (syncInFlight || importAllInFlight) {
-          sendResponse({ trades: [], error: "Live sync is busy. Retry in a moment." })
-          return
-        }
+        await waitForSyncIdle(90_000)
+        if (syncInFlight) await waitForSyncIdle(30_000)
         syncInFlight = true
         try {
           const result = await JBSync.scrapeFromActiveTab(false)
           sendResponse(result)
         } finally {
           syncInFlight = false
-          drainPendingCapture()
         }
       } catch (error) {
         sendResponse({ trades: [], error: error?.message || "Scrape failed" })
+      } finally {
+        releaseUserSyncHold()
+        drainPendingCapture()
       }
     })()
     return true
@@ -648,6 +662,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "REFRESH_NEW_TRADES" || message.type === "RELOAD_TV_AND_SYNC") {
     void (async () => {
+      acquireUserSyncHold()
       try {
         if (await isImportAllBlocking()) {
           sendResponse({
@@ -673,11 +688,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           return
         }
 
-        await waitForSyncIdle(15_000)
-        if (syncInFlight) {
-          sendResponse({ ok: false, error: "Live sync is busy. Retry in a moment." })
-          return
-        }
+        await waitForSyncIdle(90_000)
+        if (syncInFlight) await waitForSyncIdle(30_000)
 
         syncInFlight = true
         let syncResult
@@ -697,10 +709,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await JBSync.completeRefreshRequest(config, syncResult).catch(() => {})
         }
         sendResponse({ ok: !syncResult?.error, ...syncResult })
-        drainPendingCapture()
       } catch (error) {
         syncInFlight = false
         sendResponse({ ok: false, error: error?.message || "Sync failed" })
+      } finally {
+        releaseUserSyncHold()
         drainPendingCapture()
       }
     })()

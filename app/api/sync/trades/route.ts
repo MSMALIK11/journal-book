@@ -216,7 +216,6 @@ export async function POST(request: NextRequest) {
 
     const incomingTrades = dropSupersededOpenTradesFromPayload(parsed.data.trades)
     skipped += parsed.data.trades.length - incomingTrades.length
-
     // Latest closed entry per instrument already in DB — blocks resurrected ghost opens.
     const closedCeiling = new Map<string, number>()
     {
@@ -335,7 +334,13 @@ export async function POST(request: NextRequest) {
         }
         latestUpdatedByAccount[accountId] = snapshot
         if (wasOpen && mapped.exit_date) {
-          await persistClosedTradeAlert(auth.userId, accountId, snapshot, targetAccount.name)
+          await persistClosedTradeAlert(auth.userId, accountId, {
+            ...snapshot,
+            exit_date: mapped.exit_date.toISOString(),
+            exit_price: mapped.exit_price ?? undefined,
+            net_pnl: typeof mapped.net_pnl === "number" ? mapped.net_pnl : undefined,
+            return_pct: typeof mapped.return_pct === "number" ? mapped.return_pct : undefined,
+          }, targetAccount.name)
         }
       } else if (existing.accountId !== accountId) {
         existing.accountId = accountId

@@ -60,6 +60,19 @@ export async function findExistingSyncedTrade(
     },
   }).sort({ updatedAt: -1 })
   if (fuzzy && !isClosedMismatch(fuzzy, mapped)) return fuzzy
+
+  // Close payload often retimes the row. Attach it to the live Open on this side.
+  if (mapped.exit_date) {
+    const liveOpen = await Trade.findOne({
+      userId,
+      source: "tradingview",
+      instrument: mapped.instrument,
+      trade_type: mapped.trade_type,
+      $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+    }).sort({ entry_date: -1 })
+    if (liveOpen) return liveOpen
+  }
+
   return null
 }
 

@@ -20,6 +20,9 @@ import {
   fetchClosedTrades,
   RESEARCH_TRADE_SELECT,
 } from "@/lib/trading/trade-query"
+import { notifyTelegramTradeEvent } from "@/lib/telegram/send-trade-alert"
+import { buildTelegramCoachCaption } from "@/lib/telegram/coach-caption"
+import { buildTradeMomentAdvice } from "@/lib/trading/trade-moment-advice"
 
 export function formatAlert(alert: {
   _id?: unknown
@@ -89,6 +92,31 @@ export async function loadAccountAlertContext(userId: string, accountId: string)
   return { trades, timezone, preferences, instrumentLabel, account }
 }
 
+export async function buildTelegramCaptionForAccount(
+  userId: string,
+  accountId: string,
+  event: {
+    kind: "open" | "close"
+    side: string
+    instrument: string
+    price: number
+    exitPrice?: number
+    netPnl?: number
+    returnPct?: number
+    accountName?: string
+    demo?: boolean
+  },
+) {
+  try {
+    const { trades, timezone, instrumentLabel } = await loadAccountAlertContext(userId, accountId)
+    const zones = getCurrentMomentZones(trades, { timezone, instrumentLabel })
+    return buildTelegramCoachCaption(event, buildTradeMomentAdvice(zones))
+  } catch (error) {
+    console.error("Failed to build Telegram coach caption:", error)
+    return buildTelegramCoachCaption(event, null)
+  }
+}
+
 export async function persistAlerts(
   userId: string,
   accountId: string,
@@ -139,12 +167,26 @@ export async function persistNewTradeAlert(
     instrument: string
     trade_type: string
     entry_price: number
+    entry_date?: string
     is_open?: boolean
   },
   accountName?: string,
 ) {
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
   const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
+  if (trade.is_open !== false) {
+    const event = {
+      kind: "open" as const,
+      side,
+      instrument: trade.instrument,
+      price,
+      accountName,
+    }
+    void (async () => {
+      const caption = await buildTelegramCaptionForAccount(userId, accountId, event)
+      await notifyTelegramTradeEvent(userId, { ...event, caption })
+    })()
+  }
   try {
     await persistAlerts(userId, accountId, [
       {
@@ -172,11 +214,31 @@ export async function persistClosedTradeAlert(
     instrument: string
     trade_type: string
     entry_price: number
+    entry_date?: string
+    exit_date?: string
+    exit_price?: number
+    net_pnl?: number
+    return_pct?: number
   },
   accountName?: string,
 ) {
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
   const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
+  const closeEvent = {
+    kind: "close" as const,
+    side,
+    instrument: trade.instrument,
+    price,
+    exitPrice: Number.isFinite(trade.exit_price) ? trade.exit_price : undefined,
+    netPnl: typeof trade.net_pnl === "number" && Number.isFinite(trade.net_pnl) ? trade.net_pnl : undefined,
+    returnPct:
+      typeof trade.return_pct === "number" && Number.isFinite(trade.return_pct) ? trade.return_pct : undefined,
+    accountName,
+  }
+  void (async () => {
+    const caption = await buildTelegramCaptionForAccount(userId, accountId, closeEvent)
+    await notifyTelegramTradeEvent(userId, { ...closeEvent, caption })
+  })()
   try {
     await persistAlerts(userId, accountId, [
       {

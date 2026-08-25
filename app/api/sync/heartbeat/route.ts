@@ -23,10 +23,17 @@ export async function POST(request: NextRequest) {
       1800,
       Math.max(0, Number(body.pollIntervalSeconds) || 30),
     )
+    const extensionId = typeof body.extensionId === "string" ? body.extensionId.trim() : ""
 
-    await touchSyncHeartbeat(auth.userId, pollIntervalSeconds)
+    await touchSyncHeartbeat(auth.userId, pollIntervalSeconds, extensionId)
 
-    return withSyncCors(request, NextResponse.json({ ok: true, at: new Date().toISOString() }))
+    return withSyncCors(
+      request,
+      NextResponse.json({
+        ok: true,
+        at: new Date().toISOString(),
+      }),
+    )
   } catch (error) {
     console.error("Heartbeat failed:", error)
     return withSyncCors(request, NextResponse.json({ error: "Heartbeat failed" }, { status: 500 }))
@@ -41,7 +48,7 @@ export async function GET(request: NextRequest) {
 
     await connectDB()
     const user = await User.findById(session.sub).select(
-      "sync_last_heartbeat sync_poll_interval_seconds",
+      "sync_last_heartbeat sync_poll_interval_seconds sync_extension_id",
     )
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 })
@@ -60,6 +67,7 @@ export async function GET(request: NextRequest) {
         connected: Boolean(connected),
         last_heartbeat: lastHeartbeat,
         poll_interval_seconds: pollIntervalSeconds,
+        extension_id: user.sync_extension_id || "",
       },
       { headers: { "Cache-Control": "no-store" } },
     )

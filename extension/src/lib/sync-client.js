@@ -64,11 +64,8 @@ JBSync.tradeKnownOnServer = function tradeKnownOnServer(trade, knownIds) {
 }
 
 JBSync.isOpenTrade = function isOpenTrade(trade) {
-  if (!trade.exit) return true
-  const exitSig = (trade.exit.signal || "").trim().toLowerCase()
-  const entrySig = (trade.entry?.signal || "").trim().toLowerCase()
-  if (exitSig === "open" || entrySig === "open") return true
-  return false
+  if (!trade?.exit) return true
+  return /\bopen\b/i.test(`${trade.exit.signal || ""} ${trade.entry?.signal || ""}`)
 }
 
 JBSync.tradeEntryMs = function tradeEntryMs(trade) {
@@ -170,6 +167,7 @@ JBSync.tradeNeedsRefresh = function tradeNeedsRefresh(trade, snapshot) {
   const known =
     snapshot.ids.has(extId) ||
     snapshot.ids.has(legacyId) ||
+    Boolean(snapshot.fps?.has(fp)) ||
     Boolean(snapshot.openFps?.has(fp))
   const wasOpenOnServer =
     snapshot.openIds.has(extId) ||
@@ -177,13 +175,12 @@ JBSync.tradeNeedsRefresh = function tradeNeedsRefresh(trade, snapshot) {
     Boolean(snapshot.openFps?.has(fp))
   const openOnTv = JBSync.isOpenTrade(trade)
 
+  if (openOnTv) return !wasOpenOnServer
   if (!known) return true
-  // Still open on both sides — ignore floating P&L ticks.
-  if (openOnTv && wasOpenOnServer) return false
-  // TV still Open but journal stored a fake exit — repair once.
-  if (openOnTv && !wasOpenOnServer) return true
   // Real close: TV exited a row the journal still has open.
-  if (!openOnTv && wasOpenOnServer) return true
+  if (wasOpenOnServer) return true
+  // Journal still has some open — send this close so the live row can exit.
+  if (snapshot.openIds.size > 0) return true
   return false
 }
 
@@ -838,10 +835,11 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
 
   for (let i = 0; i < trades.length; i += batchSize) {
     const chunk = trades.slice(i, i + batchSize)
-    const result = await JBSync.postJson(`${config.apiUrl}/api/sync/trades`, config.syncToken, {
+    const payload = {
       chartSymbol: normalizedChart || undefined,
       trades: JBSync.normalizeTrades(chunk, config.assetType, chartSymbol),
-    })
+    }
+    const result = await JBSync.postJson(`${config.apiUrl}/api/sync/trades`, config.syncToken, payload)
     imported += result.imported || 0
     updated += result.updated || 0
     skipped += result.skipped || 0
@@ -900,6 +898,7 @@ JBSync.sendHeartbeat = async function sendHeartbeat(config, options = {}) {
   try {
     return await JBSync.postJson(`${config.apiUrl}/api/sync/heartbeat`, config.syncToken, {
       pollIntervalSeconds: config.pollIntervalSeconds ?? 30,
+      extensionId: chrome.runtime.id,
     })
   } catch (error) {
     // Failed ping shouldn't hold the throttle window open.
@@ -1269,7 +1268,9 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
   }
 
   const latestTradeNumber = Math.max(...result.trades.map((trade) => trade.tradeNumber))
-  const newOrUpdated = result.trades.filter((trade) => JBSync.tradeNeedsRefresh(trade, snapshot))
+  const newOrUpdated = result.trades.filter(
+    (trade) => trade.tradeNumber === latestTradeNumber || JBSync.tradeNeedsRefresh(trade, snapshot),
+  )
 
   // If List of trades has closed rows and zero opens, drop journal opens that exited.
   const scrapedOpens = result.trades.filter((trade) => JBSync.isOpenTrade(trade))

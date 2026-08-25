@@ -243,7 +243,15 @@ async function jbMainScrape() {
         if (entryDt && exitDt && new Date(exitDt).getTime() < new Date(entryDt).getTime()) {
           ;[entryDtFinal, exitDt] = [exitDt, entryDt]
         }
-        const [entrySignal, exitSignal] = getCellParts(getColumn(row, "column-signal"))
+        const signalTd = getColumn(row, "column-signal")
+        const typeTd =
+          getColumn(row, "column-type") ||
+          getColumn(row, "column-trade-type") ||
+          row.querySelector('[data-qa-id*="type" i]')
+        const [entrySignal, exitSignal] = getCellParts(signalTd)
+        const rowText = `${row.innerText || ""} ${typeTd?.textContent || ""} ${signalTd?.textContent || ""}`
+        const looksOpen = /\bopen\b/i.test(rowText)
+        const looksExit = /\bexit\s+(long|short)\b/i.test(rowText)
         const [entryPriceText, exitPriceText] = getCellParts(getColumn(row, "column-price"))
         const [entrySizeText] = getCellParts(
           getColumn(row, "column-size") ||
@@ -287,7 +295,13 @@ async function jbMainScrape() {
         }
 
         const exitPrice = parseNumber(exitPriceText)
-        if (exitDt && exitPrice != null) {
+        if (looksOpen && !looksExit) {
+          trade.exit = {
+            datetime: exitDt || entryDtFinal,
+            price: exitPrice != null ? exitPrice : entryPrice,
+            signal: "Open",
+          }
+        } else if (exitDt && exitPrice != null) {
           trade.exit = { datetime: exitDt, price: exitPrice, signal: exitSignal || "" }
           if (netPnl != null) trade.netPnl = netPnl
           if (returnPct != null) trade.returnPct = returnPct

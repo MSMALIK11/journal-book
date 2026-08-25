@@ -1,14 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Journal Book - TradingView Sync",
-  "version": "1.16.5",
+  "version": "1.17.15",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqlcwXyxZ2N5q5RqJTT+lkPiNt9R2URHTMMp0lZ2ndBYXHMsq/1OmXidPIWhmlSnG4cAyC5MDSAvdifPQ6e4a/vXc6xe2VxHiyk4/GmK+X1s9aw41/UirADiTrHOf/GtVsn/kVUSQsH/Li+F/NdkxqbjJCBj/2/eMs12WXGLZLfrTF8Xntsgxb0hOJg0d1PHyLeAcbqr5Bn1KNYR+Yx/lk+CqxYpsLq+pvWmmy4dYkuRPi0dS9dP/1F5uJ/oJfrTopn++Z9pOLWguzSWlgOKSE0Zfna5oxmx0yPmWP1kh2xdwVFtpFhaF6pP3bLXtEF/90/WTk85dsvxDNq2WY2yRwQIDAQAB",
   "description": "Sync TradingView Strategy Tester trades to journal-book without refreshing TV",
   "permissions": ["storage", "tabs", "scripting", "alarms"],
   "host_permissions": [
     "https://*.tradingview.com/*",
     "https://tradingview.com/*",
     "http://localhost/*",
+    "https://localhost/*",
     "http://127.0.0.1/*",
+    "https://127.0.0.1/*",
     "https://*.vercel.app/*"
   ],
   "optional_host_permissions": ["https://*/*"],
@@ -35,7 +38,13 @@
       "all_frames": true
     },
     {
-      "matches": ["http://localhost/*", "http://127.0.0.1/*", "https://*.vercel.app/*"],
+      "matches": [
+        "http://localhost/*",
+        "https://localhost/*",
+        "http://127.0.0.1/*",
+        "https://127.0.0.1/*",
+        "https://*.vercel.app/*"
+      ],
       "js": ["src/content/journal-bridge.js"],
       "run_at": "document_idle"
     }

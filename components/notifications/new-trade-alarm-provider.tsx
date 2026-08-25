@@ -324,10 +324,10 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         eventId: `manual-test-${Date.now()}`,
         latestTrade: {
           id: `manual-test-${Date.now()}`,
-          instrument: "TEST",
+          instrument: "XAUUSD",
           trade_type: "Buy",
           entry_date: new Date().toISOString(),
-          entry_price: 0,
+          entry_price: 2345.5,
           signal: "Open",
           is_open: true,
         },
