@@ -74,10 +74,9 @@ function writeSeenKeys(keys: Set<string>) {
 }
 
 function tradeAlarmKeys(accountId: string, trade: ImportedTradeSnapshot) {
-  return [
-    `${accountId}:${trade.id}:${trade.entry_date}:alarm`,
-    `${accountId}:${trade.instrument}:${trade.entry_date}:${trade.trade_type}:alarm`,
-  ].filter((key) => !key.includes("::") && !key.endsWith(":undefined:alarm"))
+  return [`${accountId}:${trade.id}:alarm`].filter(
+    (key) => !key.includes("::") && !key.endsWith(":undefined:alarm"),
+  )
 }
 
 async function fetchLatestAlarmTrade(
@@ -93,18 +92,38 @@ async function fetchLatestAlarmTrade(
     const open = trades.find((trade: { is_open?: boolean; signal?: string; exit_date?: string | null; tags?: string[] }) =>
       isOpenSyncedTrade(trade),
     )
-    const chosen = open || trades[0]
-    if (!chosen) return null
+    if (!open) return null
     return {
-      id: String(chosen.id || chosen._id || ""),
-      instrument: String(chosen.instrument || ""),
-      trade_type: String(chosen.trade_type || ""),
-      entry_date: String(chosen.entry_date || ""),
-      entry_price: Number(chosen.entry_price || 0),
-      signal: chosen.signal ?? (chosen.is_open ? "Open" : chosen.signal),
-      is_open: Boolean(open) || chosen.is_open === true,
-      createdAt: chosen.createdAt ? String(chosen.createdAt) : undefined,
+      id: String(open.id || open._id || ""),
+      instrument: String(open.instrument || ""),
+      trade_type: String(open.trade_type || ""),
+      entry_date: String(open.entry_date || ""),
+      entry_price: Number(open.entry_price || 0),
+      signal: open.signal ?? "Open",
+      is_open: true,
+      createdAt: open.createdAt ? String(open.createdAt) : undefined,
     }
+  } catch {
+    return null
+  }
+}
+
+/** true = still open, false = closed/missing, null = could not verify. */
+async function tradeStillOpenInDb(
+  accountId: string,
+  tradeId: string,
+): Promise<boolean | null> {
+  if (!tradeId || tradeId.startsWith("test-") || tradeId.startsWith("closed:")) return false
+  try {
+    const response = await authFetch(
+      `/api/trades?source=tradingview&limit=50${accountId ? `&account=${accountId}` : ""}`,
+    )
+    const data = await response.json()
+    if (!response.ok) return null
+    const trades = Array.isArray(data.trades) ? data.trades : []
+    const row = trades.find((trade: { id?: string; _id?: string }) => String(trade.id || trade._id) === tradeId)
+    if (!row) return false
+    return isOpenSyncedTrade(row)
   } catch {
     return null
   }
@@ -205,15 +224,9 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
       // In-memory claim only — persist after the alarm actually starts.
       if (earlyKeys.length && !claimKeys(earlyKeys)) return
 
-      // 1) Live open from the sync event (best case — what worked for the 01:15 fill).
+      // Live open from the sync event only — never alarm a closed last row.
       let trade = resolveOpenTradeForAlarm(payload.latestTrade)
 
-      // 2) Any newly imported row — including longs TV labeled as closed/side-only.
-      if (!trade && payload.latestTrade && (payload.imported ?? 0) > 0) {
-        trade = payload.latestTrade
-      }
-
-      // 3) Mixed batch: event snapshot missing — load newest/open from that account.
       if (!trade && targetAccountId && !payload.force && (payload.imported ?? 0) > 0) {
         const candidate = await fetchLatestAlarmTrade(targetAccountId)
         if (candidate) {
@@ -239,6 +252,14 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
       if (!trade) {
         releaseKeys(earlyKeys)
         return
+      }
+
+      if (!payload.force && trade.id) {
+        const stillOpen = await tradeStillOpenInDb(targetAccountId, trade.id)
+        if (stillOpen === false) {
+          releaseKeys(earlyKeys)
+          return
+        }
       }
 
       const finalKeys = payload.force ? [] : tradeAlarmKeys(targetAccountId, trade)
@@ -349,6 +370,8 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         const data = await response.json()
         const event = data?.event
         if (!response.ok || !event?.eventId || !shouldConsiderAlarm(event)) return
+        if (event.latestTrade?.is_open !== true) return
+        if (/\b(tp\/sl|exit\s+(long|short))\b/i.test(String(event.latestTrade.signal || ""))) return
 
         const ageMs = event.at ? Date.now() - new Date(event.at).getTime() : CATCHUP_WINDOW_MS + 1
         if (ageMs > CATCHUP_WINDOW_MS) return

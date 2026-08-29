@@ -26,6 +26,11 @@ export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Opt
     pollSecondsRef.current = pollSeconds
   }, [pollSeconds])
 
+  const onCompleteRef = useRef(onComplete)
+  useEffect(() => {
+    onCompleteRef.current = onComplete
+  }, [onComplete])
+
   const runSync = useCallback(async () => {
     if (inFlightRef.current) return
     inFlightRef.current = true
@@ -50,21 +55,19 @@ export function useLiveSyncAutoRefresh({ enabled, pollSeconds, onComplete }: Opt
         /list of trades|waiting for list|ka-table|0 rows/i.test(
           String(result?.warning || result?.error || ""),
         )
-      // Soft wait states stay silent in the UI.
       if (result?.error && !softWait) {
         setLastError(String(result.error))
       } else {
         setLastError(null)
       }
-      onComplete?.(result)
+      onCompleteRef.current?.(result)
     } catch (error) {
       setLastError(error instanceof Error ? error.message : "Sync failed")
-      // Next poll retries.
     } finally {
       inFlightRef.current = false
       setIsSyncing(false)
     }
-  }, [onComplete])
+  }, [])
 
   useEffect(() => {
     if (!enabled) return

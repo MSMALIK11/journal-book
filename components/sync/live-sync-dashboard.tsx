@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import useSWR from "swr"
 import { format, isToday, parseISO } from "date-fns"
@@ -68,6 +68,12 @@ type SyncTrade = {
   signal?: string
   strategy?: string
   external_id?: string
+  is_open?: boolean
+}
+
+function isLiveOpen(trade: SyncTrade) {
+  if (trade.is_open === false) return false
+  return !trade.exit_date
 }
 
 type SyncStatus = {
@@ -90,19 +96,20 @@ const fetcher = async (url: string) => {
 
 export function LiveSyncDashboard() {
   const { toast } = useToast()
-  const { activeAccount, activeAccountId, switchVersion, refresh, revalidateSyncedData } =
+  const { activeAccount, activeAccountId, refresh, revalidateSyncedData } =
     useActiveAccount()
-  const seenTradeIds = useRef<Set<string>>(new Set())
-  const initialized = useRef(false)
   const [clearOpen, setClearOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [bridgeReady, setBridgeReady] = useState(false)
   const [pollSeconds, setPollSeconds] = useState(DEFAULT_LIVE_SYNC_POLL_SECONDS)
   const [isRefreshingTv, setIsRefreshingTv] = useState(false)
 
+  const tradesUrl = activeAccountId
+    ? `/api/trades?source=tradingview&limit=5000&account=${activeAccountId}`
+    : null
   const { data: tradesData, isLoading: tradesLoading, mutate } = useSWR<{ trades: SyncTrade[] }>(
-    activeAccountId ? ["/api/trades?source=tradingview&limit=5000", activeAccountId, switchVersion] : null,
-    ([url]) => fetcher(url),
+    tradesUrl,
+    fetcher,
   )
 
   const { data: statusData, error: statusError, mutate: mutateStatus } = useSWR<SyncStatus>(
@@ -125,45 +132,30 @@ export function LiveSyncDashboard() {
 
   const trades = tradesData?.trades ?? []
 
+  const onComplete = useCallback((result: import("@/lib/client-extension-sync").ExtensionSyncResult | null) => {
+    const imported = result?.imported || 0
+    const updated = result?.updated || 0
+    const closedStale = result?.closedStale || 0
+    if (imported > 0 || updated > 0 || closedStale > 0) {
+      void mutate()
+      void mutateStatus()
+      void revalidateSyncedData()
+    }
+
+    if (result?.error && !/list of trades|waiting for list/i.test(String(result.error))) {
+      toast({
+        title: "Sync issue",
+        description: String(result.error),
+        variant: "destructive",
+      })
+    }
+  }, [mutate, mutateStatus, revalidateSyncedData, toast])
+
   const { lastError: syncError } = useLiveSyncAutoRefresh({
     enabled: Boolean(activeAccountId),
     pollSeconds,
-    onComplete: (result) => {
-      const imported = result?.imported || 0
-      const updated = result?.updated || 0
-      const closedStale = result?.closedStale || 0
-      // Always hard-revalidate after a sync pass so exits show even if SSE missed.
-      if (imported > 0 || updated > 0 || closedStale > 0) {
-        void revalidateSyncedData()
-      } else {
-        refreshSyncedViews()
-      }
-
-      // Soft "waiting for List of trades" is not a hard failure — don't toast every poll.
-      if (result?.error && !/list of trades|waiting for list/i.test(String(result.error))) {
-        toast({
-          title: "Sync issue",
-          description: String(result.error),
-          variant: "destructive",
-        })
-      } else if (imported > 0) {
-        toast({
-          title: "New trade synced",
-          description: `${imported} trade(s) imported from TradingView`,
-        })
-      } else if (updated > 0 || closedStale > 0) {
-        toast({
-          title: "Trade updated",
-          description: "Exit/close synced from TradingView",
-        })
-      }
-    },
+    onComplete,
   })
-
-  useEffect(() => {
-    seenTradeIds.current = new Set()
-    initialized.current = false
-  }, [activeAccountId])
 
   useEffect(() => {
     let alive = true
@@ -211,41 +203,18 @@ export function LiveSyncDashboard() {
     (data: { type?: string; imported?: number; updated?: number }) => {
       if (data.type !== "trades_updated") return
       if (!(data.imported || data.updated)) return
+      void mutate()
+      void mutateStatus()
       void revalidateSyncedData()
       void refresh()
     },
-    [refresh, revalidateSyncedData],
+    [mutate, mutateStatus, refresh, revalidateSyncedData],
   )
 
   useTradeSyncEvent(onTradeSync)
 
-  useEffect(() => {
-    if (!trades.length) return
-
-    const currentIds = new Set(trades.map((trade) => trade.id))
-
-    if (!initialized.current) {
-      seenTradeIds.current = currentIds
-      initialized.current = true
-      return
-    }
-
-    const newTrades = trades.filter((trade) => !seenTradeIds.current.has(trade.id))
-    if (newTrades.length > 0) {
-      const latest = newTrades[0]
-      toast({
-        title: "New trade synced",
-        description: `${latest.instrument} ${latest.trade_type === "Buy" ? "Long" : "Short"} · ${
-          typeof latest.net_pnl === "number" ? currency.format(latest.net_pnl) : "Open"
-        }`,
-      })
-    }
-
-    seenTradeIds.current = currentIds
-  }, [trades, toast])
-
   const stats = useMemo(() => {
-    const closed = trades.filter((trade) => typeof trade.net_pnl === "number")
+    const closed = trades.filter((trade) => !isLiveOpen(trade))
     const wins = closed.filter((trade) => (trade.net_pnl ?? 0) > 0)
     const losses = closed.filter((trade) => (trade.net_pnl ?? 0) < 0)
     const todayTrades = trades.filter((trade) => {
@@ -402,8 +371,6 @@ export function LiveSyncDashboard() {
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Failed to delete trades")
 
-      seenTradeIds.current = new Set()
-      initialized.current = false
       await mutate({ trades: [] }, { revalidate: true })
 
       toast({
@@ -678,13 +645,17 @@ export function LiveSyncDashboard() {
                       <div className="text-xs text-muted-foreground">{currency.format(trade.entry_price)}</div>
                     </TableCell>
                     <TableCell>
-                      {trade.exit_date && trade.exit_price ? (
-                        <>
-                          <div className="text-sm">{format(parseISO(trade.exit_date), "MMM d, HH:mm")}</div>
-                          <div className="text-xs text-muted-foreground">{currency.format(trade.exit_price)}</div>
-                        </>
-                      ) : (
+                      {isLiveOpen(trade) ? (
                         <span className="text-amber-400">Open</span>
+                      ) : (
+                        <>
+                          <div className="text-sm">
+                            {trade.exit_date ? format(parseISO(trade.exit_date), "MMM d, HH:mm") : "Closed"}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {trade.exit_price != null ? currency.format(trade.exit_price) : "—"}
+                          </div>
+                        </>
                       )}
                     </TableCell>
                     <TableCell>{formatTradeSignal(trade.signal)}</TableCell>
@@ -752,16 +723,20 @@ export function LiveSyncDashboard() {
                 <p
                   className={cn(
                     "shrink-0 text-sm font-semibold",
-                    typeof trade.net_pnl === "number"
-                      ? trade.net_pnl >= 0
-                        ? "text-emerald-400"
-                        : "text-rose-400"
-                      : "text-amber-400",
+                    isLiveOpen(trade)
+                      ? "text-amber-400"
+                      : typeof trade.net_pnl === "number"
+                        ? trade.net_pnl >= 0
+                          ? "text-emerald-400"
+                          : "text-rose-400"
+                        : "text-muted-foreground",
                   )}
                 >
-                  {typeof trade.net_pnl === "number"
-                    ? `${trade.net_pnl > 0 ? "+" : ""}${currency.format(trade.net_pnl)}`
-                    : "Open"}
+                  {isLiveOpen(trade)
+                    ? "Open"
+                    : typeof trade.net_pnl === "number"
+                      ? `${trade.net_pnl > 0 ? "+" : ""}${currency.format(trade.net_pnl)}`
+                      : "Closed"}
                 </p>
               </div>
             ))}

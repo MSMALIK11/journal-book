@@ -53,11 +53,12 @@ export function dropSupersededOpenTradesFromPayload(trades: TradingViewTradeInpu
   return trades.filter((trade) => {
     if (!isOpenTvTrade(trade)) return true
     const symbol = trade.instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+    const maxNum = maxClosedNumberByInstrument.get(symbol)
+    if (maxNum != null && trade.tradeNumber >= maxNum) return true
+    if (maxNum != null && trade.tradeNumber < maxNum) return false
     const ms = entryMs(trade)
     const maxClosed = maxClosedEntryByInstrument.get(symbol)
     if (maxClosed != null && Number.isFinite(ms) && ms < maxClosed) return false
-    const maxNum = maxClosedNumberByInstrument.get(symbol)
-    if (maxNum != null && trade.tradeNumber < maxNum) return false
     return true
   })
 }

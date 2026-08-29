@@ -94,7 +94,6 @@ export function ActiveAccountProvider({ children }: { children: ReactNode }) {
   )
 
   const revalidateSyncedData = useCallback(async () => {
-    setSwitchVersion((value) => value + 1)
     await revalidateAccountScopedData()
   }, [])
 

@@ -4,11 +4,8 @@ import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { dropSupersededOpenTradesFromPayload, priceMatchesInstrument } from "@/lib/trading/price-sanity"
-import {
-  purgeSupersededOpenTrades,
-  reconcileStaleOpenTrades,
-} from "@/lib/trading/reconcile-open-trades"
-import { isOpenSyncedTrade, isOpenTvTrade } from "@/lib/trading/tradingview-open"
+import { reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { isOpenSyncedTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
 import { publishAccountsUpdated, publishTradesUpdated } from "@/lib/sync-events"
@@ -57,6 +54,10 @@ function syncedTradeChanged(
   existing: InstanceType<typeof Trade>,
   mapped: ReturnType<typeof mapTradingViewTrade>,
 ): boolean {
+  // Live TV Open paints MTM time/price every poll — that is not a new fill.
+  const stillOpen = !mapped.exit_date && !existing.exit_date
+  if (stillOpen) return false
+
   if (shouldMigrateExternalId(existing, mapped)) return true
   if (existing.entry_date?.getTime() !== mapped.entry_date.getTime()) return true
   if (Boolean(mapped.exit_date) !== Boolean(existing.exit_date)) return true
@@ -65,10 +66,6 @@ function syncedTradeChanged(
   if (!mapped.exit_date && existing.exit_date) return true
   if (mapped.exit_price != null && existing.exit_price !== mapped.exit_price) return true
   if (!mapped.exit_date && existing.exit_price != null) return true
-
-  // Still open on both sides — ignore floating P&L / return / commission ticks.
-  const stillOpen = !mapped.exit_date && !existing.exit_date
-  if (stillOpen) return false
 
   if (typeof mapped.net_pnl === "number" && existing.net_pnl !== mapped.net_pnl) return true
   if (typeof mapped.return_pct === "number" && existing.return_pct !== mapped.return_pct) return true
@@ -134,10 +131,6 @@ export async function POST(request: NextRequest) {
           parsed.data.reconcileOpens.opens,
         )
       }
-      closedStale += await purgeSupersededOpenTrades(
-        auth.userId,
-        parsed.data.reconcileOpens?.instrument || chartSymbolOverride || undefined,
-      )
       if (closedStale > 0) {
         const symbol = canonicalInstrumentSymbol(
           parsed.data.reconcileOpens?.instrument || chartSymbolOverride || "",
@@ -214,39 +207,12 @@ export async function POST(request: NextRequest) {
     const latestOpenImportedByAccount: Record<string, TradeSnapshot> = {}
     const latestUpdatedByAccount: Record<string, TradeSnapshot> = {}
 
-    const incomingTrades = dropSupersededOpenTradesFromPayload(parsed.data.trades)
+    const incomingTrades = dropSupersededOpenTradesFromPayload(
+      markPaintedOpenTrades(parsed.data.trades),
+    )
     skipped += parsed.data.trades.length - incomingTrades.length
-    // Latest closed entry per instrument already in DB — blocks resurrected ghost opens.
-    const closedCeiling = new Map<string, number>()
-    {
-      const existingRows = await Trade.find({
-        userId: auth.userId,
-        source: "tradingview",
-      })
-        .select("instrument entry_date exit_date signal tags")
-        .lean()
-      for (const row of existingRows) {
-        if (isOpenSyncedTrade(row)) continue
-        const key = canonicalInstrumentSymbol(String(row.instrument || ""))
-        const ms = row.entry_date ? new Date(row.entry_date).getTime() : NaN
-        if (!key || !Number.isFinite(ms)) continue
-        const prev = closedCeiling.get(key) ?? -Infinity
-        if (ms > prev) closedCeiling.set(key, ms)
-      }
-      for (const trade of incomingTrades) {
-        if (isOpenTvTrade(trade)) continue
-        const key = canonicalInstrumentSymbol(trade.instrument)
-        let ms = NaN
-        try {
-          ms = new Date(trade.entry.datetime).getTime()
-        } catch {
-          ms = NaN
-        }
-        if (!key || !Number.isFinite(ms)) continue
-        const prev = closedCeiling.get(key) ?? -Infinity
-        if (ms > prev) closedCeiling.set(key, ms)
-      }
-    }
+
+    const closedAlertAccounts = new Set<string>()
 
     for (const tvTrade of incomingTrades) {
       const symbol = chartSymbolOverride || canonicalInstrumentSymbol(tvTrade.instrument)
@@ -254,15 +220,6 @@ export async function POST(request: NextRequest) {
       if (!priceMatchesInstrument(tvTrade.entry?.price, symbol)) {
         skipped += 1
         continue
-      }
-
-      if (isOpenTvTrade(tvTrade)) {
-        const ceiling = closedCeiling.get(symbol) ?? closedCeiling.get(canonicalInstrumentSymbol(symbol))
-        const entryMs = new Date(tvTrade.entry.datetime).getTime()
-        if (ceiling != null && Number.isFinite(entryMs) && entryMs < ceiling) {
-          skipped += 1
-          continue
-        }
       }
 
       const resolved = await resolveOrCreateAccountForInstrument(
@@ -311,8 +268,8 @@ export async function POST(request: NextRequest) {
         latestImportedByAccount[accountId] = snapshot
         if (isOpen) {
           latestOpenImportedByAccount[accountId] = snapshot
+          await persistNewTradeAlert(auth.userId, accountId, snapshot, targetAccount.name)
         }
-        await persistNewTradeAlert(auth.userId, accountId, snapshot, targetAccount.name)
         continue
       }
 
@@ -333,7 +290,13 @@ export async function POST(request: NextRequest) {
           is_open: !mapped.exit_date,
         }
         latestUpdatedByAccount[accountId] = snapshot
-        if (wasOpen && mapped.exit_date) {
+        if (!wasOpen && !mapped.exit_date) {
+          imported += 1
+          byAccount[accountId].imported += 1
+          latestOpenImportedByAccount[accountId] = snapshot
+          await persistNewTradeAlert(auth.userId, accountId, snapshot, targetAccount.name)
+        } else if (wasOpen && mapped.exit_date) {
+          closedAlertAccounts.add(accountId)
           await persistClosedTradeAlert(auth.userId, accountId, {
             ...snapshot,
             exit_date: mapped.exit_date.toISOString(),
@@ -364,12 +327,6 @@ export async function POST(request: NextRequest) {
         parsed.data.reconcileOpens.opens,
       )
     }
-
-    const purged = await purgeSupersededOpenTrades(
-      auth.userId,
-      parsed.data.reconcileOpens?.instrument || chartSymbolOverride || undefined,
-    )
-    closedStale += purged
 
     if (closedStale > 0) {
       const symbol = canonicalInstrumentSymbol(
@@ -407,11 +364,13 @@ export async function POST(request: NextRequest) {
 
     for (const accountId of touchedAccounts) {
       const stats = byAccount[accountId]
-      if (stats.imported > 0 || stats.updated > 0) {
-        const latestTrade =
-          stats.imported > 0
-            ? latestOpenImportedByAccount[accountId] || latestImportedByAccount[accountId]
-            : latestUpdatedByAccount[accountId]
+      const opened = stats.imported > 0
+      const closed = closedAlertAccounts.has(accountId)
+      // SSE / last-event only for a real new fill or a real close — not MTM ticks.
+      if (opened || closed) {
+        const latestTrade = opened
+          ? latestOpenImportedByAccount[accountId] || latestImportedByAccount[accountId]
+          : latestUpdatedByAccount[accountId]
 
         const event = await recordTradeSyncEvent(auth.userId, {
           accountId,

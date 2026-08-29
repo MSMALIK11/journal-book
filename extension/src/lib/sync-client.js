@@ -63,9 +63,36 @@ JBSync.tradeKnownOnServer = function tradeKnownOnServer(trade, knownIds) {
   return knownIds.has(`tv:${JBSync.strategySlug(trade.strategy || "")}:${trade.tradeNumber}`)
 }
 
+JBSync.isTypedExitTrade = function isTypedExitTrade(trade) {
+  return /\bexit\s+(long|short)\b/i.test(
+    `${trade?.exit?.signal || ""} ${trade?.entry?.signal || ""}`,
+  )
+}
+
+JBSync.isLiteralOpenToken = function isLiteralOpenToken(value) {
+  return /^open$/i.test(String(value || "").trim())
+}
+
 JBSync.isOpenTrade = function isOpenTrade(trade) {
   if (!trade?.exit) return true
-  return /\bopen\b/i.test(`${trade.exit.signal || ""} ${trade.entry?.signal || ""}`)
+  return (
+    JBSync.isLiteralOpenToken(trade.exit.signal) ||
+    JBSync.isLiteralOpenToken(trade.entry?.signal) ||
+    JBSync.isLiteralOpenToken(trade.exit.datetime)
+  )
+}
+
+JBSync.preferMergedTrade = function preferMergedTrade(prev, next) {
+  if (!prev) return next
+  if (!next) return prev
+  if (JBSync.isOpenTrade(next) && !JBSync.isOpenTrade(prev)) return next
+  if (JBSync.isOpenTrade(prev) && !JBSync.isOpenTrade(next)) return prev
+  return next
+}
+
+/** Pass-through. Do not coerce the latest closed TP/SL row back to Open. */
+JBSync.markLatestPaintedOpens = function markLatestPaintedOpens(trades) {
+  return Array.isArray(trades) ? trades : []
 }
 
 JBSync.tradeEntryMs = function tradeEntryMs(trade) {
@@ -101,6 +128,9 @@ JBSync.dropSupersededOpenTrades = function dropSupersededOpenTrades(trades) {
     if (!JBSync.isOpenTrade(trade)) return true
 
     const entryMs = JBSync.tradeEntryMs(trade)
+    if (Number.isFinite(trade.tradeNumber) && trade.tradeNumber >= maxClosedTradeNumber) return true
+    if (Number.isFinite(trade.tradeNumber) && trade.tradeNumber < maxClosedTradeNumber) return false
+
     if (Number.isFinite(entryMs) && Number.isFinite(maxClosedEntryMs) && entryMs < maxClosedEntryMs) {
       return false
     }
@@ -177,10 +207,19 @@ JBSync.tradeNeedsRefresh = function tradeNeedsRefresh(trade, snapshot) {
 
   if (openOnTv) return !wasOpenOnServer
   if (!known) return true
-  // Real close: TV exited a row the journal still has open.
+  // Real close: this TV row exited a position the journal still has open.
   if (wasOpenOnServer) return true
-  // Journal still has some open — send this close so the live row can exit.
-  if (snapshot.openIds.size > 0) return true
+  // Fingerprint/minute-bucket can drift after a bad scrape — still send the
+  // close if journal has any live Open on this symbol + side.
+  const symbol = String(trade.instrument || "")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toUpperCase()
+  const direction = trade.direction || ""
+  if (symbol && direction && snapshot.openFps instanceof Set) {
+    for (const openFp of snapshot.openFps) {
+      if (openFp.startsWith(`${symbol}:`) && openFp.endsWith(`:${direction}`)) return true
+    }
+  }
   return false
 }
 
@@ -457,7 +496,7 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
         for (const trade of captured.trades || []) {
           const key = JBSync.tradeKey(trade)
           mainWorldKeys.add(key)
-          merged.set(key, trade)
+          merged.set(key, JBSync.preferMergedTrade(merged.get(key), trade))
         }
         frameDebug.push({
           method: "captured-memory",
@@ -480,7 +519,7 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
           for (const trade of ext.result?.trades || []) {
             const key = JBSync.tradeKey(trade)
             mainWorldKeys.add(key)
-            merged.set(key, trade)
+            merged.set(key, JBSync.preferMergedTrade(merged.get(key), trade))
           }
         }
       }
@@ -515,7 +554,7 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
       for (const trade of frameResult.trades || []) {
         const key = JBSync.tradeKey(trade)
         gridKeys.add(key)
-        merged.set(key, trade)
+        merged.set(key, JBSync.preferMergedTrade(merged.get(key), trade))
       }
     }
 
@@ -577,9 +616,11 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
       }
     }
 
-    const trades = JBSync.applyChartSymbol(
-      mergedTrades.sort((a, b) => b.tradeNumber - a.tradeNumber),
-      chartSymbol,
+    const trades = JBSync.markLatestPaintedOpens(
+      JBSync.applyChartSymbol(
+        mergedTrades.sort((a, b) => b.tradeNumber - a.tradeNumber),
+        chartSymbol,
+      ),
     )
     const best = frameDebug.sort((a, b) => b.trades - a.trades)[0]
     const bestGrid = injections?.find((i) => i.result)?.result
@@ -789,6 +830,8 @@ JBSync.buildReconcileOpensPayload = function buildReconcileOpensPayload(trades, 
 JBSync.reconcileOpenTrades = async function reconcileOpenTrades(config, trades, chartSymbol) {
   const reconcileOpens = JBSync.buildReconcileOpensPayload(trades, chartSymbol)
   if (!reconcileOpens || !config.syncToken) return { closedStale: 0 }
+  // Empty open set is "scrape missed the live row", not "flat". Never wipe.
+  if (!reconcileOpens.opens.length) return { closedStale: 0 }
 
   return JBSync.postJson(`${config.apiUrl}/api/sync/trades`, config.syncToken, {
     chartSymbol: reconcileOpens.instrument,
@@ -1139,14 +1182,11 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
   })
 
   const closedStale = syncResult.closedStale || 0
-  if (syncResult.imported > 0 || syncResult.updated > 0 || closedStale > 0) {
+  if (syncResult.imported > 0) {
     const topAccount = Object.entries(syncResult.byAccount || {}).sort(
       (a, b) => (b[1].imported || 0) + (b[1].updated || 0) - ((a[1].imported || 0) + (a[1].updated || 0)),
     )[0]
-    const latestTrade = JBSync.normalizeLatestTrade(
-      topAccount?.[1]?.latestTrade,
-      syncResult.imported === 0 && (syncResult.updated > 0 || closedStale > 0),
-    )
+    const latestTrade = JBSync.normalizeLatestTrade(topAccount?.[1]?.latestTrade)
 
     await JBSync.notifyJournalTabs(
       {
@@ -1223,6 +1263,7 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
   }
 
   // If Strategy Tester grid is empty/stale, fall back to network-captured trades.
+  // Do not re-insert capture-only leftovers — they make a ghost row look like the latest fill.
   if (!result?.trades?.length && captured.trades.length) {
     result = {
       trades: captured.trades,
@@ -1230,12 +1271,6 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
       error: null,
       debug: { fallback: "captured-memory" },
     }
-  } else if (result?.trades?.length && captured.trades.length) {
-    const byNumber = new Map(result.trades.map((t) => [t.tradeNumber, t]))
-    for (const trade of captured.trades) {
-      if (!byNumber.has(trade.tradeNumber)) byNumber.set(trade.tradeNumber, trade)
-    }
-    result.trades = [...byNumber.values()]
   }
 
   const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: 1500 })
@@ -1267,32 +1302,29 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
     }
   }
 
+  if (result?.trades?.length) {
+    result.trades = JBSync.markLatestPaintedOpens(result.trades)
+  }
+
   const latestTradeNumber = Math.max(...result.trades.map((trade) => trade.tradeNumber))
   const newOrUpdated = result.trades.filter(
-    (trade) => trade.tradeNumber === latestTradeNumber || JBSync.tradeNeedsRefresh(trade, snapshot),
+    (trade) =>
+      trade.tradeNumber === latestTradeNumber ||
+      JBSync.isOpenTrade(trade) ||
+      JBSync.tradeNeedsRefresh(trade, snapshot),
   )
 
-  // If List of trades has closed rows and zero opens, drop journal opens that exited.
   const scrapedOpens = result.trades.filter((trade) => JBSync.isOpenTrade(trade))
-  const hasClosedRows = result.trades.some((trade) => !JBSync.isOpenTrade(trade))
-  const shouldForceReconcile =
-    snapshot.openIds.size > 0 && scrapedOpens.length === 0 && hasClosedRows && Boolean(chartSymbol)
 
   let syncResult = { imported: 0, updated: 0, skipped: 0, deduped: 0, closedStale: 0, byAccount: {} }
 
   if (newOrUpdated.length) {
-    // Reconcile using full scrape so real TV opens are never wiped by a partial sync set.
+    // Reconcile only when the scrape still sees a live Open. Empty open set
+    // must not delete journal Opens (missed Type=Open / light scrape).
     syncResult = await JBSync.syncTrades(newOrUpdated, config, chartSymbol, {
       reconcileFromTrades: result.trades,
+      reconcile: scrapedOpens.length > 0,
     })
-  } else if (shouldForceReconcile) {
-    const reconcile = await JBSync.reconcileOpenTrades(config, scrapedOpens, chartSymbol)
-    syncResult.closedStale = reconcile.closedStale || 0
-    syncResult.updated = reconcile.updated || syncResult.closedStale || 0
-    syncResult.message =
-      syncResult.closedStale > 0
-        ? `Cleared ${syncResult.closedStale} closed trade(s)`
-        : "No new trades"
   }
 
   const closedStale = syncResult.closedStale || 0
@@ -1317,15 +1349,12 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
     syncResult.message = `Cleared ${closedStale} stale open trade(s)`
   }
 
-  if (syncResult.imported > 0 || syncResult.updated > 0 || closedStale > 0) {
+  if (syncResult.imported > 0) {
     const topAccount = Object.entries(syncResult.byAccount || {}).sort(
       (a, b) => (b[1].imported || 0) + (b[1].updated || 0) - ((a[1].imported || 0) + (a[1].updated || 0)),
     )[0]
 
-    const latestTrade = JBSync.normalizeLatestTrade(
-      topAccount?.[1]?.latestTrade,
-      syncResult.imported === 0 && (syncResult.updated > 0 || closedStale > 0),
-    )
+    const latestTrade = JBSync.normalizeLatestTrade(topAccount?.[1]?.latestTrade)
 
     await JBSync.notifyJournalTabs(
       {

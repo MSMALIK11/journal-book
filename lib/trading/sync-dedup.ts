@@ -61,8 +61,8 @@ export async function findExistingSyncedTrade(
   }).sort({ updatedAt: -1 })
   if (fuzzy && !isClosedMismatch(fuzzy, mapped)) return fuzzy
 
-  // Close payload often retimes the row. Attach it to the live Open on this side.
-  if (mapped.exit_date) {
+  // One live TV Open per symbol/side. MTM retimes must not insert a new row or alert.
+  if (!mapped.exit_date) {
     const liveOpen = await Trade.findOne({
       userId,
       source: "tradingview",
@@ -71,6 +71,25 @@ export async function findExistingSyncedTrade(
       $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
     }).sort({ entry_date: -1 })
     if (liveOpen) return liveOpen
+  }
+
+  // Close payload often retimes the row. Attach it to the live Open only when
+  // it is the same fill — an older closed row must not close a newer live Open.
+  if (mapped.exit_date) {
+    const liveOpen = await Trade.findOne({
+      userId,
+      source: "tradingview",
+      instrument: mapped.instrument,
+      trade_type: mapped.trade_type,
+      $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+    }).sort({ entry_date: -1 })
+    if (liveOpen) {
+      const liveEntryMs = liveOpen.entry_date?.getTime?.() ?? NaN
+      const mappedEntryMs = mapped.entry_date.getTime()
+      if (!Number.isFinite(liveEntryMs) || Math.abs(liveEntryMs - mappedEntryMs) <= 10 * 60_000) {
+        return liveOpen
+      }
+    }
   }
 
   return null

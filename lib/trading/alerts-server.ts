@@ -172,28 +172,36 @@ export async function persistNewTradeAlert(
   },
   accountName?: string,
 ) {
+  if (trade.is_open === false) return
+
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
   const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
-  if (trade.is_open !== false) {
-    const event = {
-      kind: "open" as const,
-      side,
-      instrument: trade.instrument,
-      price,
-      accountName,
-    }
-    void (async () => {
-      const caption = await buildTelegramCaptionForAccount(userId, accountId, event)
-      await notifyTelegramTradeEvent(userId, { ...event, caption })
-    })()
+  const alertKey = `new-trade:${trade.id}`
+  const recent = await TradingAlert.findOne({ userId, accountId, key: alertKey }).select("triggeredAt")
+  if (recent && Date.now() - new Date(recent.triggeredAt).getTime() < 30 * 60_000) {
+    return
+  }
+
+  const event = {
+    kind: "open" as const,
+    side,
+    instrument: trade.instrument,
+    price,
+    accountName,
+  }
+  try {
+    const caption = await buildTelegramCaptionForAccount(userId, accountId, event)
+    await notifyTelegramTradeEvent(userId, { ...event, caption })
+  } catch (error) {
+    console.error("Telegram new-trade alert failed:", error)
   }
   try {
     await persistAlerts(userId, accountId, [
       {
-        key: `new-trade:${trade.id}`,
+        key: alertKey,
         category: "new_trade",
         severity: "info",
-        title: trade.is_open === false ? `New ${side} synced` : `New ${side} opened`,
+        title: `New ${side} opened`,
         message: `${trade.instrument} ${side} @ ${price}${accountName ? ` · ${accountName}` : ""}`,
         metric: trade.instrument,
         action: "Review it in Live Sync and Trade History.",
@@ -224,6 +232,12 @@ export async function persistClosedTradeAlert(
 ) {
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
   const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
+  const alertKey = `trade-closed:${trade.id}`
+  const recent = await TradingAlert.findOne({ userId, accountId, key: alertKey }).select("triggeredAt")
+  if (recent && Date.now() - new Date(recent.triggeredAt).getTime() < 30 * 60_000) {
+    return
+  }
+
   const closeEvent = {
     kind: "close" as const,
     side,
@@ -242,7 +256,7 @@ export async function persistClosedTradeAlert(
   try {
     await persistAlerts(userId, accountId, [
       {
-        key: `trade-closed:${trade.id}`,
+        key: alertKey,
         category: "new_trade",
         severity: "info",
         title: `${side} closed`,

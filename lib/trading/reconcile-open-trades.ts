@@ -43,6 +43,9 @@ export async function reconcileStaleOpenTrades(
 ) {
   const symbols = instrumentMatchList(instrument)
   if (!symbols.length) return 0
+  // Empty opens means the scrape did not see a live row — not that TV has none.
+  // Never delete journal Opens from that signal (light scrape / collapsed panel).
+  if (!activeOpens.length) return 0
 
   const activeExternalIds = new Set(
     activeOpens.map((open) => open.externalId).filter((id): id is string => Boolean(id)),
@@ -56,6 +59,10 @@ export async function reconcileStaleOpenTrades(
     activeKeys.add(`${open.direction}:${entryMs}`)
   }
 
+  const activeDirections = new Set(
+    activeOpens.map((open) => open.direction).filter((dir): dir is "long" | "short" => Boolean(dir)),
+  )
+
   const candidates = await Trade.find({
     userId,
     source: "tradingview",
@@ -68,6 +75,10 @@ export async function reconcileStaleOpenTrades(
       if (trade.external_id && activeExternalIds.has(trade.external_id)) return false
 
       const direction = trade.trade_type === "Sell" ? "short" : "long"
+      // Live Open row paints a new datetime every poll — keep the journal Open
+      // as long as TV still has an open on this side.
+      if (activeDirections.has(direction)) return false
+
       const entryMs = trade.entry_date?.getTime?.() ?? new Date(trade.entry_date).getTime()
       if (Number.isFinite(entryMs)) {
         for (const key of activeKeys) {

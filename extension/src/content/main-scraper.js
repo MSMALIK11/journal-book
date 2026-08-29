@@ -187,6 +187,11 @@ async function jbMainScrape() {
     return exitPart || entryPart || td?.textContent?.replace(/\s+/g, " ").trim() || ""
   }
 
+  /** TV live row: exit Date/time and Signal are the word "Open", Type stays Long/Short. */
+  function isLiteralOpenToken(value) {
+    return /^open$/i.test(String(value || "").trim())
+  }
+
   function getDatetimePair(td) {
     if (!td) return ["", ""]
 
@@ -240,19 +245,38 @@ async function jbMainScrape() {
         const [entryDt, exitDtRaw] = getDatetimePair(getColumn(row, "column-datetime"))
         let entryDtFinal = entryDt
         let exitDt = exitDtRaw
-        if (entryDt && exitDt && new Date(exitDt).getTime() < new Date(entryDt).getTime()) {
-          ;[entryDtFinal, exitDt] = [exitDt, entryDt]
-        }
         const signalTd = getColumn(row, "column-signal")
         const typeTd =
           getColumn(row, "column-type") ||
           getColumn(row, "column-trade-type") ||
           row.querySelector('[data-qa-id*="type" i]')
-        const [entrySignal, exitSignal] = getCellParts(signalTd)
-        const rowText = `${row.innerText || ""} ${typeTd?.textContent || ""} ${signalTd?.textContent || ""}`
-        const looksOpen = /\bopen\b/i.test(rowText)
-        const looksExit = /\bexit\s+(long|short)\b/i.test(rowText)
-        const [entryPriceText, exitPriceText] = getCellParts(getColumn(row, "column-price"))
+        let [entrySignal, exitSignal] = getCellParts(signalTd)
+        const typeText = `${typeTd?.textContent || ""}`.replace(/\s+/g, " ").trim()
+        let [entryPriceText, exitPriceText] = getCellParts(getColumn(row, "column-price"))
+        const looksOpen =
+          isLiteralOpenToken(typeText) ||
+          isLiteralOpenToken(entryDt) ||
+          isLiteralOpenToken(exitDtRaw) ||
+          isLiteralOpenToken(entrySignal) ||
+          isLiteralOpenToken(exitSignal)
+
+        // Exit half is the "Open" token (often painted on top). Other half is the fill.
+        if (looksOpen && isLiteralOpenToken(entryDtFinal) && exitDt && !isLiteralOpenToken(exitDt)) {
+          ;[entryDtFinal, exitDt] = [exitDt, entryDtFinal]
+          ;[entryPriceText, exitPriceText] = [exitPriceText, entryPriceText]
+          ;[entrySignal, exitSignal] = [exitSignal, entrySignal]
+        } else if (
+          !looksOpen &&
+          entryDt &&
+          exitDt &&
+          !isLiteralOpenToken(entryDt) &&
+          !isLiteralOpenToken(exitDt) &&
+          new Date(exitDt).getTime() < new Date(entryDt).getTime()
+        ) {
+          ;[entryDtFinal, exitDt] = [exitDt, entryDt]
+          ;[entryPriceText, exitPriceText] = [exitPriceText, entryPriceText]
+          ;[entrySignal, exitSignal] = [exitSignal, entrySignal]
+        }
         const [entrySizeText] = getCellParts(
           getColumn(row, "column-size") ||
             getColumn(row, "column-position-size") ||
@@ -278,7 +302,7 @@ async function jbMainScrape() {
         const commission = parseNumber(getExitText(entryComm, exitComm, commTd))
 
         const entryPrice = parseNumber(entryPriceText)
-        if (!entryDtFinal || entryPrice == null) continue
+        if (!entryDtFinal || isLiteralOpenToken(entryDtFinal) || entryPrice == null) continue
 
         const trade = {
           tradeNumber,
@@ -295,13 +319,13 @@ async function jbMainScrape() {
         }
 
         const exitPrice = parseNumber(exitPriceText)
-        if (looksOpen && !looksExit) {
+        if (looksOpen) {
           trade.exit = {
-            datetime: exitDt || entryDtFinal,
+            datetime: isLiteralOpenToken(exitDt) ? entryDtFinal : exitDt || entryDtFinal,
             price: exitPrice != null ? exitPrice : entryPrice,
             signal: "Open",
           }
-        } else if (exitDt && exitPrice != null) {
+        } else if (exitDt && !isLiteralOpenToken(exitDt) && exitPrice != null) {
           trade.exit = { datetime: exitDt, price: exitPrice, signal: exitSignal || "" }
           if (netPnl != null) trade.netPnl = netPnl
           if (returnPct != null) trade.returnPct = returnPct
