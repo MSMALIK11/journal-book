@@ -19,6 +19,9 @@ async function connectDB() {
   if (!cached.promise) {
     const opts = {
       bufferCommands: false,
+      // Dual-stack Macs often try IPv6 first; Atlas whitelist is IPv4.
+      family: 4 as const,
+      serverSelectionTimeoutMS: 12_000,
     }
 
     cached.promise = mongoose.connect(mongoUri, opts).then((mongoose) => {

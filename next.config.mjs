@@ -18,6 +18,10 @@ const nextConfig = (phase) => {
     images: {
       unoptimized: true,
     },
+    outputFileTracingIncludes: {
+      "/api/extension": ["./extension/**/*"],
+      "/api/extension/download": ["./extension/**/*"],
+    },
     async headers() {
       return [
         {

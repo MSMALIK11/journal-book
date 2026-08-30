@@ -1,9 +1,10 @@
 "use client"
 
-import { ExternalLink, Radio } from "lucide-react"
+import { Download, ExternalLink, Radio } from "lucide-react"
 import useSWR from "swr"
 import { useEffect, useState } from "react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -26,6 +27,12 @@ type SyncStatus = {
   poll_interval_seconds?: number
 }
 
+type ExtensionPack = {
+  version: string
+  filename: string
+  downloadUrl: string
+}
+
 const fetcher = async (url: string) => {
   const response = await authFetch(url)
   const data = await response.json()
@@ -38,6 +45,7 @@ export function LiveSyncSettings() {
   const { data: statusData } = useSWR<SyncStatus>("/api/sync/heartbeat", fetcher, {
     refreshInterval: 60_000,
   })
+  const { data: extensionPack } = useSWR<ExtensionPack>("/api/extension", fetcher)
 
   useEffect(() => {
     setPollSeconds(getLiveSyncPollSeconds())
@@ -94,12 +102,27 @@ export function LiveSyncSettings() {
           </SettingsHint>
         </div>
 
-        <div className="rounded-xl border border-border/50 bg-gradient-to-br from-muted/20 to-muted/5 px-4 py-3.5">
+        <div className="rounded-xl border border-border/50 bg-gradient-to-br from-muted/20 to-muted/5 px-4 py-3.5 space-y-3">
+          <div>
+            <p className="text-sm font-medium">Chrome extension</p>
+            <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+              Download the zip, unzip it, then Chrome → Extensions → Developer mode → Load unpacked.
+              Filename includes the version so you know what you installed.
+            </p>
+          </div>
+          <Button asChild>
+            <a href={extensionPack?.downloadUrl || "/api/extension/download"}>
+              <Download className="mr-2 h-4 w-4" />
+              {extensionPack
+                ? `Download ${extensionPack.filename}`
+                : "Download extension.zip"}
+            </a>
+          </Button>
           <p className="text-sm">
             <span className="text-muted-foreground">Extension poll (TradingView):</span>{" "}
             <span className="font-medium">{extensionPollLabel}</span>
           </p>
-          <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <ExternalLink className="h-3.5 w-3.5 shrink-0" />
             chrome://extensions → Journal Book Sync → Options
           </p>

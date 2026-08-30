@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Copy, KeyRound, RefreshCw, Trash2 } from "lucide-react"
+import { Copy, Download, KeyRound, RefreshCw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import { Input } from "@/components/ui/input"
@@ -93,11 +93,18 @@ export function TradingViewSyncSettings() {
       <div className="space-y-4 p-5">
         <div className="space-y-2 rounded-lg border border-cyan-400/15 bg-[#05070a]/60 p-4 text-sm text-muted-foreground">
           <p>1. Generate a sync API key below.</p>
-          <p>2. Load the extension from the <code className="text-xs text-cyan-300">extension/</code> folder in Chrome.</p>
-          <p>3. Paste your API URL and key in extension options, then open TradingView Strategy Tester.</p>
+          <p>2. Download the extension zip from Settings → Live Sync (filename includes the version).</p>
+          <p>3. Unzip, then Chrome → Extensions → Developer mode → Load unpacked → select the unzipped folder.</p>
+          <p>4. Paste your API URL and key in extension options, then open TradingView Strategy Tester.</p>
         </div>
 
         <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <a href="/api/extension/download">
+              <Download className="mr-2 h-4 w-4" />
+              Download extension
+            </a>
+          </Button>
           <Button onClick={generateKey} disabled={loading}>
             <RefreshCw className="mr-2 h-4 w-4" />
             {status?.has_sync_key ? "Regenerate key" : "Generate key"}
