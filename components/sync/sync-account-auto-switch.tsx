@@ -21,7 +21,7 @@ export function SyncAccountAutoSwitch() {
 
         void refresh().then(async () => {
           if (targetId && targetId !== activeAccountId) {
-            await switchAccount(targetId)
+            await switchAccount(targetId).catch(() => {})
           }
           toast({
             title: targetName ? `Portfolio ready: ${targetName}` : "New portfolio added",
@@ -39,11 +39,17 @@ export function SyncAccountAutoSwitch() {
         const imported = data.imported ?? 0
         const updated = data.updated ?? 0
 
-        if (data.accountId && data.accountId !== activeAccountId) {
-          await switchAccount(data.accountId)
-        } else {
-          await revalidateSyncedData()
-          await refresh()
+        try {
+          if (data.accountId && data.accountId !== activeAccountId) {
+            await refresh()
+            await switchAccount(data.accountId)
+            await revalidateSyncedData()
+          } else {
+            await revalidateSyncedData()
+            await refresh()
+          }
+        } catch {
+          await revalidateSyncedData().catch(() => {})
         }
 
         if (imported > 0 && updated > 0) {

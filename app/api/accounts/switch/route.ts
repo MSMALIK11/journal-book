@@ -27,6 +27,10 @@ export async function POST(request: NextRequest) {
 
     await connectDB()
 
+    if (!/^[a-fA-F0-9]{24}$/.test(parsed.data.accountId)) {
+      return NextResponse.json({ error: "Account not found" }, { status: 404 })
+    }
+
     const account = await TradingAccount.findOne({
       _id: parsed.data.accountId,
       userId: session.sub,

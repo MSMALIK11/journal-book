@@ -76,12 +76,26 @@ export function ActiveAccountProvider({ children }: { children: ReactNode }) {
 
   const switchAccount = useCallback(
     async (accountId: string) => {
+      if (!accountId || accountId.startsWith("closed:")) return null
+
+      const known = data?.accounts.some((account) => account.id === accountId)
+      if (data?.accounts.length && !known) {
+        const latest = await mutate()
+        if (!latest?.accounts.some((account) => account.id === accountId)) {
+          return null
+        }
+      }
+
       const response = await authFetch("/api/accounts/switch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId }),
       })
       const result = await response.json()
+      if (response.status === 404) {
+        await mutate()
+        return null
+      }
       if (!response.ok) throw new Error(result.error || "Unable to switch account")
 
       await mutate()
@@ -90,7 +104,7 @@ export function ActiveAccountProvider({ children }: { children: ReactNode }) {
 
       return result
     },
-    [mutate],
+    [data?.accounts, mutate],
   )
 
   const revalidateSyncedData = useCallback(async () => {
