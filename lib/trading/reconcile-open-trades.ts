@@ -59,26 +59,18 @@ export async function reconcileStaleOpenTrades(
     activeKeys.add(`${open.direction}:${entryMs}`)
   }
 
-  const activeDirections = new Set(
-    activeOpens.map((open) => open.direction).filter((dir): dir is "long" | "short" => Boolean(dir)),
-  )
-
   const candidates = await Trade.find({
     userId,
     source: "tradingview",
     instrument: { $in: symbols },
   }).select("_id external_id entry_date exit_date signal tags trade_type")
 
-  const staleIds = candidates
+  const stale = candidates
     .filter((trade) => isOpenSyncedTrade(trade))
     .filter((trade) => {
       if (trade.external_id && activeExternalIds.has(trade.external_id)) return false
 
       const direction = trade.trade_type === "Sell" ? "short" : "long"
-      // Live Open row paints a new datetime every poll — keep the journal Open
-      // as long as TV still has an open on this side.
-      if (activeDirections.has(direction)) return false
-
       const entryMs = trade.entry_date?.getTime?.() ?? new Date(trade.entry_date).getTime()
       if (Number.isFinite(entryMs)) {
         for (const key of activeKeys) {
@@ -92,12 +84,43 @@ export async function reconcileStaleOpenTrades(
 
       return true
     })
-    .map((trade) => trade._id)
 
-  if (!staleIds.length) return 0
+  if (!stale.length) return 0
 
-  const result = await Trade.deleteMany({ _id: { $in: staleIds }, userId })
-  return result.deletedCount ?? 0
+  const now = new Date()
+  for (const trade of stale) {
+    await Trade.updateOne({ _id: trade._id, userId }, { $set: { exit_date: now } })
+  }
+  return stale.length
+}
+
+/** Keep the newest live Open per symbol/side. Older leftovers become closed. */
+export async function closeDuplicateLiveOpens(userId: string) {
+  const opens = await Trade.find({
+    userId,
+    source: "tradingview",
+    $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+  }).sort({ entry_date: -1 })
+
+  const keeperByKey = new Map<string, (typeof opens)[number]>()
+  const closed: typeof opens = []
+
+  for (const trade of opens) {
+    const symbol = canonicalInstrumentSymbol(trade.instrument) || trade.instrument
+    const key = `${symbol}:${trade.trade_type}`
+    const keeper = keeperByKey.get(key)
+    if (!keeper) {
+      keeperByKey.set(key, trade)
+      continue
+    }
+
+    trade.exit_date = keeper.entry_date || new Date()
+    if (keeper.entry_price != null) trade.exit_price = keeper.entry_price
+    await trade.save()
+    closed.push(trade)
+  }
+
+  return closed
 }
 
 /**

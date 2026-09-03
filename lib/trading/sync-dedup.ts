@@ -4,8 +4,26 @@ import { buildLegacyExternalId } from "@/lib/validations/tradingview-sync"
 
 /** Allow small clock/format drift when matching legacy trade-number IDs. */
 const ENTRY_MATCH_TOLERANCE_MS = 60_000
+const LIVE_OPEN_ENTRY_SLOP_MS = 10 * 60_000
+const SAME_FILL_PRICE_TOLERANCE = 0.001
 
 type MappedTrade = ReturnType<typeof mapTradingViewTrade>
+
+function sameEntryPrice(a?: number | null, b?: number | null) {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || !a) return false
+  return Math.abs((a as number) - (b as number)) / Math.abs(a as number) <= SAME_FILL_PRICE_TOLERANCE
+}
+
+function sameLiveFill(
+  liveOpen: { entry_price?: number | null; external_id?: string | null },
+  mapped: MappedTrade,
+  legacyStrategy: string,
+  legacyTradeNumber: number,
+) {
+  if (sameEntryPrice(liveOpen.entry_price, mapped.entry_price)) return true
+  const legacyId = buildLegacyExternalId(legacyStrategy, legacyTradeNumber)
+  return Boolean(liveOpen.external_id && liveOpen.external_id === legacyId)
+}
 
 /**
  * Find an existing synced trade for this user — searches across all accounts
@@ -61,7 +79,8 @@ export async function findExistingSyncedTrade(
   }).sort({ updatedAt: -1 })
   if (fuzzy && !isClosedMismatch(fuzzy, mapped)) return fuzzy
 
-  // One live TV Open per symbol/side. MTM retimes must not insert a new row or alert.
+  // Incoming Open: attach to the live Open only when it is the same fill.
+  // A new TV number / different entry price is a new trade and must alert.
   if (!mapped.exit_date) {
     const liveOpen = await Trade.findOne({
       userId,
@@ -70,7 +89,9 @@ export async function findExistingSyncedTrade(
       trade_type: mapped.trade_type,
       $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
     }).sort({ entry_date: -1 })
-    if (liveOpen) return liveOpen
+    if (liveOpen && sameLiveFill(liveOpen, mapped, legacyStrategy, legacyTradeNumber)) {
+      return liveOpen
+    }
   }
 
   // Close payload often retimes the row. Attach it to the live Open only when
@@ -86,7 +107,15 @@ export async function findExistingSyncedTrade(
     if (liveOpen) {
       const liveEntryMs = liveOpen.entry_date?.getTime?.() ?? NaN
       const mappedEntryMs = mapped.entry_date.getTime()
-      if (!Number.isFinite(liveEntryMs) || Math.abs(liveEntryMs - mappedEntryMs) <= 10 * 60_000) {
+      const mappedExitMs = mapped.exit_date.getTime()
+      if (Number.isFinite(liveEntryMs) && mappedExitMs < liveEntryMs - LIVE_OPEN_ENTRY_SLOP_MS) {
+        return null
+      }
+      if (
+        sameLiveFill(liveOpen, mapped, legacyStrategy, legacyTradeNumber) ||
+        !Number.isFinite(liveEntryMs) ||
+        Math.abs(liveEntryMs - mappedEntryMs) <= LIVE_OPEN_ENTRY_SLOP_MS
+      ) {
         return liveOpen
       }
     }

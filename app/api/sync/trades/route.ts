@@ -4,8 +4,8 @@ import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { dropSupersededOpenTradesFromPayload, priceMatchesInstrument } from "@/lib/trading/price-sanity"
-import { reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
-import { isOpenSyncedTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
+import { closeDuplicateLiveOpens, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
 import { publishAccountsUpdated, publishTradesUpdated } from "@/lib/sync-events"
@@ -13,7 +13,7 @@ import { recordTradeSyncEvent } from "@/lib/sync-last-event"
 import { withSyncCors } from "@/lib/sync-cors"
 import { getSyncAuth } from "@/lib/sync-auth"
 import { touchSyncHeartbeat } from "@/lib/sync-heartbeat"
-import { persistClosedTradeAlert, persistNewTradeAlert } from "@/lib/trading/alerts-server"
+import { persistClosedTradeAlert, persistNewTradeAlert, sendPendingOpenTelegrams } from "@/lib/trading/alerts-server"
 import { tradingViewSyncSchema } from "@/lib/validations/tradingview-sync"
 
 function mergeSyncedTrade(
@@ -211,6 +211,7 @@ export async function POST(request: NextRequest) {
       markPaintedOpenTrades(parsed.data.trades),
     )
     skipped += parsed.data.trades.length - incomingTrades.length
+    incomingTrades.sort((a, b) => Number(isOpenTvTrade(a)) - Number(isOpenTvTrade(b)))
 
     const closedAlertAccounts = new Set<string>()
 
@@ -269,6 +270,16 @@ export async function POST(request: NextRequest) {
         if (isOpen) {
           latestOpenImportedByAccount[accountId] = snapshot
           await persistNewTradeAlert(auth.userId, accountId, snapshot, targetAccount.name)
+        } else {
+          closedAlertAccounts.add(accountId)
+          await persistNewTradeAlert(auth.userId, accountId, { ...snapshot, is_open: true }, targetAccount.name)
+          await persistClosedTradeAlert(auth.userId, accountId, {
+            ...snapshot,
+            exit_date: mapped.exit_date?.toISOString(),
+            exit_price: mapped.exit_price ?? undefined,
+            net_pnl: typeof mapped.net_pnl === "number" ? mapped.net_pnl : undefined,
+            return_pct: typeof mapped.return_pct === "number" ? mapped.return_pct : undefined,
+          }, targetAccount.name)
         }
         continue
       }
@@ -297,6 +308,7 @@ export async function POST(request: NextRequest) {
           await persistNewTradeAlert(auth.userId, accountId, snapshot, targetAccount.name)
         } else if (wasOpen && mapped.exit_date) {
           closedAlertAccounts.add(accountId)
+          await persistNewTradeAlert(auth.userId, accountId, { ...snapshot, is_open: true }, targetAccount.name)
           await persistClosedTradeAlert(auth.userId, accountId, {
             ...snapshot,
             exit_date: mapped.exit_date.toISOString(),
@@ -318,6 +330,32 @@ export async function POST(request: NextRequest) {
     }
 
     const deduped = await dedupeSyncedTradesByExternalId(auth.userId)
+    const duplicateOpens = await closeDuplicateLiveOpens(auth.userId)
+    for (const row of duplicateOpens) {
+      const accountId = String(row.accountId)
+      touchedAccounts.add(accountId)
+      closedAlertAccounts.add(accountId)
+      if (!byAccount[accountId]) {
+        byAccount[accountId] = { name: "TradingView", imported: 0, updated: 0, skipped: 0 }
+      }
+      byAccount[accountId].updated += 1
+      updated += 1
+      await persistClosedTradeAlert(
+        auth.userId,
+        accountId,
+        {
+          id: String(row._id),
+          instrument: row.instrument,
+          trade_type: row.trade_type,
+          entry_price: row.entry_price,
+          entry_date: row.entry_date?.toISOString(),
+          exit_date: row.exit_date?.toISOString(),
+          exit_price: row.exit_price ?? undefined,
+        },
+      )
+    }
+
+    await sendPendingOpenTelegrams(auth.userId)
 
     let closedStale = 0
     if (parsed.data.reconcileOpens) {

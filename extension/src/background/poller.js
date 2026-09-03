@@ -1,5 +1,5 @@
 /* global JBSync */
-const VERSION = "1.17.20"
+const VERSION = "1.17.23"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 120

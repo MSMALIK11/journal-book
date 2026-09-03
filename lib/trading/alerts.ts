@@ -58,6 +58,7 @@ export type AlertContext = {
   month?: string
   instrument?: string
   zone?: string
+  telegramSentAt?: string
 }
 
 export type TradingAlertPayload = {

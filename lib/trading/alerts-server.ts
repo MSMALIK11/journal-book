@@ -21,6 +21,7 @@ import {
   RESEARCH_TRADE_SELECT,
 } from "@/lib/trading/trade-query"
 import { notifyTelegramTradeEvent } from "@/lib/telegram/send-trade-alert"
+import Trade from "@/app/api/models/Trade"
 import { buildTelegramCoachCaption } from "@/lib/telegram/coach-caption"
 import { buildTradeMomentAdvice } from "@/lib/trading/trade-moment-advice"
 
@@ -159,6 +160,11 @@ export async function persistAlerts(
   return created
 }
 
+function telegramAlreadySent(doc: { context?: Record<string, unknown> | null } | null) {
+  const value = doc?.context && typeof doc.context === "object" ? doc.context.telegramSentAt : null
+  return typeof value === "string" || value instanceof Date
+}
+
 export async function persistNewTradeAlert(
   userId: string,
   accountId: string,
@@ -177,8 +183,9 @@ export async function persistNewTradeAlert(
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
   const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
   const alertKey = `new-trade:${trade.id}`
-  const recent = await TradingAlert.findOne({ userId, accountId, key: alertKey }).select("triggeredAt")
-  if (recent && Date.now() - new Date(recent.triggeredAt).getTime() < 30 * 60_000) {
+  const recent = await TradingAlert.findOne({ userId, accountId, key: alertKey }).select("context")
+  if (telegramAlreadySent(recent)) {
+    console.info(`[telegram] skip already sent ${alertKey}`)
     return
   }
 
@@ -189,9 +196,11 @@ export async function persistNewTradeAlert(
     price,
     accountName,
   }
+  let sentAt: string | undefined
   try {
-    const caption = await buildTelegramCaptionForAccount(userId, accountId, event)
-    await notifyTelegramTradeEvent(userId, { ...event, caption })
+    console.info(`[telegram] sending open ${trade.instrument} ${side} @ ${price}`)
+    const result = await notifyTelegramTradeEvent(userId, event, { force: true })
+    if (result.ok) sentAt = new Date().toISOString()
   } catch (error) {
     console.error("Telegram new-trade alert failed:", error)
   }
@@ -205,7 +214,10 @@ export async function persistNewTradeAlert(
         message: `${trade.instrument} ${side} @ ${price}${accountName ? ` · ${accountName}` : ""}`,
         metric: trade.instrument,
         action: "Review it in Live Sync and Trade History.",
-        context: { instrument: trade.instrument },
+        context: {
+          instrument: trade.instrument,
+          ...(sentAt ? { telegramSentAt: sentAt } : {}),
+        },
         priority: 200,
       },
     ])
@@ -233,8 +245,9 @@ export async function persistClosedTradeAlert(
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
   const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
   const alertKey = `trade-closed:${trade.id}`
-  const recent = await TradingAlert.findOne({ userId, accountId, key: alertKey }).select("triggeredAt")
-  if (recent && Date.now() - new Date(recent.triggeredAt).getTime() < 30 * 60_000) {
+  const recent = await TradingAlert.findOne({ userId, accountId, key: alertKey }).select("context")
+  if (telegramAlreadySent(recent)) {
+    console.info(`[telegram] skip already sent ${alertKey}`)
     return
   }
 
@@ -249,10 +262,14 @@ export async function persistClosedTradeAlert(
       typeof trade.return_pct === "number" && Number.isFinite(trade.return_pct) ? trade.return_pct : undefined,
     accountName,
   }
-  void (async () => {
-    const caption = await buildTelegramCaptionForAccount(userId, accountId, closeEvent)
-    await notifyTelegramTradeEvent(userId, { ...closeEvent, caption })
-  })()
+  let sentAt: string | undefined
+  try {
+    console.info(`[telegram] sending close ${trade.instrument} ${side} @ ${price}`)
+    const result = await notifyTelegramTradeEvent(userId, closeEvent, { force: true })
+    if (result.ok) sentAt = new Date().toISOString()
+  } catch (error) {
+    console.error("Telegram closed-trade alert failed:", error)
+  }
   try {
     await persistAlerts(userId, accountId, [
       {
@@ -263,12 +280,43 @@ export async function persistClosedTradeAlert(
         message: `${trade.instrument} ${side} @ ${price}${accountName ? ` · ${accountName}` : ""}`,
         metric: trade.instrument,
         action: "Review the closed trade in Live Sync and Trade History.",
-        context: { instrument: trade.instrument },
+        context: {
+          instrument: trade.instrument,
+          ...(sentAt ? { telegramSentAt: sentAt } : {}),
+        },
         priority: 180,
       },
     ])
   } catch (error) {
     console.error("Failed to persist closed-trade alert:", error)
+  }
+}
+
+/** Send open Telegram for live TV rows that never got a message (stillOpen polls skip alerts). */
+export async function sendPendingOpenTelegrams(userId: string) {
+  const opens = await Trade.find({
+    userId,
+    source: "tradingview",
+    $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+  }).sort({ entry_date: -1 })
+
+  const seen = new Set<string>()
+  for (const trade of opens) {
+    const key = `${trade.instrument}:${trade.trade_type}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    await persistNewTradeAlert(
+      userId,
+      trade.accountId,
+      {
+        id: String(trade._id),
+        instrument: trade.instrument,
+        trade_type: trade.trade_type,
+        entry_price: trade.entry_price,
+        entry_date: trade.entry_date?.toISOString(),
+        is_open: true,
+      },
+    )
   }
 }
 

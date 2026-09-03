@@ -50,7 +50,7 @@ export function dropSupersededOpenTradesFromPayload(trades: TradingViewTradeInpu
     if (trade.tradeNumber > prevNum) maxClosedNumberByInstrument.set(symbol, trade.tradeNumber)
   }
 
-  return trades.filter((trade) => {
+  const afterClosed = trades.filter((trade) => {
     if (!isOpenTvTrade(trade)) return true
     const symbol = trade.instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
     const maxNum = maxClosedNumberByInstrument.get(symbol)
@@ -61,4 +61,26 @@ export function dropSupersededOpenTradesFromPayload(trades: TradingViewTradeInpu
     if (maxClosed != null && Number.isFinite(ms) && ms < maxClosed) return false
     return true
   })
+
+  return keepLatestOpenPerSide(afterClosed)
+}
+
+/** Strategy Tester has one live position per symbol/side. Older Opens are leftovers. */
+export function keepLatestOpenPerSide(trades: TradingViewTradeInput[]) {
+  const latest = new Map<string, { index: number; num: number; ms: number }>()
+
+  trades.forEach((trade, index) => {
+    if (!isOpenTvTrade(trade)) return
+    const symbol = trade.instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+    const key = `${symbol}:${trade.direction}`
+    const ms = entryMs(trade)
+    const num = Number.isFinite(trade.tradeNumber) ? trade.tradeNumber : 0
+    const prev = latest.get(key)
+    if (!prev || num > prev.num || (num === prev.num && (ms || 0) > prev.ms)) {
+      latest.set(key, { index, num, ms: Number.isFinite(ms) ? ms : 0 })
+    }
+  })
+
+  const keep = new Set([...latest.values()].map((item) => item.index))
+  return trades.filter((trade, index) => !isOpenTvTrade(trade) || keep.has(index))
 }

@@ -192,6 +192,25 @@ async function jbMainScrape() {
     return /^open$/i.test(String(value || "").trim())
   }
 
+  function isTpSlSignal(value) {
+    return /\b(tp\/sl|take\s*profit|stop\s*loss|\btp\b|\bsl\b|stop|target)\b/i.test(String(value || "").trim())
+  }
+
+  function datetimeMs(value) {
+    if (!value || isLiteralOpenToken(value)) return NaN
+    const ms = new Date(value).getTime()
+    return Number.isFinite(ms) ? ms : NaN
+  }
+
+  function isPaintedMtmOpen(entryDt, exitDt, entryPrice, exitPrice) {
+    if (!entryDt || !exitDt || isLiteralOpenToken(entryDt) || isLiteralOpenToken(exitDt)) return false
+    if (entryPrice == null || exitPrice == null) return false
+    const entryMs = datetimeMs(entryDt)
+    const exitMs = datetimeMs(exitDt)
+    if (!Number.isFinite(entryMs) || !Number.isFinite(exitMs) || entryPrice <= 0) return false
+    return Math.abs(exitMs - entryMs) <= 90_000 && Math.abs(exitPrice - entryPrice) / entryPrice <= 0.0002
+  }
+
   function getDatetimePair(td) {
     if (!td) return ["", ""]
 
@@ -253,12 +272,17 @@ async function jbMainScrape() {
         let [entrySignal, exitSignal] = getCellParts(signalTd)
         const typeText = `${typeTd?.textContent || ""}`.replace(/\s+/g, " ").trim()
         let [entryPriceText, exitPriceText] = getCellParts(getColumn(row, "column-price"))
+        const entryPricePreview = parseNumber(entryPriceText)
+        const exitPricePreview = parseNumber(exitPriceText)
+        const leftoverOpen = isLiteralOpenToken(entrySignal) || isLiteralOpenToken(exitSignal)
+        const confirmedTpSl = isTpSlSignal(exitSignal) && !isLiteralOpenToken(exitSignal)
+        const paintedMtm = isPaintedMtmOpen(entryDt, exitDtRaw, entryPricePreview, exitPricePreview)
         const looksOpen =
           isLiteralOpenToken(typeText) ||
           isLiteralOpenToken(entryDt) ||
           isLiteralOpenToken(exitDtRaw) ||
-          isLiteralOpenToken(entrySignal) ||
-          isLiteralOpenToken(exitSignal)
+          paintedMtm ||
+          (leftoverOpen && !confirmedTpSl)
 
         // Exit half is the "Open" token (often painted on top). Other half is the fill.
         if (looksOpen && isLiteralOpenToken(entryDtFinal) && exitDt && !isLiteralOpenToken(exitDt)) {

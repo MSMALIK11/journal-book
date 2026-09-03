@@ -73,13 +73,31 @@ JBSync.isLiteralOpenToken = function isLiteralOpenToken(value) {
   return /^open$/i.test(String(value || "").trim())
 }
 
+JBSync.isTpSlSignal = function isTpSlSignal(value) {
+  return /\b(tp\/sl|take\s*profit|stop\s*loss|\btp\b|\bsl\b|stop|target)\b/i.test(String(value || "").trim())
+}
+
+JBSync.isPaintedMtmOpen = function isPaintedMtmOpen(trade) {
+  const entry = trade?.entry
+  const exit = trade?.exit
+  if (!entry || !exit) return false
+  if (JBSync.isLiteralOpenToken(exit.datetime)) return true
+  const entryMs = new Date(JBSync.normalizeTradingViewDatetime(entry.datetime || "")).getTime()
+  const exitMs = new Date(JBSync.normalizeTradingViewDatetime(exit.datetime || "")).getTime()
+  const entryPrice = Number(entry.price)
+  const exitPrice = Number(exit.price)
+  if (!Number.isFinite(entryMs) || !Number.isFinite(exitMs) || !entryPrice) return false
+  return Math.abs(exitMs - entryMs) <= 90_000 && Math.abs(exitPrice - entryPrice) / entryPrice <= 0.0002
+}
+
 JBSync.isOpenTrade = function isOpenTrade(trade) {
   if (!trade?.exit) return true
-  return (
-    JBSync.isLiteralOpenToken(trade.exit.signal) ||
-    JBSync.isLiteralOpenToken(trade.entry?.signal) ||
-    JBSync.isLiteralOpenToken(trade.exit.datetime)
-  )
+  if (JBSync.isLiteralOpenToken(trade.exit.datetime)) return true
+  const leftoverOpen = JBSync.isLiteralOpenToken(trade.exit.signal) || JBSync.isLiteralOpenToken(trade.entry?.signal)
+  const confirmedTpSl = JBSync.isTpSlSignal(trade.exit.signal) && !JBSync.isLiteralOpenToken(trade.exit.signal)
+  if (leftoverOpen && !confirmedTpSl) return true
+  if (!confirmedTpSl && JBSync.isPaintedMtmOpen(trade)) return true
+  return false
 }
 
 JBSync.preferMergedTrade = function preferMergedTrade(prev, next) {
@@ -122,9 +140,10 @@ JBSync.dropSupersededOpenTrades = function dropSupersededOpenTrades(trades) {
     }
   }
 
-  if (!Number.isFinite(maxClosedEntryMs) && !Number.isFinite(maxClosedTradeNumber)) return list
-
-  return list.filter((trade) => {
+  const afterClosed =
+    !Number.isFinite(maxClosedEntryMs) && !Number.isFinite(maxClosedTradeNumber)
+      ? list
+      : list.filter((trade) => {
     if (!JBSync.isOpenTrade(trade)) return true
 
     const entryMs = JBSync.tradeEntryMs(trade)
@@ -137,6 +156,27 @@ JBSync.dropSupersededOpenTrades = function dropSupersededOpenTrades(trades) {
 
     return true
   })
+
+  return JBSync.keepLatestOpenPerSide(afterClosed)
+}
+
+JBSync.keepLatestOpenPerSide = function keepLatestOpenPerSide(trades) {
+  const latest = new Map()
+  ;(trades || []).forEach((trade, index) => {
+    if (!JBSync.isOpenTrade(trade)) return
+    const symbol = String(trade.instrument || "")
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase()
+    const key = `${symbol}:${trade.direction || "long"}`
+    const ms = JBSync.tradeEntryMs(trade)
+    const num = Number(trade.tradeNumber) || 0
+    const prev = latest.get(key)
+    if (!prev || num > prev.num || (num === prev.num && (ms || 0) > prev.ms)) {
+      latest.set(key, { index, num, ms: Number.isFinite(ms) ? ms : 0 })
+    }
+  })
+  const keep = new Set([...latest.values()].map((item) => item.index))
+  return (trades || []).filter((trade, index) => !JBSync.isOpenTrade(trade) || keep.has(index))
 }
 
 JBSync.rowFingerprint = function rowFingerprint(row) {
@@ -815,7 +855,7 @@ JBSync.buildReconcileOpensPayload = function buildReconcileOpensPayload(trades, 
   const instrument = JBSync.normalizeChartSymbol(chartSymbol)
   if (!instrument) return null
 
-  const opens = (trades || [])
+  const opens = JBSync.keepLatestOpenPerSide(trades || [])
     .filter((trade) => JBSync.isOpenTrade(trade))
     .map((trade) => ({
       externalId: JBSync.buildExternalId(trade),

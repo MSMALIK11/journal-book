@@ -131,12 +131,26 @@
 
   function isOpenCapturedTrade(trade) {
     if (!trade?.exit) return true
-    const sig = String(trade.exit.signal || "")
-      .trim()
-      .toLowerCase()
-    if (sig === "open") return true
-    if (String(trade.entry?.signal || "").trim().toLowerCase() === "open") return true
-    return false
+    const exitDt = String(trade.exit.datetime || "").trim()
+    if (/^open$/i.test(exitDt)) return true
+    const leftoverOpen =
+      /^open$/i.test(String(trade.exit.signal || "").trim()) ||
+      /^open$/i.test(String(trade.entry?.signal || "").trim())
+    const exitSig = String(trade.exit.signal || "").trim()
+    const confirmedTpSl = /\b(tp\/sl|take\s*profit|stop\s*loss|\btp\b|\bsl\b|stop|target)\b/i.test(exitSig) && !/^open$/i.test(exitSig)
+    if (leftoverOpen && !confirmedTpSl) return true
+    const entryMs = new Date(trade.entry?.datetime || "").getTime()
+    const exitMs = new Date(trade.exit.datetime || "").getTime()
+    const entryPrice = Number(trade.entry?.price)
+    const exitPrice = Number(trade.exit.price)
+    const paintedMtm =
+      Number.isFinite(entryMs) &&
+      Number.isFinite(exitMs) &&
+      entryPrice > 0 &&
+      Number.isFinite(exitPrice) &&
+      Math.abs(exitMs - entryMs) <= 90_000 &&
+      Math.abs(exitPrice - entryPrice) / entryPrice <= 0.0002
+    return !confirmedTpSl && paintedMtm
   }
 
   function mergeTradeRecord(before, incoming) {

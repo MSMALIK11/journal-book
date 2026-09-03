@@ -1,3 +1,4 @@
+import { setDefaultResultOrder } from "node:dns"
 import connectDB from "@/app/api/db/mongoose"
 import User from "@/app/api/models/User"
 import {
@@ -5,8 +6,15 @@ import {
   type TelegramPreferences,
 } from "@/lib/telegram/settings"
 
+try {
+  setDefaultResultOrder("ipv4first")
+} catch {
+  // Node versions without this API still send over default DNS.
+}
+
 const TELEGRAM_API = "https://api.telegram.org"
 const PREFS_CACHE_TTL_MS = 60_000
+const TELEGRAM_FETCH_ATTEMPTS = 3
 
 const prefsCache = new Map<string, { prefs: TelegramPreferences; at: number }>()
 let telegramWarmed = false
@@ -58,35 +66,38 @@ async function telegramRequest<T>(path: string, init?: RequestInit): Promise<{ o
     return { ok: false, error: "Telegram bot token is not configured. Add TELEGRAM_BOT_TOKEN to .env." }
   }
 
-  try {
-    const response = await fetch(`${TELEGRAM_API}/bot${token}/${path}`, {
-      ...init,
-      cache: "no-store",
-      keepalive: true,
-      next: { revalidate: 0 },
-      headers: {
-        "Content-Type": "application/json",
-        ...(init?.headers || {}),
-      },
-    })
-    const data = (await response.json().catch(() => null)) as
-      | { ok?: boolean; description?: string; result?: T }
-      | null
+  let lastError = "Telegram request failed"
+  for (let attempt = 0; attempt < TELEGRAM_FETCH_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(`${TELEGRAM_API}/bot${token}/${path}`, {
+        ...init,
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          ...(init?.headers || {}),
+        },
+      })
+      const data = (await response.json().catch(() => null)) as
+        | { ok?: boolean; description?: string; result?: T }
+        | null
 
-    if (!response.ok || !data?.ok) {
-      return {
-        ok: false,
-        error: data?.description || `Telegram request failed (${response.status})`,
+      if (!response.ok || !data?.ok) {
+        return {
+          ok: false,
+          error: data?.description || `Telegram request failed (${response.status})`,
+        }
+      }
+
+      return { ok: true, data: data.result as T }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Telegram request failed"
+      if (attempt < TELEGRAM_FETCH_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)))
       }
     }
-
-    return { ok: true, data: data.result as T }
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : "Telegram request failed",
-    }
   }
+
+  return { ok: false, error: lastError }
 }
 
 export function warmTelegramConnection() {
@@ -237,32 +248,50 @@ export function buildTelegramTradeMessage(event: TelegramTradeEvent) {
 
 export async function notifyTelegramTradeEvent(
   userId: string,
-  event: {
-    kind: "open" | "close"
-    side: string
-    instrument: string
-    price: number
-    accountName?: string
-    caption?: string
-  },
-) {
+  event: TelegramTradeEvent & { caption?: string },
+  options?: { force?: boolean },
+): Promise<TelegramApiResult> {
   try {
-    if (!isTelegramBotConfigured()) return
+    if (!isTelegramBotConfigured()) {
+      console.warn("[telegram] skip: bot token missing")
+      return { ok: false, error: "Telegram bot token is not configured" }
+    }
 
     const prefs = await getTelegramPrefs(userId)
-
     const chatId = resolveTelegramChatId(prefs.chatId)
-    if (!prefs.enabled || !chatId) return
-    if (event.kind === "open" && !prefs.notifyOpen) return
-    if (event.kind === "close" && !prefs.notifyClose) return
+    if (!chatId) {
+      console.warn("[telegram] skip: no chat id")
+      return { ok: false, error: "Telegram chat ID is missing" }
+    }
+
+    const envChat = getEnvTelegramChatId()
+    const allowed = Boolean(options?.force || prefs.enabled || envChat)
+    if (!allowed) {
+      console.warn("[telegram] skip: alerts disabled")
+      return { ok: false, error: "Telegram alerts are disabled" }
+    }
+    if (!options?.force && event.kind === "open" && !prefs.notifyOpen) {
+      console.warn("[telegram] skip: notifyOpen off")
+      return { ok: false, error: "Open-trade Telegram alerts are off" }
+    }
+    if (!options?.force && event.kind === "close" && !prefs.notifyClose) {
+      console.warn("[telegram] skip: notifyClose off")
+      return { ok: false, error: "Close-trade Telegram alerts are off" }
+    }
 
     const text = event.caption || buildTelegramTradeMessage(event)
     const result = await sendTelegramMessage(chatId, text)
 
     if (!result.ok) {
-      console.error("Telegram trade alert failed:", result.error)
+      console.error("[telegram] send failed:", result.error)
+      return result
     }
+
+    console.info(`[telegram] sent ${event.kind} ${event.side} ${event.instrument}`)
+    return { ok: true }
   } catch (error) {
-    console.error("Telegram trade alert failed:", error)
+    const message = error instanceof Error ? error.message : "Telegram request failed"
+    console.error("[telegram] send failed:", error)
+    return { ok: false, error: message }
   }
 }
