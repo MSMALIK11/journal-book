@@ -264,8 +264,7 @@ export async function notifyTelegramTradeEvent(
       return { ok: false, error: "Telegram chat ID is missing" }
     }
 
-    const envChat = getEnvTelegramChatId()
-    const allowed = Boolean(options?.force || prefs.enabled || envChat)
+    const allowed = Boolean(options?.force || prefs.enabled)
     if (!allowed) {
       console.warn("[telegram] skip: alerts disabled")
       return { ok: false, error: "Telegram alerts are disabled" }

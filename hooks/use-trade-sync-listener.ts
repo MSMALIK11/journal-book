@@ -8,6 +8,8 @@ import type { ImportedTradeSnapshot } from "@/lib/sync-events"
 export type TradeSyncEventDetail = {
   type?: string
   eventId?: string
+  kind?: "open" | "close"
+  at?: string
   accountId?: string
   accountName?: string
   imported?: number
@@ -38,14 +40,22 @@ const STALE_EVENT_MS = 2 * 60_000
 function logicalSyncKey(detail: TradeSyncEventDetail) {
   const tradeId = detail.latestTrade?.id || ""
   const entry = detail.latestTrade?.entry_date || ""
-  const phase = detail.latestTrade?.is_open === false ? "closed" : "open"
+  const phase = detail.kind || (detail.latestTrade?.is_open === false ? "closed" : "open")
   return `${detail.accountId || ""}:${tradeId}:${entry}:${detail.imported ?? 0}:${detail.updated ?? 0}:${phase}`
+}
+
+function asEventList(data: { event?: TradeSyncEventDetail; events?: TradeSyncEventDetail[] }) {
+  if (Array.isArray(data.events) && data.events.length) {
+    return data.events.filter((event) => event?.eventId)
+  }
+  return data.event?.eventId ? [data.event] : []
 }
 
 export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChange }: Options) {
   const onEventRef = useRef(onEvent)
   const onConnectionChangeRef = useRef(onConnectionChange)
   const lastEventIdRef = useRef<string | null>(null)
+  const seenEventIdsRef = useRef<Set<string>>(new Set())
   const lastLogicalKeyRef = useRef<string | null>(null)
   const lastServerEventIdRef = useRef<string | null>(null)
 
@@ -63,15 +73,23 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
       return
     }
 
-    if (detail.eventId && detail.eventId === lastEventIdRef.current) return
-
-    const key = logicalSyncKey(detail)
-    if (key === lastLogicalKeyRef.current) {
-      if (detail.eventId) lastEventIdRef.current = detail.eventId
+    if (detail.eventId && (detail.eventId === lastEventIdRef.current || seenEventIdsRef.current.has(detail.eventId))) {
       return
     }
 
-    if (detail.eventId) lastEventIdRef.current = detail.eventId
+    const key = logicalSyncKey(detail)
+    if (key === lastLogicalKeyRef.current) {
+      if (detail.eventId) {
+        lastEventIdRef.current = detail.eventId
+        seenEventIdsRef.current.add(detail.eventId)
+      }
+      return
+    }
+
+    if (detail.eventId) {
+      lastEventIdRef.current = detail.eventId
+      seenEventIdsRef.current.add(detail.eventId)
+    }
     lastLogicalKeyRef.current = key
 
     const imported = detail.imported ?? 0
@@ -109,12 +127,18 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
       try {
         const response = await authFetch("/api/sync/last-event")
         const data = await response.json()
-        if (!response.ok || !data.event?.eventId) return
+        if (!response.ok) return
+        const events = asEventList(data)
+        if (!events.length) return
 
-        const serverEventId = String(data.event.eventId)
+        const newest = events[events.length - 1]
+        const serverEventId = String(newest.eventId)
         if (serverEventId === lastServerEventIdRef.current) return
-        if (serverEventId === lastEventIdRef.current) {
+        if (serverEventId === lastEventIdRef.current || seenEventIdsRef.current.has(serverEventId)) {
           lastServerEventIdRef.current = serverEventId
+          for (const event of events) {
+            if (event.eventId) seenEventIdsRef.current.add(String(event.eventId))
+          }
           return
         }
 
@@ -124,15 +148,26 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
         lastServerEventIdRef.current = serverEventId
 
         if (!wasPrimed) {
-          const ageMs = data.event.at ? Date.now() - new Date(data.event.at).getTime() : 0
           lastLogicalKeyRef.current =
-            lastLogicalKeyRef.current || logicalSyncKey({ type: "trades_updated", ...data.event })
+            lastLogicalKeyRef.current || logicalSyncKey({ type: "trades_updated", ...newest })
           if (!lastEventIdRef.current) lastEventIdRef.current = serverEventId
+          for (const event of events) {
+            if (event.eventId) seenEventIdsRef.current.add(String(event.eventId))
+          }
           // History, or DOM/SSE already delivered this fill — do not replay the alarm.
-          if (alreadyHadLiveEvent || ageMs > STALE_EVENT_MS) return
+          if (alreadyHadLiveEvent) return
+          for (const event of events) {
+            const ageMs = event.at ? Date.now() - new Date(event.at).getTime() : 0
+            if (ageMs > STALE_EVENT_MS) continue
+            seenEventIdsRef.current.delete(String(event.eventId))
+            handleEvent({ type: "trades_updated", ...event })
+          }
+          return
         }
 
-        handleEvent({ type: "trades_updated", ...data.event })
+        for (const event of events) {
+          handleEvent({ type: "trades_updated", ...event })
+        }
       } catch {
         // silent — SSE or next poll retries
       }

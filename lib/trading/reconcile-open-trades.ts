@@ -2,6 +2,7 @@ import "server-only"
 
 import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
+import { estimateClosedTradeMetrics } from "@/lib/trading/close-pnl"
 import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
 import { normalizeTradingViewDatetime } from "@/lib/validations/tradingview-sync"
 
@@ -63,33 +64,62 @@ export async function reconcileStaleOpenTrades(
     userId,
     source: "tradingview",
     instrument: { $in: symbols },
-  }).select("_id external_id entry_date exit_date signal tags trade_type")
+  }).select(
+    "_id external_id entry_date exit_date signal tags trade_type entry_price quantity contract_size instrument",
+  )
 
-  const stale = candidates
-    .filter((trade) => isOpenSyncedTrade(trade))
-    .filter((trade) => {
-      if (trade.external_id && activeExternalIds.has(trade.external_id)) return false
+  const openRows = candidates.filter((trade) => isOpenSyncedTrade(trade))
+  const stale = openRows.filter((trade) => {
+    if (trade.external_id && activeExternalIds.has(trade.external_id)) return false
 
-      const direction = trade.trade_type === "Sell" ? "short" : "long"
-      const entryMs = trade.entry_date?.getTime?.() ?? new Date(trade.entry_date).getTime()
-      if (Number.isFinite(entryMs)) {
-        for (const key of activeKeys) {
-          const [dir, msText] = key.split(":")
-          const ms = Number(msText)
-          if (dir === direction && Math.abs(ms - entryMs) <= ENTRY_MATCH_TOLERANCE_MS) {
-            return false
-          }
+    const direction = trade.trade_type === "Sell" ? "short" : "long"
+    const entryMs = trade.entry_date?.getTime?.() ?? new Date(trade.entry_date).getTime()
+    if (Number.isFinite(entryMs)) {
+      for (const key of activeKeys) {
+        const [dir, msText] = key.split(":")
+        const ms = Number(msText)
+        if (dir === direction && Math.abs(ms - entryMs) <= ENTRY_MATCH_TOLERANCE_MS) {
+          return false
         }
       }
+    }
 
-      return true
-    })
+    return true
+  })
 
   if (!stale.length) return 0
 
+  const keepers = openRows.filter((trade) => !stale.includes(trade))
   const now = new Date()
   for (const trade of stale) {
-    await Trade.updateOne({ _id: trade._id, userId }, { $set: { exit_date: now } })
+    const symbol = canonicalInstrumentSymbol(trade.instrument) || trade.instrument
+    const keeper = keepers
+      .filter((row) => {
+        const rowSymbol = canonicalInstrumentSymbol(row.instrument) || row.instrument
+        return rowSymbol === symbol && row.trade_type === trade.trade_type
+      })
+      .sort((a, b) => (b.entry_date?.getTime?.() ?? 0) - (a.entry_date?.getTime?.() ?? 0))[0]
+
+    const exit_price = keeper?.entry_price ?? trade.entry_price
+    const exit_date = keeper?.entry_date || now
+    const metrics = estimateClosedTradeMetrics({
+      trade_type: trade.trade_type,
+      entry_price: trade.entry_price,
+      exit_price,
+      quantity: trade.quantity,
+      contract_size: trade.contract_size,
+    })
+    await Trade.updateOne(
+      { _id: trade._id, userId },
+      {
+        $set: {
+          exit_date,
+          exit_price,
+          net_pnl: metrics.net_pnl,
+          return_pct: metrics.return_pct,
+        },
+      },
+    )
   }
   return stale.length
 }
@@ -116,11 +146,91 @@ export async function closeDuplicateLiveOpens(userId: string) {
 
     trade.exit_date = keeper.entry_date || new Date()
     if (keeper.entry_price != null) trade.exit_price = keeper.entry_price
+    if (trade.exit_price != null && typeof trade.net_pnl !== "number") {
+      const metrics = estimateClosedTradeMetrics({
+        trade_type: trade.trade_type,
+        entry_price: trade.entry_price,
+        exit_price: trade.exit_price,
+        quantity: trade.quantity,
+        contract_size: trade.contract_size,
+      })
+      trade.net_pnl = metrics.net_pnl
+      trade.return_pct = metrics.return_pct
+    }
     await trade.save()
     closed.push(trade)
   }
 
   return closed
+}
+
+/** Fill leftover-Open closes that only got an exit time (no price / P&L). */
+export async function healIncompleteTvCloses(userId: string) {
+  const broken = await Trade.find({
+    userId,
+    source: "tradingview",
+    exit_date: { $exists: true, $ne: null },
+    $or: [
+      { exit_price: { $exists: false } },
+      { exit_price: null },
+      { net_pnl: { $exists: false } },
+      { net_pnl: null },
+    ],
+  })
+  if (!broken.length) {
+    return { healed: 0, touches: [] as { accountId: string; instrument: string; updated: number }[] }
+  }
+
+  const opens = await Trade.find({
+    userId,
+    source: "tradingview",
+    $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+  })
+
+  let healed = 0
+  const touches = new Map<string, { accountId: string; instrument: string; updated: number }>()
+  for (const trade of broken) {
+    const symbol = canonicalInstrumentSymbol(trade.instrument) || trade.instrument
+    const keeper = opens
+      .filter((open) => {
+        const openSymbol = canonicalInstrumentSymbol(open.instrument) || open.instrument
+        return (
+          openSymbol === symbol &&
+          open.trade_type === trade.trade_type &&
+          (open.entry_date?.getTime?.() ?? 0) >= (trade.entry_date?.getTime?.() ?? 0)
+        )
+      })
+      .sort((a, b) => (b.entry_date?.getTime?.() ?? 0) - (a.entry_date?.getTime?.() ?? 0))[0]
+
+    const exit_price = trade.exit_price ?? keeper?.entry_price
+    if (exit_price == null || !Number.isFinite(exit_price) || exit_price <= 0) continue
+
+    const metrics = estimateClosedTradeMetrics({
+      trade_type: trade.trade_type,
+      entry_price: trade.entry_price,
+      exit_price,
+      quantity: trade.quantity,
+      contract_size: trade.contract_size,
+    })
+
+    const patch: Record<string, unknown> = {}
+    if (trade.exit_price == null) patch.exit_price = exit_price
+    if (typeof trade.net_pnl !== "number") patch.net_pnl = metrics.net_pnl
+    if (typeof trade.return_pct !== "number") patch.return_pct = metrics.return_pct
+    if (!Object.keys(patch).length) continue
+
+    await Trade.updateOne({ _id: trade._id, userId }, { $set: patch })
+    healed += 1
+    const accountId = String(trade.accountId)
+    const prior = touches.get(accountId)
+    if (prior) {
+      prior.updated += 1
+    } else {
+      touches.set(accountId, { accountId, instrument: symbol, updated: 1 })
+    }
+  }
+
+  return { healed, touches: [...touches.values()] }
 }
 
 /**

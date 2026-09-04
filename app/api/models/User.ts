@@ -19,12 +19,24 @@ export interface IUser {
   sync_last_trade_event?: {
     eventId?: string;
     at?: string;
+    kind?: "open" | "close";
     accountId?: string;
     accountName?: string;
     imported?: number;
     updated?: number;
     skipped?: number;
   };
+  sync_last_trade_events?: Array<{
+    eventId?: string;
+    at?: string;
+    kind?: "open" | "close";
+    accountId?: string;
+    accountName?: string;
+    imported?: number;
+    updated?: number;
+    skipped?: number;
+  }>;
+  sync_lock_until?: Date;
   alertPreferences?: {
     dailyDigest?: boolean;
     weakHours?: boolean;
@@ -127,6 +139,13 @@ const UserSchema = new Schema<IUser>(
     },
     sync_last_trade_event: {
       type: Schema.Types.Mixed,
+    },
+    sync_last_trade_events: {
+      type: [Schema.Types.Mixed],
+      default: undefined,
+    },
+    sync_lock_until: {
+      type: Date,
     },
     alertPreferences: {
       type: Schema.Types.Mixed,
