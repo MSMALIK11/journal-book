@@ -51,6 +51,7 @@ import {
   DEFAULT_LIVE_SYNC_POLL_SECONDS,
   getLiveSyncPollSeconds,
 } from "@/lib/live-sync-settings"
+import { estimateClosedTradeMetrics } from "@/lib/trading/close-pnl"
 import { formatTradeSignal } from "@/lib/trading/trade-display"
 import { cn } from "@/lib/utils"
 type SyncTrade = {
@@ -62,6 +63,7 @@ type SyncTrade = {
   entry_price: number
   exit_price?: number
   quantity: number
+  contract_size?: number
   net_pnl?: number
   return_pct?: number
   commission?: number
@@ -74,6 +76,41 @@ type SyncTrade = {
 function isLiveOpen(trade: SyncTrade) {
   if (trade.is_open === false) return false
   return !trade.exit_date
+}
+
+/** Leftover-Open collapse sometimes stored only an exit time. Fill price/P&L from the live keeper. */
+function completeClosedDisplay(trade: SyncTrade, trades: SyncTrade[]): SyncTrade {
+  if (isLiveOpen(trade)) return trade
+  if (trade.exit_price != null && typeof trade.net_pnl === "number") return trade
+
+  const keeper = trades
+    .filter(
+      (other) =>
+        other.id !== trade.id &&
+        other.instrument === trade.instrument &&
+        other.trade_type === trade.trade_type &&
+        isLiveOpen(other) &&
+        new Date(other.entry_date).getTime() >= new Date(trade.entry_date).getTime(),
+    )
+    .sort((a, b) => new Date(b.entry_date).getTime() - new Date(a.entry_date).getTime())[0]
+
+  const exit_price = trade.exit_price ?? keeper?.entry_price
+  if (exit_price == null) return trade
+
+  const metrics = estimateClosedTradeMetrics({
+    trade_type: trade.trade_type,
+    entry_price: trade.entry_price,
+    exit_price,
+    quantity: trade.quantity,
+    contract_size: trade.contract_size,
+  })
+
+  return {
+    ...trade,
+    exit_price,
+    net_pnl: typeof trade.net_pnl === "number" ? trade.net_pnl : metrics.net_pnl,
+    return_pct: typeof trade.return_pct === "number" ? trade.return_pct : metrics.return_pct,
+  }
 }
 
 type SyncStatus = {
@@ -130,7 +167,10 @@ export function LiveSyncDashboard() {
     return () => window.removeEventListener("jb-live-sync-settings-changed", updatePoll)
   }, [])
 
-  const trades = tradesData?.trades ?? []
+  const trades = useMemo(
+    () => (tradesData?.trades ?? []).map((trade) => completeClosedDisplay(trade, tradesData?.trades ?? [])),
+    [tradesData?.trades],
+  )
 
   const onComplete = useCallback((result: import("@/lib/client-extension-sync").ExtensionSyncResult | null) => {
     const imported = result?.imported || 0

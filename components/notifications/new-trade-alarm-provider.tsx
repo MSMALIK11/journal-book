@@ -41,10 +41,13 @@ function resolveOpenTradeForAlarm(
 }
 
 function shouldConsiderAlarm(data: {
+  kind?: "open" | "close"
   imported?: number
   updated?: number
   latestTrade?: ImportedTradeSnapshot
 }) {
+  if (data.kind === "close") return false
+  if (data.latestTrade?.is_open === false) return false
   return (data.imported ?? 0) > 0
 }
 
@@ -309,6 +312,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
     (data: {
       type?: string
       eventId?: string
+      kind?: "open" | "close"
       at?: string
       imported?: number
       updated?: number
@@ -317,6 +321,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
       latestTrade?: ImportedTradeSnapshot
     }) => {
       if (data.type !== "trades_updated") return
+      if (data.kind === "close" || data.latestTrade?.is_open === false) return
       if (!shouldConsiderAlarm(data)) return
 
       void triggerAlarm({
@@ -368,9 +373,18 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
       try {
         const response = await authFetch("/api/sync/last-event")
         const data = await response.json()
-        const event = data?.event
+        const events = Array.isArray(data?.events) && data.events.length
+          ? data.events
+          : data?.event
+            ? [data.event]
+            : []
+        const event = [...events].reverse().find((item: {
+          kind?: "open" | "close"
+          imported?: number
+          latestTrade?: ImportedTradeSnapshot
+        }) => shouldConsiderAlarm(item))
         if (!response.ok || !event?.eventId || !shouldConsiderAlarm(event)) return
-        if (event.latestTrade?.is_open !== true) return
+        if (event.kind === "close" || event.latestTrade?.is_open !== true) return
         if (/\b(tp\/sl|exit\s+(long|short))\b/i.test(String(event.latestTrade.signal || ""))) return
 
         const ageMs = event.at ? Date.now() - new Date(event.at).getTime() : CATCHUP_WINDOW_MS + 1

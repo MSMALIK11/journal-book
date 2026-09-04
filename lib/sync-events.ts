@@ -12,6 +12,7 @@ export type ImportedTradeSnapshot = {
 export type TradesUpdatedEvent = {
   type: "trades_updated"
   eventId?: string
+  kind?: "open" | "close"
   accountId: string
   accountName?: string
   imported: number
@@ -63,7 +64,7 @@ export function publishTradesUpdated(
   accountId: string,
   payload: Pick<
     TradesUpdatedEvent,
-    "eventId" | "imported" | "updated" | "skipped" | "accountName" | "latestTrade"
+    "eventId" | "kind" | "imported" | "updated" | "skipped" | "accountName" | "latestTrade"
   >,
 ) {
   const event: TradesUpdatedEvent = { type: "trades_updated", accountId, ...payload }
