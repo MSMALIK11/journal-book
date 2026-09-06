@@ -1,13 +1,14 @@
-/* global JBSync */
-const VERSION = "1.17.23"
+/* global JBSync, JBWatch */
+const VERSION = "1.18.1"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 120
 const LOCAL_JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
 const JOURNAL_SCRIPT_ID = "jb-journal-bridge-dynamic"
 const IMPORT_ALL_MAX_MS = 15 * 60 * 1000
+const MULTI_TAB_POLL_MIN_MS = 2_000
 
-importScripts("../lib/symbol-utils.js", "../lib/sync-client.js")
+importScripts("../lib/symbol-utils.js", "../lib/sync-client.js", "watch-tabs.js")
 
 let syncInFlight = false
 let importAllInFlight = false
@@ -20,6 +21,7 @@ let pendingCapturePayload = null
 let lastJournalSyncAt = 0
 let lastTableSyncAt = 0
 let lastRefreshCheckAt = 0
+let lastMultiTabPollAt = 0
 const JOURNAL_SYNC_MIN_MS = 3_000
 const TABLE_SYNC_MIN_MS = 350
 const REFRESH_CHECK_MIN_MS = 5_000
@@ -281,6 +283,10 @@ async function sendHeartbeatIfConfigured() {
 }
 
 async function runAutoSync(source) {
+  if (source === "poll" && Date.now() - lastMultiTabPollAt < MULTI_TAB_POLL_MIN_MS) {
+    return null
+  }
+
   if (await isBackgroundSyncPaused()) {
     if (
       source === "capture" ||
@@ -323,7 +329,9 @@ async function runAutoSync(source) {
       return null
     }
 
-    const result = await JBSync.refreshNewTrades(config)
+    if (source === "poll") lastMultiTabPollAt = Date.now()
+
+    const result = await JBSync.refreshWatchTrades(config, { injectTvHooks: injectTvHooks })
     if (result?.imported > 0 || result?.updated > 0) {
       console.info(`${source} sync ok:`, result.imported, "imported,", result.updated, "updated")
     }
@@ -366,7 +374,12 @@ async function syncCapturePayload(payload) {
   try {
     if (trades.length) {
       try {
-        const result = await JBSync.syncCapturedTrades(config, trades, payload?.chartSymbol)
+        const result = await JBSync.syncCapturedTrades(
+          config,
+          trades,
+          payload?.chartSymbol,
+          payload?.sourceTabId,
+        )
         if (result?.imported > 0 || result?.updated > 0 || result?.closedStale > 0) {
           console.info(
             "instant capture sync:",
@@ -550,7 +563,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "TRADE_CAPTURED") {
-    void syncCapturePayload(message)
+    void syncCapturePayload({ ...message, sourceTabId: sender?.tab?.id })
     sendResponse({ ok: true })
     return false
   }

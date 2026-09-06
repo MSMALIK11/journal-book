@@ -1,5 +1,8 @@
 import { persistClosedTradeAlert, persistNewTradeAlert } from "@/lib/trading/alerts-server"
-import { isTpSlSignal } from "@/lib/trading/tradingview-open"
+import { isFreshOpenFill, LIVE_OPEN_ALERT_MAX_MS } from "@/lib/trading/live-open-alert-timing"
+import { isEntryFlipSignal, isTpSlSignal, isTypedExitSignal } from "@/lib/trading/tradingview-open"
+
+export { isFreshOpenFill, LIVE_OPEN_ALERT_MAX_MS } from "@/lib/trading/live-open-alert-timing"
 
 export const RECENT_SCALP_MS = 3 * 60_000
 
@@ -45,7 +48,14 @@ export function isRealLiveClose(mapped: {
 }) {
   if (!mapped.exit_date) return false
   if (!Number.isFinite(mapped.exit_price) || (mapped.exit_price ?? 0) <= 0) return false
+  if (isTypedExitSignal(mapped.signal)) return true
   if (isTpSlSignal(mapped.signal)) return true
+  if (isEntryFlipSignal(mapped.signal) && !isTpSlSignal(mapped.signal)) {
+    return (
+      (typeof mapped.net_pnl === "number" && Number.isFinite(mapped.net_pnl)) ||
+      (typeof mapped.return_pct === "number" && Number.isFinite(mapped.return_pct))
+    )
+  }
   if (typeof mapped.net_pnl === "number" && Number.isFinite(mapped.net_pnl)) {
     return true
   }

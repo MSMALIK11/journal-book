@@ -78,6 +78,8 @@ export interface IUser {
     lastMonthlyExportPath?: string;
     lastMonthlyExportCount?: number;
   };
+  /** Symbols the extension opens in background TV tabs for multi-symbol sync. */
+  watch_symbols?: string[];
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -162,6 +164,10 @@ const UserSchema = new Schema<IUser>(
     autoExportPreferences: {
       type: Schema.Types.Mixed,
       default: {},
+    },
+    watch_symbols: {
+      type: [String],
+      default: [],
     },
   },
   {

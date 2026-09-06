@@ -7,6 +7,40 @@ import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
 import { normalizeTradingViewDatetime } from "@/lib/validations/tradingview-sync"
 
 const ENTRY_MATCH_TOLERANCE_MS = 60_000
+const SAME_FILL_PRICE_TOLERANCE = 0.001
+
+function sameEntryPrice(a?: number | null, b?: number | null) {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || !a) return false
+  return Math.abs((a as number) - (b as number)) / Math.abs(a as number) <= SAME_FILL_PRICE_TOLERANCE
+}
+
+function entryMsValue(value?: Date | string | null) {
+  if (!value) return NaN
+  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime()
+  return Number.isFinite(ms) ? ms : NaN
+}
+
+function resolveStaleExit(
+  stale: { entry_price: number; entry_date?: Date; trade_type: string },
+  keepers: Array<{ entry_price: number; entry_date?: Date; trade_type: string; instrument: string }>,
+  symbol: string,
+) {
+  const sameSide = keepers
+    .filter((row) => (canonicalInstrumentSymbol(row.instrument) || row.instrument) === symbol && row.trade_type === stale.trade_type)
+    .sort((a, b) => entryMsValue(b.entry_date) - entryMsValue(a.entry_date))[0]
+  if (sameSide) {
+    return { exit_price: sameSide.entry_price, exit_date: sameSide.entry_date || new Date() }
+  }
+
+  const flipSide = keepers
+    .filter((row) => (canonicalInstrumentSymbol(row.instrument) || row.instrument) === symbol && row.trade_type !== stale.trade_type)
+    .sort((a, b) => entryMsValue(b.entry_date) - entryMsValue(a.entry_date))[0]
+  if (flipSide) {
+    return { exit_price: flipSide.entry_price, exit_date: flipSide.entry_date || new Date() }
+  }
+
+  return { exit_price: stale.entry_price, exit_date: new Date() }
+}
 
 const INSTRUMENT_ALIASES: Record<string, string[]> = {
   XAUUSD: ["XAUUSD", "XAUUSDT", "XAU", "GOLD"],
@@ -90,18 +124,9 @@ export async function reconcileStaleOpenTrades(
   if (!stale.length) return 0
 
   const keepers = openRows.filter((trade) => !stale.includes(trade))
-  const now = new Date()
   for (const trade of stale) {
     const symbol = canonicalInstrumentSymbol(trade.instrument) || trade.instrument
-    const keeper = keepers
-      .filter((row) => {
-        const rowSymbol = canonicalInstrumentSymbol(row.instrument) || row.instrument
-        return rowSymbol === symbol && row.trade_type === trade.trade_type
-      })
-      .sort((a, b) => (b.entry_date?.getTime?.() ?? 0) - (a.entry_date?.getTime?.() ?? 0))[0]
-
-    const exit_price = keeper?.entry_price ?? trade.entry_price
-    const exit_date = keeper?.entry_date || now
+    const { exit_price, exit_date } = resolveStaleExit(trade, keepers, symbol)
     const metrics = estimateClosedTradeMetrics({
       trade_type: trade.trade_type,
       entry_price: trade.entry_price,
@@ -124,7 +149,10 @@ export async function reconcileStaleOpenTrades(
   return stale.length
 }
 
-/** Keep the newest live Open per symbol/side. Older leftovers become closed. */
+/**
+ * One live Open per symbol (flip strategies flip long↔short).
+ * Duplicate same-fill rows are deleted; older leftovers close at the keeper entry.
+ */
 export async function closeDuplicateLiveOpens(userId: string) {
   const opens = await Trade.find({
     userId,
@@ -132,20 +160,30 @@ export async function closeDuplicateLiveOpens(userId: string) {
     $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
   }).sort({ entry_date: -1 })
 
-  const keeperByKey = new Map<string, (typeof opens)[number]>()
+  const keeperBySymbol = new Map<string, (typeof opens)[number]>()
   const closed: typeof opens = []
 
   for (const trade of opens) {
     const symbol = canonicalInstrumentSymbol(trade.instrument) || trade.instrument
-    const key = `${symbol}:${trade.trade_type}`
-    const keeper = keeperByKey.get(key)
+    const keeper = keeperBySymbol.get(symbol)
     if (!keeper) {
-      keeperByKey.set(key, trade)
+      keeperBySymbol.set(symbol, trade)
+      continue
+    }
+
+    const sameSide = trade.trade_type === keeper.trade_type
+    const sameFill =
+      sameSide &&
+      (sameEntryPrice(trade.entry_price, keeper.entry_price) ||
+        Math.abs(entryMsValue(trade.entry_date) - entryMsValue(keeper.entry_date)) <= ENTRY_MATCH_TOLERANCE_MS)
+
+    if (sameFill) {
+      await Trade.deleteOne({ _id: trade._id, userId })
       continue
     }
 
     trade.exit_date = keeper.entry_date || new Date()
-    if (keeper.entry_price != null) trade.exit_price = keeper.entry_price
+    trade.exit_price = keeper.entry_price ?? trade.entry_price
     if (trade.exit_price != null && typeof trade.net_pnl !== "number") {
       const metrics = estimateClosedTradeMetrics({
         trade_type: trade.trade_type,
@@ -161,7 +199,44 @@ export async function closeDuplicateLiveOpens(userId: string) {
     closed.push(trade)
   }
 
+  await purgeCollapseGhostCloses(userId)
   return closed
+}
+
+/** Remove fake $0 rows left by duplicate-open collapse (entry = exit, no real TV close). */
+export async function purgeCollapseGhostCloses(userId: string) {
+  const ghosts = await Trade.find({
+    userId,
+    source: "tradingview",
+    exit_date: { $exists: true, $ne: null },
+    $expr: { $eq: ["$entry_price", "$exit_price"] },
+    $or: [{ net_pnl: 0 }, { net_pnl: { $exists: false } }, { net_pnl: null }],
+  }).select("_id instrument trade_type entry_date exit_date")
+
+  if (!ghosts.length) return 0
+
+  let removed = 0
+  for (const ghost of ghosts) {
+    const symbol = canonicalInstrumentSymbol(ghost.instrument) || ghost.instrument
+    const ghostEntryMs = entryMsValue(ghost.entry_date)
+    const hasLiveOpen = await Trade.exists({
+      userId,
+      source: "tradingview",
+      instrument: { $in: instrumentMatchList(symbol) },
+      $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+    })
+    const hasNewerFill = await Trade.exists({
+      userId,
+      source: "tradingview",
+      instrument: { $in: instrumentMatchList(symbol) },
+      entry_date: { $gt: ghost.entry_date },
+    })
+    if (hasLiveOpen || hasNewerFill) {
+      await Trade.deleteOne({ _id: ghost._id, userId })
+      removed += 1
+    }
+  }
+  return removed
 }
 
 /** Fill leftover-Open closes that only got an exit time (no price / P&L). */

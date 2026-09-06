@@ -4,7 +4,7 @@ import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { dropSupersededOpenTradesFromPayload, priceMatchesInstrument } from "@/lib/trading/price-sanity"
-import { closeDuplicateLiveOpens, healIncompleteTvCloses, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { closeDuplicateLiveOpens, healIncompleteTvCloses, purgeCollapseGhostCloses, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
 import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
@@ -15,6 +15,7 @@ import { getSyncAuth } from "@/lib/sync-auth"
 import { touchSyncHeartbeat } from "@/lib/sync-heartbeat"
 import {
   flushLiveFillAlerts,
+  isFreshOpenFill,
   isRealLiveClose,
   isRecentScalp,
   type LiveFillEvent,
@@ -129,6 +130,7 @@ export async function POST(request: NextRequest) {
     await connectDB()
 
     return await withUserSyncLock(auth.userId, async () => {
+    await closeDuplicateLiveOpens(auth.userId)
     let accounts = await getUserAccounts(auth.userId)
     const newAccounts: { id: string; name: string }[] = []
     const seenAccountIds = new Set<string>()
@@ -329,24 +331,28 @@ export async function POST(request: NextRequest) {
         latestImportedByAccount[accountId] = snapshot
         if (isOpen) {
           latestOpenImportedByAccount[accountId] = snapshot
-          fillEvents.push({
-            kind: "open",
-            reason: "new_open",
-            userId: auth.userId,
-            accountId,
-            accountName: targetAccount.name,
-            trade: snapshot,
-          })
+          if (isFreshOpenFill(mapped.entry_date)) {
+            fillEvents.push({
+              kind: "open",
+              reason: "new_open",
+              userId: auth.userId,
+              accountId,
+              accountName: targetAccount.name,
+              trade: snapshot,
+            })
+          }
         } else if (isRecentScalp(mapped.exit_date)) {
           const closedTrade = closeFillTrade(snapshot, mapped)
-          fillEvents.push({
-            kind: "open",
-            reason: "recent_scalp_open",
-            userId: auth.userId,
-            accountId,
-            accountName: targetAccount.name,
-            trade: { ...snapshot, is_open: true },
-          })
+          if (isFreshOpenFill(mapped.entry_date)) {
+            fillEvents.push({
+              kind: "open",
+              reason: "recent_scalp_open",
+              userId: auth.userId,
+              accountId,
+              accountName: targetAccount.name,
+              trade: { ...snapshot, is_open: true },
+            })
+          }
           fillEvents.push({
             kind: "close",
             reason: "recent_scalp_close",
@@ -380,14 +386,16 @@ export async function POST(request: NextRequest) {
           imported += 1
           byAccount[accountId].imported += 1
           latestOpenImportedByAccount[accountId] = snapshot
-          fillEvents.push({
-            kind: "open",
-            reason: "reopen",
-            userId: auth.userId,
-            accountId,
-            accountName: targetAccount.name,
-            trade: snapshot,
-          })
+          if (isFreshOpenFill(mapped.entry_date)) {
+            fillEvents.push({
+              kind: "open",
+              reason: "reopen",
+              userId: auth.userId,
+              accountId,
+              accountName: targetAccount.name,
+              trade: snapshot,
+            })
+          }
         } else if (wasOpen && mapped.exit_date && isRealLiveClose(mapped)) {
           fillEvents.push({
             kind: "close",
@@ -557,6 +565,7 @@ export async function POST(request: NextRequest) {
     }
 
     await flushLiveFillAlerts(fillEvents)
+    await purgeCollapseGhostCloses(auth.userId)
 
     const byAccountSummary = Object.fromEntries(
       Object.entries(byAccount)

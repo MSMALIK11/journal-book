@@ -108,4 +108,20 @@ JBSymbol.normalize = function normalize(raw) {
   return normalized
 }
 
+JBSymbol.toTradingViewSymbol = function toTradingViewSymbol(canonical) {
+  const key = JBSymbol.normalize(canonical)
+  const map = {
+    XAUUSD: "OANDA:XAUUSD",
+    XAGUSD: "OANDA:XAGUSD",
+    BTCUSDT: "BINANCE:BTCUSDT",
+    BTCUSD: "BINANCE:BTCUSDT",
+    ETHUSDT: "BINANCE:ETHUSDT",
+    ETHUSD: "BINANCE:ETHUSDT",
+    SOLUSD: "COINBASE:SOLUSD",
+    SOLUSDT: "COINBASE:SOLUSD",
+    USOIL: "TVC:USOIL",
+  }
+  return map[key] || key
+}
+
 globalThis.JBSymbol = JBSymbol

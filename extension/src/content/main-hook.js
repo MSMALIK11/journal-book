@@ -150,7 +150,18 @@
       Number.isFinite(exitPrice) &&
       Math.abs(exitMs - entryMs) <= 90_000 &&
       Math.abs(exitPrice - entryPrice) / entryPrice <= 0.0002
-    return !confirmedTpSl && paintedMtm
+    if (!confirmedTpSl && paintedMtm) return true
+    const flipSig = /^(long|short)$/i.test(exitSig)
+    if (
+      flipSig &&
+      !confirmedTpSl &&
+      !/\bexit\s+(long|short)\b/i.test(exitSig) &&
+      typeof trade.netPnl !== "number" &&
+      typeof trade.returnPct !== "number"
+    ) {
+      return true
+    }
+    return false
   }
 
   function mergeTradeRecord(before, incoming) {

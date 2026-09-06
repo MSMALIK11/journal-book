@@ -11,6 +11,15 @@ export function isTpSlSignal(signal?: string | null) {
   )
 }
 
+/** Strategy entry labels that sometimes appear on the exit half before a flip settles. */
+export function isEntryFlipSignal(signal?: string | null) {
+  return /^(long|short)$/i.test(String(signal || "").trim())
+}
+
+export function isTypedExitSignal(signal?: string | null) {
+  return /\bexit\s+(long|short)\b/i.test(String(signal || "").trim())
+}
+
 function datetimeMs(value?: string | null) {
   const raw = String(value || "").trim()
   if (!raw || isOpenTvSignal(raw)) return NaN
@@ -57,6 +66,18 @@ export function isOpenTvTrade(trade: {
 
   // Same stamp + same price and no TP/SL = just-opened MTM paint, not a close.
   if (!confirmedTpSl && isPaintedMtmOpen(trade)) return true
+
+  // Flip label (LONG/SHORT) on exit without realized P&L — still live, not a fill.
+  const exitSig = trade.exit?.signal
+  if (
+    isEntryFlipSignal(exitSig) &&
+    !isTpSlSignal(exitSig) &&
+    !isTypedExitSignal(exitSig) &&
+    typeof trade.netPnl !== "number" &&
+    typeof trade.returnPct !== "number"
+  ) {
+    return true
+  }
 
   return false
 }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import connectDB from "@/app/api/db/mongoose"
 import User from "@/app/api/models/User"
 import { connectedThresholdMs, touchSyncHeartbeat } from "@/lib/sync-heartbeat"
+import { normalizeWatchSymbols } from "@/lib/trading/watch-symbols"
 import { getSession } from "@/lib/session"
 import { withSyncCors } from "@/lib/sync-cors"
 import { getSyncAuth } from "@/lib/sync-auth"
@@ -27,11 +28,16 @@ export async function POST(request: NextRequest) {
 
     await touchSyncHeartbeat(auth.userId, pollIntervalSeconds, extensionId)
 
+    await connectDB()
+    const user = await User.findById(auth.userId).select("watch_symbols").lean()
+    const watch_symbols = normalizeWatchSymbols(user?.watch_symbols)
+
     return withSyncCors(
       request,
       NextResponse.json({
         ok: true,
         at: new Date().toISOString(),
+        watch_symbols,
       }),
     )
   } catch (error) {

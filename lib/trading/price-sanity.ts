@@ -62,7 +62,26 @@ export function dropSupersededOpenTradesFromPayload(trades: TradingViewTradeInpu
     return true
   })
 
-  return keepLatestOpenPerSide(afterClosed)
+  return keepLatestOpenPerInstrument(keepLatestOpenPerSide(afterClosed))
+}
+
+/** Flip strategies carry one live position per symbol — keep the newest Open only. */
+export function keepLatestOpenPerInstrument(trades: TradingViewTradeInput[]) {
+  const latest = new Map<string, { index: number; num: number; ms: number }>()
+
+  trades.forEach((trade, index) => {
+    if (!isOpenTvTrade(trade)) return
+    const symbol = trade.instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+    const ms = entryMs(trade)
+    const num = Number.isFinite(trade.tradeNumber) ? trade.tradeNumber : 0
+    const prev = latest.get(symbol)
+    if (!prev || num > prev.num || (num === prev.num && (ms || 0) > prev.ms)) {
+      latest.set(symbol, { index, num, ms: Number.isFinite(ms) ? ms : 0 })
+    }
+  })
+
+  const keep = new Set([...latest.values()].map((item) => item.index))
+  return trades.filter((trade, index) => !isOpenTvTrade(trade) || keep.has(index))
 }
 
 /** Strategy Tester has one live position per symbol/side. Older Opens are leftovers. */

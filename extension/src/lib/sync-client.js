@@ -77,6 +77,14 @@ JBSync.isTpSlSignal = function isTpSlSignal(value) {
   return /\b(tp\/sl|take\s*profit|stop\s*loss|\btp\b|\bsl\b|stop|target)\b/i.test(String(value || "").trim())
 }
 
+JBSync.isEntryFlipSignal = function isEntryFlipSignal(value) {
+  return /^(long|short)$/i.test(String(value || "").trim())
+}
+
+JBSync.isTypedExitSignal = function isTypedExitSignal(value) {
+  return /\bexit\s+(long|short)\b/i.test(String(value || "").trim())
+}
+
 JBSync.isPaintedMtmOpen = function isPaintedMtmOpen(trade) {
   const entry = trade?.entry
   const exit = trade?.exit
@@ -97,6 +105,16 @@ JBSync.isOpenTrade = function isOpenTrade(trade) {
   const confirmedTpSl = JBSync.isTpSlSignal(trade.exit.signal) && !JBSync.isLiteralOpenToken(trade.exit.signal)
   if (leftoverOpen && !confirmedTpSl) return true
   if (!confirmedTpSl && JBSync.isPaintedMtmOpen(trade)) return true
+  const exitSig = trade.exit?.signal
+  if (
+    JBSync.isEntryFlipSignal(exitSig) &&
+    !JBSync.isTpSlSignal(exitSig) &&
+    !JBSync.isTypedExitSignal(exitSig) &&
+    typeof trade.netPnl !== "number" &&
+    typeof trade.returnPct !== "number"
+  ) {
+    return true
+  }
   return false
 }
 
@@ -157,7 +175,25 @@ JBSync.dropSupersededOpenTrades = function dropSupersededOpenTrades(trades) {
     return true
   })
 
-  return JBSync.keepLatestOpenPerSide(afterClosed)
+  return JBSync.keepLatestOpenPerInstrument(JBSync.keepLatestOpenPerSide(afterClosed))
+}
+
+JBSync.keepLatestOpenPerInstrument = function keepLatestOpenPerInstrument(trades) {
+  const latest = new Map()
+  ;(trades || []).forEach((trade, index) => {
+    if (!JBSync.isOpenTrade(trade)) return
+    const symbol = String(trade.instrument || "")
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase()
+    const ms = JBSync.tradeEntryMs(trade)
+    const num = Number(trade.tradeNumber) || 0
+    const prev = latest.get(symbol)
+    if (!prev || num > prev.num || (num === prev.num && (ms || 0) > prev.ms)) {
+      latest.set(symbol, { index, num, ms: Number.isFinite(ms) ? ms : 0 })
+    }
+  })
+  const keep = new Set([...latest.values()].map((item) => item.index))
+  return (trades || []).filter((trade, index) => !JBSync.isOpenTrade(trade) || keep.has(index))
 }
 
 JBSync.keepLatestOpenPerSide = function keepLatestOpenPerSide(trades) {
@@ -320,6 +356,33 @@ JBSync.getTradingViewTab = async function getTradingViewTab() {
   return picked
 }
 
+JBSync.getTradingViewChartTabs = async function getTradingViewChartTabs() {
+  const allTvTabs = await chrome.tabs.query({
+    url: ["*://*.tradingview.com/*", "*://tradingview.com/*"],
+  })
+  return allTvTabs
+    .filter((tab) => JBSync.isTradingViewChartTab(tab))
+    .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
+}
+
+JBSync.findTabForSymbol = async function findTabForSymbol(symbol) {
+  if (typeof JBWatch !== "undefined" && JBWatch.findTabForSymbol) {
+    return JBWatch.findTabForSymbol(symbol)
+  }
+  const normalized = JBSync.normalizeChartSymbol(symbol)
+  if (!normalized) return null
+  const tabs = await JBSync.getTradingViewChartTabs()
+  for (const tab of tabs) {
+    const fromUrl = JBSync.symbolFromTabUrl(tab.url)
+    if (fromUrl === normalized) return tab
+  }
+  for (const tab of tabs) {
+    const fromPage = JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+    if (fromPage === normalized) return tab
+  }
+  return null
+}
+
 JBSync.normalizeChartSymbol = function normalizeChartSymbol(raw) {
   if (typeof JBSymbol !== "undefined" && JBSymbol.normalize) {
     return JBSymbol.normalize(raw)
@@ -468,6 +531,16 @@ JBSync.applyChartSymbol = function applyChartSymbol(trades, chartSymbol) {
  */
 JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = false, options = {}) {
   const tab = await JBSync.getTradingViewTab()
+  if (!tab?.id) {
+    return {
+      trades: [],
+      error: "TradingView chart tab not found. Keep tradingview.com/chart open.",
+    }
+  }
+  return JBSync.scrapeFromTab(tab, importAll, options)
+}
+
+JBSync.scrapeFromTab = async function scrapeFromTab(tab, importAll = false, options = {}) {
   if (!tab?.id) {
     return {
       trades: [],
@@ -761,6 +834,14 @@ JBSync.getConfig = async function getConfig() {
     "autoSyncTrades",
   ])
 
+  let watchSymbols = []
+  try {
+    const local = await chrome.storage.local.get("watchSymbols")
+    watchSymbols = Array.isArray(local.watchSymbols) ? local.watchSymbols : []
+  } catch {
+    watchSymbols = []
+  }
+
   const pollIntervalSeconds =
     stored.pollIntervalSeconds === undefined ? 15 : Number(stored.pollIntervalSeconds)
 
@@ -771,7 +852,17 @@ JBSync.getConfig = async function getConfig() {
     pollIntervalSeconds: Number.isFinite(pollIntervalSeconds) ? pollIntervalSeconds : 30,
     // Default ON when unset — capture sync always runs; this gates poll backup only.
     autoSyncTrades: stored.autoSyncTrades === undefined ? true : Boolean(stored.autoSyncTrades),
+    watchSymbols: watchSymbols.map((s) => JBSync.normalizeChartSymbol(s)).filter(Boolean).slice(0, 5),
   }
+}
+
+JBSync.storeWatchSymbols = async function storeWatchSymbols(symbols) {
+  const normalized = (symbols || [])
+    .map((s) => JBSync.normalizeChartSymbol(s))
+    .filter(Boolean)
+    .slice(0, 5)
+  await chrome.storage.local.set({ watchSymbols: normalized })
+  return normalized
 }
 
 JBSync.normalizeDatetime = function normalizeDatetime(value) {
@@ -855,7 +946,7 @@ JBSync.buildReconcileOpensPayload = function buildReconcileOpensPayload(trades, 
   const instrument = JBSync.normalizeChartSymbol(chartSymbol)
   if (!instrument) return null
 
-  const opens = JBSync.keepLatestOpenPerSide(trades || [])
+  const opens = JBSync.keepLatestOpenPerInstrument(JBSync.keepLatestOpenPerSide(trades || []))
     .filter((trade) => JBSync.isOpenTrade(trade))
     .map((trade) => ({
       externalId: JBSync.buildExternalId(trade),
@@ -979,10 +1070,14 @@ JBSync.sendHeartbeat = async function sendHeartbeat(config, options = {}) {
   JBSync._lastHeartbeatAt = now
 
   try {
-    return await JBSync.postJson(`${config.apiUrl}/api/sync/heartbeat`, config.syncToken, {
+    const data = await JBSync.postJson(`${config.apiUrl}/api/sync/heartbeat`, config.syncToken, {
       pollIntervalSeconds: config.pollIntervalSeconds ?? 30,
       extensionId: chrome.runtime.id,
     })
+    if (Array.isArray(data?.watch_symbols)) {
+      await JBSync.storeWatchSymbols(data.watch_symbols)
+    }
+    return data
   } catch (error) {
     // Failed ping shouldn't hold the throttle window open.
     JBSync._lastHeartbeatAt = 0
@@ -1107,6 +1202,14 @@ JBSync.normalizeLatestTrade = function normalizeLatestTrade(rawLatest, fallbackC
   }
 }
 
+JBSync.LIVE_OPEN_ALERT_MAX_MS = 5 * 60_000
+
+JBSync.isFreshOpenFillEntry = function isFreshOpenFillEntry(entryDate) {
+  if (!entryDate) return false
+  const ms = new Date(String(entryDate).replace(/,\s*/, " ")).getTime()
+  return Number.isFinite(ms) && Date.now() - ms <= JBSync.LIVE_OPEN_ALERT_MAX_MS
+}
+
 JBSync.notifyJournalTabs = async function notifyJournalTabs(payload, apiUrl) {
   try {
     const origin = JBSync.journalOriginPattern(apiUrl)
@@ -1179,7 +1282,7 @@ JBSync.maybeRunRequestedRefresh = async function maybeRunRequestedRefresh(config
 }
 
 /** Sync trades already captured from TV network hooks — no Strategy Tester scrape needed. */
-JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, chartSymbol) {
+JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, chartSymbol, sourceTabId) {
   await JBSync.sendHeartbeat(config)
 
   const list = (trades || []).filter((trade) => trade?.entry?.price && trade?.entry?.datetime)
@@ -1193,8 +1296,18 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     ""
 
   if (!symbol || symbol === "UNKNOWN") {
-    const tab = await JBSync.getTradingViewTab()
-    symbol = JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+    if (sourceTabId) {
+      try {
+        const tab = await chrome.tabs.get(sourceTabId)
+        symbol = JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+      } catch {
+        // fall through
+      }
+    }
+    if (!symbol || symbol === "UNKNOWN") {
+      const tab = await JBSync.getTradingViewTab()
+      symbol = JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+    }
   }
 
   if (!symbol) {
@@ -1228,19 +1341,22 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     )[0]
     const latestTrade = JBSync.normalizeLatestTrade(topAccount?.[1]?.latestTrade)
 
-    await JBSync.notifyJournalTabs(
-      {
-        eventId:
-          syncResult.eventId ||
-          `cap-${topAccount?.[0] || "acc"}-${latestTrade?.id || "none"}-${syncResult.imported}-${syncResult.updated}`,
-        imported: syncResult.imported,
-        updated: syncResult.updated,
-        accountId: topAccount?.[0],
-        accountName: topAccount?.[1]?.name,
-        latestTrade,
-      },
-      config.apiUrl,
-    )
+    if (latestTrade && JBSync.isFreshOpenFillEntry(latestTrade.entry_date)) {
+      await JBSync.notifyJournalTabs(
+        {
+          eventId:
+            syncResult.eventId ||
+            `cap-${topAccount?.[0] || "acc"}-${latestTrade?.id || "none"}-${syncResult.imported}-${syncResult.updated}`,
+          imported: syncResult.imported,
+          updated: syncResult.updated,
+          accountId: topAccount?.[0],
+          accountName: topAccount?.[1]?.name,
+          latestTrade,
+          kind: "open",
+        },
+        config.apiUrl,
+      )
+    }
   }
 
   if (syncResult.imported > 0) {
@@ -1277,20 +1393,140 @@ JBSync.readCapturedTradesFromTab = async function readCapturedTradesFromTab(tab)
   }
 }
 
-/** Scrape latest TV trades and sync only new / open ones — then drop stale Open rows. */
-JBSync.refreshNewTrades = async function refreshNewTrades(config) {
-  await JBSync.sendHeartbeat(config)
+JBSync.mergeTabScrapeResults = function mergeTabScrapeResults(tabResults) {
+  const byInstrument = new Map()
 
-  const tab = await JBSync.getTradingViewTab()
+  for (const entry of tabResults || []) {
+    const instrument = JBSync.normalizeChartSymbol(entry.instrument)
+    if (!instrument || !entry.trades?.length) continue
+
+    if (!byInstrument.has(instrument)) {
+      byInstrument.set(instrument, { trades: [], tabIds: new Set() })
+    }
+    const bucket = byInstrument.get(instrument)
+    if (entry.tabId) bucket.tabIds.add(entry.tabId)
+
+    const deduped = new Map()
+    for (const trade of bucket.trades) {
+      const id = JBSync.buildExternalId(trade)
+      deduped.set(id || JBSync.tradeKey(trade), trade)
+    }
+    for (const trade of entry.trades) {
+      const id = JBSync.buildExternalId(trade)
+      const key = id || JBSync.tradeKey(trade)
+      const existing = deduped.get(key)
+      if (!existing) {
+        deduped.set(key, trade)
+        continue
+      }
+      const existingTn = Number(existing.tradeNumber) || 0
+      const incomingTn = Number(trade.tradeNumber) || 0
+      if (incomingTn > existingTn) {
+        deduped.set(key, trade)
+        continue
+      }
+      if (incomingTn === existingTn) {
+        const existingMs = new Date(JBSync.normalizeTradingViewDatetime(existing.entry?.datetime || "")).getTime()
+        const incomingMs = new Date(JBSync.normalizeTradingViewDatetime(trade.entry?.datetime || "")).getTime()
+        if (Number.isFinite(incomingMs) && incomingMs >= existingMs) {
+          deduped.set(key, trade)
+        }
+      }
+    }
+
+    bucket.trades = JBSync.dropSupersededOpenTrades([...deduped.values()])
+  }
+
+  return byInstrument
+}
+
+JBSync.collectTabScrapeResult = async function collectTabScrapeResult(tab) {
+  if (!tab?.id) return { tabId: null, trades: [], instrument: "", error: "missing tab" }
+
   const captured = await JBSync.readCapturedTradesFromTab(tab)
-
-  // Polls use light scrape (top ~40 rows + capture). Never full-table walk.
-  let result = await JBSync.scrapeFromActiveTab(false, { mode: "light" }).catch((error) => ({
+  let result = await JBSync.scrapeFromTab(tab, false, { mode: "light" }).catch((error) => ({
     trades: [],
     error: error?.message || "Scrape failed",
   }))
 
   if (result?.skippedDueToImportAll) {
+    return { tabId: tab.id, trades: [], instrument: "", skippedDueToImportAll: true }
+  }
+
+  if (!result?.trades?.length && captured.trades.length) {
+    result = {
+      trades: captured.trades,
+      instrument: captured.chartSymbol || captured.trades[0]?.instrument || "",
+      error: null,
+      debug: { fallback: "captured-memory" },
+    }
+  }
+
+  const instrument =
+    JBSync.normalizeChartSymbol(result?.instrument || captured.chartSymbol) ||
+    JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+
+  if (!result?.trades?.length && captured.trades.length && instrument) {
+    result = {
+      trades: captured.trades,
+      instrument,
+      error: null,
+      debug: { fallback: "captured-memory-empty-scrape" },
+    }
+  }
+
+  if (result?.trades?.length) {
+    result.trades = JBSync.markLatestPaintedOpens(result.trades)
+  }
+
+  return {
+    tabId: tab.id,
+    trades: result?.trades || [],
+    instrument,
+    error: result?.error || null,
+    debug: result?.debug,
+  }
+}
+
+/** Scrape active tab + background watch tabs, sync per instrument with dedup. */
+JBSync.refreshWatchTrades = async function refreshWatchTrades(config, options = {}) {
+  const heartbeat = await JBSync.sendHeartbeat(config)
+  const watchSymbols =
+    Array.isArray(heartbeat?.watch_symbols) && heartbeat.watch_symbols.length
+      ? await JBSync.storeWatchSymbols(heartbeat.watch_symbols)
+      : config.watchSymbols || []
+
+  const activeTab = await JBSync.getTradingViewTab()
+  if (!activeTab?.id) {
+    return {
+      imported: 0,
+      updated: 0,
+      skipped: 0,
+      closedStale: 0,
+      byAccount: {},
+      message: "No TradingView chart tab",
+    }
+  }
+
+  const layoutUrl = activeTab.url || ""
+  if (watchSymbols.length && typeof JBWatch !== "undefined" && JBWatch.ensureWatchTabs) {
+    await JBWatch.ensureWatchTabs(watchSymbols, layoutUrl, options.injectTvHooks)
+  }
+
+  const targetTabs = new Map()
+  targetTabs.set(activeTab.id, activeTab)
+
+  for (const symbol of watchSymbols) {
+    const tab = await JBSync.findTabForSymbol(symbol)
+    if (tab?.id) targetTabs.set(tab.id, tab)
+  }
+
+  const tabResults = []
+  for (const tab of targetTabs.values()) {
+    tabResults.push(await JBSync.collectTabScrapeResult(tab))
+  }
+
+  if (tabResults.some((r) => r.skippedDueToImportAll)) {
     return {
       imported: 0,
       updated: 0,
@@ -1302,114 +1538,120 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
     }
   }
 
-  // If Strategy Tester grid is empty/stale, fall back to network-captured trades.
-  // Do not re-insert capture-only leftovers — they make a ghost row look like the latest fill.
-  if (!result?.trades?.length && captured.trades.length) {
-    result = {
-      trades: captured.trades,
-      instrument: captured.chartSymbol || captured.trades[0]?.instrument || "",
-      error: null,
-      debug: { fallback: "captured-memory" },
+  const byInstrument = JBSync.mergeTabScrapeResults(tabResults)
+  if (!byInstrument.size) {
+    const hasAnyTrades = tabResults.some((r) => r.trades?.length)
+    return {
+      imported: 0,
+      updated: 0,
+      skipped: 0,
+      closedStale: 0,
+      byAccount: {},
+      message: hasAnyTrades ? "No new trades" : "Waiting for List of trades",
+      warning: hasAnyTrades
+        ? undefined
+        : "Strategy Tester → open bottom panel → click “List of trades”. New fills will sync automatically after that.",
     }
   }
 
   const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: 1500 })
-  const chartSymbol =
-    JBSync.normalizeChartSymbol(result?.instrument || captured.chartSymbol) ||
-    JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+  let totalImported = 0
+  let totalUpdated = 0
+  let totalSkipped = 0
+  let totalClosedStale = 0
+  const byAccount = {}
+  let lastEventId = null
 
-  if (!result?.trades?.length) {
-    // Scrape empty — still try to close journal opens using captured memory only.
-    if (captured.trades.length && chartSymbol) {
-      result = {
-        trades: captured.trades,
-        instrument: chartSymbol,
-        error: null,
-        debug: { fallback: "captured-memory-empty-scrape" },
+  for (const [chartSymbol, bucket] of byInstrument.entries()) {
+    const trades = bucket.trades || []
+    if (!trades.length) continue
+
+    const latestTradeNumber = Math.max(...trades.map((trade) => trade.tradeNumber))
+    const newOrUpdated = trades.filter(
+      (trade) =>
+        trade.tradeNumber === latestTradeNumber ||
+        JBSync.isOpenTrade(trade) ||
+        JBSync.tradeNeedsRefresh(trade, snapshot),
+    )
+
+    const scrapedOpens = trades.filter((trade) => JBSync.isOpenTrade(trade))
+    if (!newOrUpdated.length) continue
+
+    const syncResult = await JBSync.syncTrades(newOrUpdated, config, chartSymbol, {
+      reconcileFromTrades: trades,
+      reconcile: scrapedOpens.length > 0,
+    })
+
+    totalImported += syncResult.imported || 0
+    totalUpdated += syncResult.updated || 0
+    totalSkipped += syncResult.skipped || 0
+    totalClosedStale += syncResult.closedStale || 0
+    lastEventId = syncResult.eventId || lastEventId
+
+    for (const [accountId, entry] of Object.entries(syncResult.byAccount || {})) {
+      if (!byAccount[accountId]) {
+        byAccount[accountId] = { ...entry }
+        continue
       }
-    } else {
-      return {
-        imported: 0,
-        updated: 0,
-        skipped: 0,
-        closedStale: 0,
-        byAccount: {},
-        message: "Waiting for List of trades",
-        warning:
-          result?.error ||
-          "Strategy Tester → open bottom panel → click “List of trades”. New fills will sync automatically after that.",
+      byAccount[accountId].imported = (byAccount[accountId].imported || 0) + (entry.imported || 0)
+      byAccount[accountId].updated = (byAccount[accountId].updated || 0) + (entry.updated || 0)
+      if (entry.latestTrade) byAccount[accountId].latestTrade = entry.latestTrade
+    }
+
+    if (syncResult.imported > 0) {
+      const topAccount = Object.entries(syncResult.byAccount || {}).sort(
+        (a, b) => (b[1].imported || 0) + (b[1].updated || 0) - ((a[1].imported || 0) + (a[1].updated || 0)),
+      )[0]
+      const latestTrade = JBSync.normalizeLatestTrade(topAccount?.[1]?.latestTrade)
+      if (latestTrade && JBSync.isFreshOpenFillEntry(latestTrade.entry_date)) {
+        await JBSync.notifyJournalTabs(
+          {
+            eventId:
+              syncResult.eventId ||
+              `ext-${topAccount?.[0] || "acc"}-${latestTrade?.id || "none"}-${syncResult.imported}-${syncResult.updated}`,
+            imported: syncResult.imported,
+            updated: syncResult.updated,
+            accountId: topAccount?.[0],
+            accountName: topAccount?.[1]?.name,
+            latestTrade,
+            kind: "open",
+          },
+          config.apiUrl,
+        )
       }
     }
   }
 
-  if (result?.trades?.length) {
-    result.trades = JBSync.markLatestPaintedOpens(result.trades)
+  const syncResult = {
+    imported: totalImported,
+    updated: totalUpdated,
+    skipped: totalSkipped,
+    closedStale: totalClosedStale,
+    byAccount,
+    eventId: lastEventId,
   }
 
-  const latestTradeNumber = Math.max(...result.trades.map((trade) => trade.tradeNumber))
-  const newOrUpdated = result.trades.filter(
-    (trade) =>
-      trade.tradeNumber === latestTradeNumber ||
-      JBSync.isOpenTrade(trade) ||
-      JBSync.tradeNeedsRefresh(trade, snapshot),
-  )
-
-  const scrapedOpens = result.trades.filter((trade) => JBSync.isOpenTrade(trade))
-
-  let syncResult = { imported: 0, updated: 0, skipped: 0, deduped: 0, closedStale: 0, byAccount: {} }
-
-  if (newOrUpdated.length) {
-    // Reconcile only when the scrape still sees a live Open. Empty open set
-    // must not delete journal Opens (missed Type=Open / light scrape).
-    syncResult = await JBSync.syncTrades(newOrUpdated, config, chartSymbol, {
-      reconcileFromTrades: result.trades,
-      reconcile: scrapedOpens.length > 0,
-    })
-  }
-
-  const closedStale = syncResult.closedStale || 0
-  const nonStaleUpdated = Math.max(0, (syncResult.updated || 0) - closedStale)
-
-  if (syncResult.imported === 0 && nonStaleUpdated === 0 && !closedStale) {
-    const latest = result.trades.find((trade) => trade.tradeNumber === latestTradeNumber)
-    syncResult.message = JBSync.isOpenTrade(latest || {})
-      ? "Open trade already up to date"
-      : "No new trades"
-  } else if (syncResult.imported > 0) {
+  const nonStaleUpdated = Math.max(0, totalUpdated - totalClosedStale)
+  if (totalImported === 0 && nonStaleUpdated === 0 && !totalClosedStale) {
+    syncResult.message = "No new trades"
+  } else if (totalImported > 0) {
     syncResult.message =
-      closedStale > 0
-        ? `${syncResult.imported} new trade(s) synced · cleared ${closedStale} stale open(s)`
-        : `${syncResult.imported} new trade(s) synced`
+      totalClosedStale > 0
+        ? `${totalImported} new trade(s) synced · cleared ${totalClosedStale} stale open(s)`
+        : `${totalImported} new trade(s) synced`
   } else if (nonStaleUpdated > 0) {
     syncResult.message =
-      closedStale > 0
-        ? `${nonStaleUpdated} trade(s) updated · cleared ${closedStale} stale open(s)`
+      totalClosedStale > 0
+        ? `${nonStaleUpdated} trade(s) updated · cleared ${totalClosedStale} stale open(s)`
         : `${nonStaleUpdated} trade(s) updated`
-  } else if (closedStale > 0) {
-    syncResult.message = `Cleared ${closedStale} stale open trade(s)`
+  } else if (totalClosedStale > 0) {
+    syncResult.message = `Cleared ${totalClosedStale} stale open trade(s)`
   }
 
-  if (syncResult.imported > 0) {
-    const topAccount = Object.entries(syncResult.byAccount || {}).sort(
-      (a, b) => (b[1].imported || 0) + (b[1].updated || 0) - ((a[1].imported || 0) + (a[1].updated || 0)),
-    )[0]
+  return { ...syncResult, tabResults, synced: totalImported + nonStaleUpdated }
+}
 
-    const latestTrade = JBSync.normalizeLatestTrade(topAccount?.[1]?.latestTrade)
-
-    await JBSync.notifyJournalTabs(
-      {
-        eventId:
-          syncResult.eventId ||
-          `ext-${topAccount?.[0] || "acc"}-${latestTrade?.id || "none"}-${syncResult.imported}-${syncResult.updated}`,
-        imported: syncResult.imported,
-        updated: syncResult.updated,
-        accountId: topAccount?.[0],
-        accountName: topAccount?.[1]?.name,
-        latestTrade,
-      },
-      config.apiUrl,
-    )
-  }
-
-  return { ...syncResult, result, synced: newOrUpdated.length }
+/** Scrape latest TV trades and sync only new / open ones — then drop stale Open rows. */
+JBSync.refreshNewTrades = async function refreshNewTrades(config, options = {}) {
+  return JBSync.refreshWatchTrades(config, options)
 }

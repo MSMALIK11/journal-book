@@ -15,11 +15,18 @@ import type { ImportedTradeSnapshot } from "@/lib/sync-events"
 import { playTradeAlarmSound, stopTradeAlarmSound, unlockTradeAlarmAudio } from "@/lib/trade-alarm-sound"
 import { buildFallbackTradeAdvice, buildTradeMomentAdvice } from "@/lib/trading/trade-moment-advice"
 import { isOpenTvSignal, isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
+import { LIVE_OPEN_ALERT_MAX_MS } from "@/lib/trading/live-open-alert-timing"
 import type { MomentZoneSnapshot } from "@/lib/trading/trade-zones"
 
 const TRADE_ALARM_PREFS_KEY = "/api/settings/trade-alarm"
 const SEEN_ALARM_KEYS = "jb-seen-trade-alarms-v2"
 const CATCHUP_WINDOW_MS = 2 * 60_000
+
+function isFreshEntryForAlarm(entryDate?: string | null) {
+  if (!entryDate) return false
+  const entryMs = new Date(entryDate).getTime()
+  return Number.isFinite(entryMs) && Date.now() - entryMs <= LIVE_OPEN_ALERT_MAX_MS
+}
 
 const preferencesFetcher = async (url: string) => {
   const response = await authFetch(url)
@@ -232,12 +239,8 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
 
       if (!trade && targetAccountId && !payload.force && (payload.imported ?? 0) > 0) {
         const candidate = await fetchLatestAlarmTrade(targetAccountId)
-        if (candidate) {
-          const createdMs = candidate.createdAt ? new Date(candidate.createdAt).getTime() : NaN
-          const eventMs = payload.eventAt ? new Date(payload.eventAt).getTime() : Date.now()
-          if (!Number.isFinite(createdMs) || Math.abs(eventMs - createdMs) <= 15 * 60_000) {
-            trade = candidate
-          }
+        if (candidate && isFreshEntryForAlarm(candidate.entry_date)) {
+          trade = candidate
         }
       }
 
@@ -253,6 +256,11 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         }
       }
       if (!trade) {
+        releaseKeys(earlyKeys)
+        return
+      }
+
+      if (!payload.force && !isFreshEntryForAlarm(trade.entry_date)) {
         releaseKeys(earlyKeys)
         return
       }
@@ -386,6 +394,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         if (!response.ok || !event?.eventId || !shouldConsiderAlarm(event)) return
         if (event.kind === "close" || event.latestTrade?.is_open !== true) return
         if (/\b(tp\/sl|exit\s+(long|short))\b/i.test(String(event.latestTrade.signal || ""))) return
+        if (!isFreshEntryForAlarm(event.latestTrade?.entry_date)) return
 
         const ageMs = event.at ? Date.now() - new Date(event.at).getTime() : CATCHUP_WINDOW_MS + 1
         if (ageMs > CATCHUP_WINDOW_MS) return
