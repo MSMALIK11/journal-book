@@ -25,6 +25,7 @@ export type AlertCategory =
   | "weekly_momentum"
   | "session_boundary"
   | "new_trade"
+  | "delta_trade"
 
 export interface ITradingAlert {
   _id?: string
@@ -75,6 +76,7 @@ const TradingAlertSchema = new Schema<ITradingAlert>(
         "weekly_momentum",
         "session_boundary",
         "new_trade",
+        "delta_trade",
       ],
       required: true,
     },

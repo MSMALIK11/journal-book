@@ -1,7 +1,13 @@
 import connectDB from "@/app/api/db/mongoose"
+import mongoose from "mongoose"
+import DeltaAutoTradeLog from "@/app/api/models/DeltaAutoTradeLog"
 import TradingAlert from "@/app/api/models/TradingAlert"
 import User from "@/app/api/models/User"
 import TradingAccount from "@/app/api/models/TradingAccount"
+import {
+  DELTA_DEMO_ALERT_ACCOUNT,
+  DELTA_LIVE_ALERT_ACCOUNT,
+} from "@/lib/delta/delta-trade-notifications"
 import {
   buildDailyDigest,
   dedupeAlerts,
@@ -23,6 +29,90 @@ import {
 import { notifyTelegramTradeEvent } from "@/lib/telegram/send-trade-alert"
 import { buildTelegramCoachCaption } from "@/lib/telegram/coach-caption"
 import { buildTradeMomentAdvice } from "@/lib/trading/trade-moment-advice"
+
+export const ALERT_RETENTION_DAYS = 2
+
+export function getAlertRetentionCutoff(now = new Date()): Date {
+  return new Date(now.getTime() - ALERT_RETENTION_DAYS * 86_400_000)
+}
+
+export async function pruneOldAlerts(userId: string) {
+  await connectDB()
+  const cutoff = getAlertRetentionCutoff()
+  await TradingAlert.deleteMany({ userId, triggeredAt: { $lt: cutoff } })
+}
+
+async function backfillDeltaTradeNotifications(userId: string) {
+  const { deltaAlertAccountId, persistDeltaTradeNotifications } = await import(
+    "@/lib/delta/delta-trade-notifications"
+  )
+  await connectDB()
+  const cutoff = getAlertRetentionCutoff()
+  const logs = await DeltaAutoTradeLog.find({
+    userId: new mongoose.Types.ObjectId(userId),
+    status: { $in: ["skipped", "failed", "partial"] },
+    createdAt: { $gte: cutoff },
+  })
+    .sort({ createdAt: -1 })
+    .limit(30)
+    .lean()
+
+  for (const log of logs) {
+    const alertAccountId = deltaAlertAccountId(log.environment)
+    const baseKey = `delta-auto:${log.tvTradeId}`
+    const accountResults = log.accountResults as
+      | import("@/app/api/models/DeltaAutoTradeLog").DeltaAutoTradeAccountResult[]
+      | undefined
+    const failed = (accountResults ?? []).filter((row) => !row.ok)
+
+    if (failed.length > 0) {
+      const firstKey = `${baseKey}:${failed[0].accountId}:${log.kind}`
+      const perAccountExists = await TradingAlert.findOne({
+        userId,
+        accountId: alertAccountId,
+        key: firstKey,
+      })
+        .select("_id")
+        .lean()
+      if (perAccountExists) continue
+
+      await persistDeltaTradeNotifications(userId, log.environment, {
+        source: "auto",
+        kind: log.kind,
+        tvTradeId: log.tvTradeId,
+        symbol: log.symbol,
+        side: log.side,
+        lots: log.lots,
+        status: log.status,
+        accountResults,
+        error: log.error,
+      })
+      await TradingAlert.deleteOne({ userId, accountId: alertAccountId, key: `${baseKey}:summary` })
+      continue
+    }
+
+    const existing = await TradingAlert.findOne({
+      userId,
+      accountId: alertAccountId,
+      key: { $regex: `^${baseKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}` },
+    })
+      .select("_id")
+      .lean()
+    if (existing) continue
+
+    await persistDeltaTradeNotifications(userId, log.environment, {
+      source: "auto",
+      kind: log.kind,
+      tvTradeId: log.tvTradeId,
+      symbol: log.symbol,
+      side: log.side,
+      lots: log.lots,
+      status: log.status,
+      accountResults,
+      error: log.error,
+    })
+  }
+}
 
 export function formatAlert(alert: {
   _id?: unknown
@@ -124,6 +214,7 @@ export async function persistAlerts(
 ) {
   if (!payloads.length) return []
 
+  await pruneOldAlerts(userId)
   const now = new Date()
   const created: ReturnType<typeof formatAlert>[] = []
 
@@ -306,6 +397,7 @@ export async function evaluateAndPersistAlerts(
   accountId: string,
   options: { includeDigest?: boolean } = {},
 ) {
+  await pruneOldAlerts(userId)
   const { trades, timezone, preferences, instrumentLabel } = await loadAccountAlertContext(
     userId,
     accountId,
@@ -340,7 +432,10 @@ export async function getAlertsForAccount(
   options: { limit?: number } = {},
 ) {
   await connectDB()
+  await pruneOldAlerts(userId)
+  await backfillDeltaTradeNotifications(userId)
   const limit = options.limit ?? 50
+  const cutoff = getAlertRetentionCutoff()
 
   const { trades, timezone, preferences, instrumentLabel } = await loadAccountAlertContext(
     userId,
@@ -387,23 +482,65 @@ export async function getAlertsForAccount(
       }
     : null
 
-  const [stored, unreadCount, recentNewTrades] = await Promise.all([
-    TradingAlert.find({ userId, accountId }).sort({ triggeredAt: -1 }).limit(limit).lean(),
-    TradingAlert.countDocuments({ userId, accountId, read: false }),
-    TradingAlert.find({
-      userId,
-      accountId,
-      category: "new_trade",
-      read: false,
-      triggeredAt: { $gte: new Date(Date.now() - 24 * 60 * 60_000) },
-    })
-      .sort({ triggeredAt: -1 })
-      .limit(8)
-      .lean(),
-  ])
+  const deltaAccountIds = [DELTA_DEMO_ALERT_ACCOUNT, DELTA_LIVE_ALERT_ACCOUNT]
+
+  const [stored, journalUnreadCount, recentNewTrades, deltaStored, deltaUnreadCount, recentDeltaTrades] =
+    await Promise.all([
+      TradingAlert.find({ userId, accountId, triggeredAt: { $gte: cutoff } })
+        .sort({ triggeredAt: -1 })
+        .limit(limit)
+        .lean(),
+      TradingAlert.countDocuments({ userId, accountId, read: false, triggeredAt: { $gte: cutoff } }),
+      TradingAlert.find({
+        userId,
+        accountId,
+        category: "new_trade",
+        read: false,
+        triggeredAt: { $gte: new Date(Date.now() - 24 * 60 * 60_000) },
+      })
+        .sort({ triggeredAt: -1 })
+        .limit(8)
+        .lean(),
+      TradingAlert.find({
+        userId,
+        accountId: { $in: deltaAccountIds },
+        triggeredAt: { $gte: cutoff },
+      })
+        .sort({ triggeredAt: -1 })
+        .limit(limit)
+        .lean(),
+      TradingAlert.countDocuments({
+        userId,
+        accountId: { $in: deltaAccountIds },
+        read: false,
+        triggeredAt: { $gte: cutoff },
+      }),
+      TradingAlert.find({
+        userId,
+        accountId: { $in: deltaAccountIds },
+        category: "delta_trade",
+        read: false,
+        triggeredAt: { $gte: cutoff },
+      })
+        .sort({ triggeredAt: -1 })
+        .limit(12)
+        .lean(),
+    ])
 
   const newTradeActive = recentNewTrades.map(formatAlert)
-  const mergedActive = [...newTradeActive, ...active.filter((item) => item.category !== "new_trade")]
+  const deltaActive = recentDeltaTrades.map(formatAlert)
+  const mergedActive = [
+    ...deltaActive,
+    ...newTradeActive,
+    ...active.filter((item) => item.category !== "new_trade" && item.category !== "delta_trade"),
+  ]
+
+  const mergedHistory = [...stored, ...deltaStored]
+    .map(formatAlert)
+    .sort((a, b) => new Date(b.triggeredAt).getTime() - new Date(a.triggeredAt).getTime())
+    .slice(0, limit)
+
+  const unreadCount = journalUnreadCount + deltaUnreadCount
 
   const zones = getCurrentMomentZones(trades, { timezone, instrumentLabel })
   const verdict = buildCoachingVerdict(allPayloads, zones)
@@ -411,7 +548,7 @@ export async function getAlertsForAccount(
   return {
     active: mergedActive,
     topAction,
-    history: stored.map(formatAlert),
+    history: mergedHistory,
     unreadCount,
     zones,
     verdict,
@@ -427,13 +564,13 @@ export async function markAlertsRead(
   await connectDB()
 
   if (options.all) {
-    await TradingAlert.updateMany({ userId, accountId, read: false }, { $set: { read: true } })
+    await TradingAlert.updateMany({ userId, read: false }, { $set: { read: true } })
     return
   }
 
   if (options.ids?.length) {
     await TradingAlert.updateMany(
-      { userId, accountId, _id: { $in: options.ids } },
+      { userId, _id: { $in: options.ids } },
       { $set: { read: true } },
     )
   }

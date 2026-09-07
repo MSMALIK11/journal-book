@@ -259,4 +259,69 @@
     content: "";
     @apply absolute inset-0 animate-ping rounded-full bg-emerald-400/70;
   }
+
+  .neon-pulse-loader {
+    @apply select-none;
+  }
+
+  .neon-candles-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .neon-bar {
+    width: 7px;
+    height: 32px;
+    border-radius: 3px;
+    position: relative;
+    transform-origin: center bottom;
+    animation: neonBounce 1.2s infinite ease-in-out;
+  }
+
+  .neon-bar::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: -6px;
+    bottom: -6px;
+    width: 2px;
+    margin-left: -1px;
+    background: inherit;
+  }
+
+  .neon-bar.green {
+    background: #00f59b;
+    box-shadow: 0 0 14px rgba(0, 245, 155, 0.65);
+  }
+
+  .neon-bar.red {
+    background: #ff3b69;
+    box-shadow: 0 0 14px rgba(255, 59, 105, 0.65);
+  }
+
+  .neon-bar:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+
+  .neon-bar:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+
+  .neon-status-text {
+    @apply text-xs font-semibold uppercase tracking-[0.28em] text-cyan-300/90;
+    text-shadow: 0 0 12px rgba(34, 211, 238, 0.35);
+  }
+}
+
+@keyframes neonBounce {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(1.2);
+    opacity: 1;
+  }
 }

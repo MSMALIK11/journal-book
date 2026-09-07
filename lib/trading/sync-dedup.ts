@@ -9,7 +9,8 @@ const SAME_FILL_PRICE_TOLERANCE = 0.001
 
 type MappedTrade = ReturnType<typeof mapTradingViewTrade>
 
-function sameEntryPrice(a?: number | null, b?: number | null) {
+/** Same TV fill repainted with a new timestamp — not a new position. */
+export function sameEntryPrice(a?: number | null, b?: number | null) {
   if (!Number.isFinite(a) || !Number.isFinite(b) || !a) return false
   return Math.abs((a as number) - (b as number)) / Math.abs(a as number) <= SAME_FILL_PRICE_TOLERANCE
 }
@@ -82,13 +83,26 @@ export async function findExistingSyncedTrade(
   // Incoming Open: attach to the live Open only when it is the same fill.
   // A new TV number / different entry price is a new trade and must alert.
   if (!mapped.exit_date) {
-    const liveOpen = await Trade.findOne({
+    const sameSide = await Trade.find({
       userId,
       source: "tradingview",
       instrument: mapped.instrument,
       trade_type: mapped.trade_type,
-      $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
-    }).sort({ entry_date: -1 })
+    })
+      .sort({ entry_date: -1 })
+      .limit(8)
+
+    for (const row of sameSide) {
+      if (!sameEntryPrice(row.entry_price, mapped.entry_price)) continue
+      if (!row.exit_date) return row
+      // Same fill was synthetic-closed (~$0) when TV repainted the row — reattach, no new trade.
+      if (sameEntryPrice(row.entry_price, row.exit_price)) {
+        const pnl = typeof row.net_pnl === "number" ? row.net_pnl : NaN
+        if (!Number.isFinite(pnl) || Math.abs(pnl) <= 0.01) return row
+      }
+    }
+
+    const liveOpen = sameSide.find((row) => !row.exit_date)
     if (liveOpen && sameLiveFill(liveOpen, mapped, legacyStrategy, legacyTradeNumber)) {
       return liveOpen
     }

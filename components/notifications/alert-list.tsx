@@ -1,6 +1,7 @@
 "use client"
 
 import { AlertTriangle, Bell, CheckCircle2, Info } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 
 export type AlertItem = {
@@ -14,6 +15,7 @@ export type AlertItem = {
   action?: string
   read: boolean
   triggeredAt: string
+  context?: Record<string, unknown>
 }
 
 function SeverityIcon({ severity }: { severity: AlertItem["severity"] }) {
@@ -71,9 +73,36 @@ export function AlertList({ items, emptyMessage, onItemClick }: AlertListProps) 
             <div className="flex items-start gap-2.5">
               <SeverityIcon severity={item.severity} />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium leading-tight">{item.title}</p>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <p className="text-sm font-medium leading-tight">{item.title}</p>
+                  {item.category === "delta_trade" ? (
+                    <Badge variant="outline" className="h-5 border-violet-400/40 px-1.5 text-[10px] text-violet-300">
+                      {item.context?.environment === "live" ? "Live" : "Demo"}
+                    </Badge>
+                  ) : null}
+                  {typeof item.context?.accountLabel === "string" ? (
+                    <Badge variant="outline" className="h-5 px-1.5 text-[10px] text-muted-foreground">
+                      {item.context.accountLabel}
+                    </Badge>
+                  ) : null}
+                </div>
                 {item.message ? (
                   <p className="text-xs text-foreground/80 mt-1 leading-relaxed">{item.message}</p>
+                ) : null}
+                {Array.isArray(item.context?.accountResults) && item.context.accountResults.length > 0 ? (
+                  <ul className="mt-2 space-y-1 rounded-md border border-border/40 bg-muted/20 px-2 py-1.5">
+                    {item.context.accountResults.map((row) => {
+                      if (!row || typeof row !== "object") return null
+                      const entry = row as { label?: string; ok?: boolean; error?: string }
+                      if (entry.ok) return null
+                      return (
+                        <li key={entry.label ?? "unknown"} className="text-[11px] leading-relaxed text-rose-300">
+                          <span className="font-medium text-foreground/90">{entry.label ?? "Account"}:</span>{" "}
+                          {entry.error ?? "Failed"}
+                        </li>
+                      )
+                    })}
+                  </ul>
                 ) : null}
                 {item.metric ? (
                   <p className="text-[11px] text-muted-foreground mt-1 tabular-nums">{item.metric}</p>

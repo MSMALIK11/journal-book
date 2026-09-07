@@ -3,6 +3,7 @@ import "server-only"
 import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
 import { estimateClosedTradeMetrics } from "@/lib/trading/close-pnl"
+import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
 import { normalizeTradingViewDatetime } from "@/lib/validations/tradingview-sync"
 
@@ -32,6 +33,35 @@ function instrumentMatchList(instrument: string) {
   return [...new Set([symbol, ...(INSTRUMENT_ALIASES[symbol] || [])])]
 }
 
+function tradeSideKey(trade: { instrument?: string; trade_type?: string }) {
+  const symbol = canonicalInstrumentSymbol(trade.instrument || "") || trade.instrument || ""
+  return `${symbol}:${trade.trade_type}`
+}
+
+function matchesActiveOpenHint(
+  trade: {
+    external_id?: string | null
+    entry_date?: Date
+    trade_type?: string
+  },
+  activeOpens: ReconcileOpenTradeHint[],
+) {
+  if (trade.external_id && activeOpens.some((open) => open.externalId === trade.external_id)) {
+    return true
+  }
+
+  const direction = trade.trade_type === "Sell" ? "short" : "long"
+  const entryMs = trade.entry_date?.getTime?.() ?? new Date(trade.entry_date as Date).getTime()
+  if (!Number.isFinite(entryMs)) return false
+
+  return activeOpens.some((open) => {
+    if (open.direction !== direction || !open.entryDatetime) return false
+    const openMs = new Date(normalizeTradingViewDatetime(open.entryDatetime)).getTime()
+    if (!Number.isFinite(openMs)) return false
+    return Math.abs(openMs - entryMs) <= ENTRY_MATCH_TOLERANCE_MS
+  })
+}
+
 /**
  * Drop journal "Open" rows that are no longer open on TradingView for this instrument.
  * Refresh only scrapes the top of the list, so closed trades deep in history never update —
@@ -45,20 +75,7 @@ export async function reconcileStaleOpenTrades(
   const symbols = instrumentMatchList(instrument)
   if (!symbols.length) return 0
   // Empty opens means the scrape did not see a live row — not that TV has none.
-  // Never delete journal Opens from that signal (light scrape / collapsed panel).
   if (!activeOpens.length) return 0
-
-  const activeExternalIds = new Set(
-    activeOpens.map((open) => open.externalId).filter((id): id is string => Boolean(id)),
-  )
-
-  const activeKeys = new Set<string>()
-  for (const open of activeOpens) {
-    if (!open.entryDatetime || !open.direction) continue
-    const entryMs = new Date(normalizeTradingViewDatetime(open.entryDatetime)).getTime()
-    if (!Number.isFinite(entryMs)) continue
-    activeKeys.add(`${open.direction}:${entryMs}`)
-  }
 
   const candidates = await Trade.find({
     userId,
@@ -69,19 +86,14 @@ export async function reconcileStaleOpenTrades(
   )
 
   const openRows = candidates.filter((trade) => isOpenSyncedTrade(trade))
-  const stale = openRows.filter((trade) => {
-    if (trade.external_id && activeExternalIds.has(trade.external_id)) return false
+  const confirmedActive = openRows.filter((trade) => matchesActiveOpenHint(trade, activeOpens))
 
-    const direction = trade.trade_type === "Sell" ? "short" : "long"
-    const entryMs = trade.entry_date?.getTime?.() ?? new Date(trade.entry_date).getTime()
-    if (Number.isFinite(entryMs)) {
-      for (const key of activeKeys) {
-        const [dir, msText] = key.split(":")
-        const ms = Number(msText)
-        if (dir === direction && Math.abs(ms - entryMs) <= ENTRY_MATCH_TOLERANCE_MS) {
-          return false
-        }
-      }
+  const stale = openRows.filter((trade) => {
+    if (matchesActiveOpenHint(trade, activeOpens)) return false
+
+    // Same fill repainted on TV (new timestamp) — keep the original open, do not synthetic-close.
+    if (confirmedActive.some((active) => sameEntryPrice(trade.entry_price, active.entry_price))) {
+      return false
     }
 
     return true
@@ -124,7 +136,7 @@ export async function reconcileStaleOpenTrades(
   return stale.length
 }
 
-/** Keep the newest live Open per symbol/side. Older leftovers become closed. */
+/** Keep the newest live Open per symbol/side. Older leftovers become closed — unless same fill. */
 export async function closeDuplicateLiveOpens(userId: string) {
   const opens = await Trade.find({
     userId,
@@ -134,16 +146,30 @@ export async function closeDuplicateLiveOpens(userId: string) {
 
   const keeperByKey = new Map<string, (typeof opens)[number]>()
   const closed: typeof opens = []
+  const deletedIds: string[] = []
 
   for (const trade of opens) {
-    const symbol = canonicalInstrumentSymbol(trade.instrument) || trade.instrument
-    const key = `${symbol}:${trade.trade_type}`
+    const key = tradeSideKey(trade)
     const keeper = keeperByKey.get(key)
     if (!keeper) {
       keeperByKey.set(key, trade)
       continue
     }
 
+    // Same fill scraped again with a new row/time — drop the newer duplicate, keep original open.
+    if (sameEntryPrice(trade.entry_price, keeper.entry_price)) {
+      const tradeMs = trade.entry_date?.getTime?.() ?? 0
+      const keeperMs = keeper.entry_date?.getTime?.() ?? 0
+      if (tradeMs >= keeperMs) {
+        deletedIds.push(String(trade._id))
+      } else {
+        deletedIds.push(String(keeper._id))
+        keeperByKey.set(key, trade)
+      }
+      continue
+    }
+
+    // Real re-entry on a different fill — close the older leg.
     trade.exit_date = keeper.entry_date || new Date()
     if (keeper.entry_price != null) trade.exit_price = keeper.entry_price
     if (trade.exit_price != null && typeof trade.net_pnl !== "number") {
@@ -161,7 +187,59 @@ export async function closeDuplicateLiveOpens(userId: string) {
     closed.push(trade)
   }
 
+  if (deletedIds.length) {
+    await Trade.deleteMany({ _id: { $in: deletedIds }, userId })
+  }
+
   return closed
+}
+
+/**
+ * Re-open rows that were synthetic-closed at ~same price as entry when a duplicate open existed.
+ * Fixes journal showing a fake ~$0 exit while the position is still live on TV.
+ */
+export async function healMisclosedSameFillOpens(userId: string) {
+  const recentlyClosed = await Trade.find({
+    userId,
+    source: "tradingview",
+    exit_date: { $exists: true, $ne: null },
+    entry_price: { $exists: true, $ne: null },
+    exit_price: { $exists: true, $ne: null },
+  })
+    .select("_id instrument trade_type entry_date entry_price exit_date exit_price net_pnl return_pct")
+    .sort({ exit_date: -1 })
+    .limit(200)
+
+  let healed = 0
+  for (const trade of recentlyClosed) {
+    if (!sameEntryPrice(trade.entry_price, trade.exit_price)) continue
+
+    const pnl = typeof trade.net_pnl === "number" ? trade.net_pnl : NaN
+    if (Number.isFinite(pnl) && Math.abs(pnl) > 0.01) continue
+
+    const key = tradeSideKey(trade)
+    const stillOpen = await Trade.findOne({
+      userId,
+      source: "tradingview",
+      instrument: trade.instrument,
+      trade_type: trade.trade_type,
+      $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+      entry_date: { $gte: trade.entry_date },
+    }).sort({ entry_date: -1 })
+
+    if (!stillOpen) continue
+    if (!sameEntryPrice(stillOpen.entry_price, trade.entry_price)) continue
+
+    await Trade.updateOne(
+      { _id: trade._id, userId },
+      {
+        $unset: { exit_date: "", exit_price: "", net_pnl: "", return_pct: "" },
+      },
+    )
+    healed += 1
+  }
+
+  return healed
 }
 
 /** Fill leftover-Open closes that only got an exit time (no price / P&L). */

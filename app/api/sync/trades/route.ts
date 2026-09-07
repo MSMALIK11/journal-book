@@ -4,7 +4,8 @@ import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { dropSupersededOpenTradesFromPayload, priceMatchesInstrument } from "@/lib/trading/price-sanity"
-import { closeDuplicateLiveOpens, healIncompleteTvCloses, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { closeDuplicateLiveOpens, healIncompleteTvCloses, healMisclosedSameFillOpens, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
@@ -22,6 +23,7 @@ import {
 } from "@/lib/trading/live-fill-alerts"
 import { withUserSyncLock } from "@/lib/trading/sync-lock"
 import { tradingViewSyncSchema } from "@/lib/validations/tradingview-sync"
+import { runDeltaAutoTradeForFills } from "@/lib/broker/delta-auto-trade"
 
 function mergeSyncedTrade(
   existing: InstanceType<typeof Trade>,
@@ -153,6 +155,8 @@ export async function POST(request: NextRequest) {
       : null
 
     if (parsed.data.trades.length === 0) {
+      await healMisclosedSameFillOpens(auth.userId)
+      await closeDuplicateLiveOpens(auth.userId)
       let closedStale = 0
       if (parsed.data.reconcileOpens) {
         closedStale = await reconcileStaleOpenTrades(
@@ -377,17 +381,26 @@ export async function POST(request: NextRequest) {
         }
         latestUpdatedByAccount[accountId] = snapshot
         if (!wasOpen && !mapped.exit_date) {
-          imported += 1
-          byAccount[accountId].imported += 1
-          latestOpenImportedByAccount[accountId] = snapshot
-          fillEvents.push({
-            kind: "open",
-            reason: "reopen",
-            userId: auth.userId,
-            accountId,
-            accountName: targetAccount.name,
-            trade: snapshot,
-          })
+          const repaint = sameEntryPrice(existing.entry_price, mapped.entry_price)
+          if (repaint) {
+            existing.set("exit_date", null)
+            existing.set("exit_price", null)
+            existing.set("net_pnl", null)
+            existing.set("return_pct", null)
+            await existing.save()
+          } else {
+            imported += 1
+            byAccount[accountId].imported += 1
+            latestOpenImportedByAccount[accountId] = snapshot
+            fillEvents.push({
+              kind: "open",
+              reason: "reopen",
+              userId: auth.userId,
+              accountId,
+              accountName: targetAccount.name,
+              trade: snapshot,
+            })
+          }
         } else if (wasOpen && mapped.exit_date && isRealLiveClose(mapped)) {
           fillEvents.push({
             kind: "close",
@@ -411,6 +424,7 @@ export async function POST(request: NextRequest) {
     }
 
     const deduped = await dedupeSyncedTradesByExternalId(auth.userId)
+    await healMisclosedSameFillOpens(auth.userId)
     const duplicateOpens = await closeDuplicateLiveOpens(auth.userId)
     for (const row of duplicateOpens) {
       const accountId = String(row.accountId)
@@ -557,6 +571,9 @@ export async function POST(request: NextRequest) {
     }
 
     await flushLiveFillAlerts(fillEvents)
+    void runDeltaAutoTradeForFills(auth.userId, fillEvents).catch((error) => {
+      console.error("Delta auto-trade failed:", error)
+    })
 
     const byAccountSummary = Object.fromEntries(
       Object.entries(byAccount)

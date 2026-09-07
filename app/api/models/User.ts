@@ -78,6 +78,11 @@ export interface IUser {
     lastMonthlyExportPath?: string;
     lastMonthlyExportCount?: number;
   };
+  deltaLiveTradingEnabled?: boolean;
+  deltaAutoTradePreferences?: {
+    demo?: Record<string, unknown>;
+    live?: Record<string, unknown>;
+  };
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -160,6 +165,14 @@ const UserSchema = new Schema<IUser>(
       default: {},
     },
     autoExportPreferences: {
+      type: Schema.Types.Mixed,
+      default: {},
+    },
+    deltaLiveTradingEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    deltaAutoTradePreferences: {
       type: Schema.Types.Mixed,
       default: {},
     },
