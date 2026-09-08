@@ -235,15 +235,13 @@ export function DeltaOrderTicket({
     setPendingLeverage(nearestLeverageStep(lv))
   }, [autoTrade.loading, autoTrade.hasSavedLeverage, autoTrade.savedLeverage, apiLeverage, symbol])
 
-  // SWR refetches on key change, so this only resets local sizing inputs.
+  // SWR refetches on key change, so this only resets local sizing inputs. Never key this on
+  // `marginEntries` — that object gets a fresh identity on every wallet revalidation, which would
+  // silently drop the selected % (and with it the auto-trade margin %) mid-session.
   useEffect(() => {
     setSelectedPct(null)
     setLots(1)
   }, [symbol, accountId, accountIdsKey, tradeMode])
-
-  useEffect(() => {
-    setSelectedPct(null)
-  }, [accountId, accountIdsKey, tradeMode, marginEntries])
 
   const contractValue = product?.contractValue ?? 0.001
   const contractUnit = product?.contractUnit ?? "BTC"
@@ -265,11 +263,19 @@ export function DeltaOrderTicket({
     [availableMargin, contractValue, maxPositionUsd, price],
   )
 
+  // % sizing is clamped to the per-order cap, matching the auto-trade path, so a large balance
+  // can never compute a size the API would reject outright.
+  const cappedLotsForPct = useCallback(
+    (pct: number, leverageForCalc: number) =>
+      Math.min(idealLotsForPct(pct, leverageForCalc), orderSizeCap),
+    [idealLotsForPct, orderSizeCap],
+  )
+
   // Delta-style: recompute lots when margin, price, leverage, or selected % changes
   useEffect(() => {
     if (selectedPct == null || !availableMargin || price <= 0) return
-    setLots(idealLotsForPct(selectedPct, activeLeverage))
-  }, [selectedPct, availableMargin, price, activeLeverage, idealLotsForPct])
+    setLots(cappedLotsForPct(selectedPct, activeLeverage))
+  }, [selectedPct, availableMargin, price, activeLeverage, cappedLotsForPct])
 
   const underlyingSize = useMemo(() => lotsToUnderlying(lots, contractValue), [lots, contractValue])
   const fundsRequired = useMemo(
@@ -277,6 +283,13 @@ export function DeltaOrderTicket({
     [lots, contractValue, price, activeLeverage],
   )
 
+  const pctLotsBeforeCap =
+    selectedPct != null && availableMargin && price > 0
+      ? idealLotsForPct(selectedPct, activeLeverage)
+      : null
+  const pctCappedByOrderLimit = pctLotsBeforeCap != null && pctLotsBeforeCap > orderSizeCap
+
+  // Only reachable by typing a size manually — % sizing is already clamped.
   const exceedsOrderCap = lots > orderSizeCap
 
   function clampManualLots(value: number) {
@@ -296,7 +309,7 @@ export function DeltaOrderTicket({
       return
     }
     setSelectedPct(pct)
-    setLots(idealLotsForPct(pct, activeLeverage))
+    setLots(cappedLotsForPct(pct, activeLeverage))
   }
 
   function handleLotsChange(raw: string) {
@@ -352,7 +365,7 @@ export function DeltaOrderTicket({
       setLeverageOpen(false)
       await autoTrade.saveLeverage(pendingLeverage).catch(() => undefined)
       if (selectedPct != null) {
-        setLots(idealLotsForPct(selectedPct, pendingLeverage))
+        setLots(cappedLotsForPct(selectedPct, pendingLeverage))
       }
     } catch (error) {
       toast({
@@ -377,7 +390,9 @@ export function DeltaOrderTicket({
     if (lots > orderSizeCap) {
       toast({
         title: "Order size too large",
-        description: `Max ${orderSizeCap} Lot per order. Lower % or raise DELTA_TEST_ORDER_MAX_SIZE.`,
+        description: `Max ${orderSizeCap} Lot per order. Lower the size or raise ${
+          isLive ? "DELTA_LIVE_ORDER_MAX_SIZE" : "DELTA_TEST_ORDER_MAX_SIZE"
+        }.`,
         variant: "destructive",
       })
       return
@@ -670,6 +685,12 @@ export function DeltaOrderTicket({
               : ""}
           </p>
         ) : null}
+        {pctCappedByOrderLimit ? (
+          <p className="text-[11px] text-muted-foreground">
+            {selectedPct}% works out to {pctLotsBeforeCap} Lot · capped at {orderSizeCap} Lot by the
+            per-order limit.
+          </p>
+        ) : null}
       </div>
 
       {/* Auto trade — same accounts, symbol & margin % as manual ticket */}
@@ -778,7 +799,7 @@ export function DeltaOrderTicket({
         <p className="text-center text-xs text-amber-300">Save API credentials to trade.</p>
       ) : exceedsOrderCap ? (
         <p className="text-center text-xs text-amber-300">
-          Calculated {lots} Lot exceeds max {orderSizeCap} per order — lower % or contact admin to raise limit.
+          {lots} Lot exceeds the {orderSizeCap} Lot per-order limit — lower the size or raise the limit.
         </p>
       ) : null}
 

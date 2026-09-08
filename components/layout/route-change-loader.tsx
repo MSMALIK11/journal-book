@@ -2,13 +2,15 @@
 
 import { usePathname } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
-import { NeonPulseLoader } from "@/components/ui/neon-pulse-loader"
 
-/** Fast navigations should show nothing at all — only reveal the loader if the route stalls. */
-const SHOW_DELAY_MS = 450
-/** Once visible, keep it long enough to avoid a jarring flicker. */
-const MIN_VISIBLE_MS = 250
-const MAX_VISIBLE_MS = 8000
+/** Instant routes should show nothing at all — only reveal the bar if the route takes a moment. */
+const SHOW_DELAY_MS = 150
+/** Ease toward this while the route is still pending; only completion reaches 100. */
+const TRICKLE_CEILING = 90
+const TRICKLE_MS = 200
+/** Keep the finished bar on screen briefly so it reads as "done" rather than vanishing. */
+const FINISH_LINGER_MS = 220
+const MAX_VISIBLE_MS = 15000
 
 function isInternalNavigationLink(anchor: HTMLAnchorElement, pathname: string) {
   const href = anchor.getAttribute("href")
@@ -27,14 +29,20 @@ function isInternalNavigationLink(anchor: HTMLAnchorElement, pathname: string) {
   }
 }
 
+/**
+ * A slim top progress bar, deliberately not a full-screen overlay: the sidebar, header and each
+ * route's own `loading.tsx` skeleton stay visible, so a navigation reads as instant even when the
+ * server payload takes a moment.
+ */
 export function RouteChangeLoader() {
   const pathname = usePathname()
-  const [visible, setVisible] = useState(false)
+  const [progress, setProgress] = useState<number | null>(null)
   const showTimerRef = useRef<number | null>(null)
-  const hideTimerRef = useRef<number | null>(null)
+  const trickleTimerRef = useRef<number | null>(null)
+  const finishTimerRef = useRef<number | null>(null)
   const maxTimerRef = useRef<number | null>(null)
-  const shownAtRef = useRef(0)
   const navPendingRef = useRef(false)
+  const shownRef = useRef(false)
 
   function clearTimer(ref: { current: number | null }) {
     if (ref.current != null) {
@@ -43,48 +51,63 @@ export function RouteChangeLoader() {
     }
   }
 
+  function stopTrickle() {
+    if (trickleTimerRef.current != null) {
+      window.clearInterval(trickleTimerRef.current)
+      trickleTimerRef.current = null
+    }
+  }
+
   function reset() {
     navPendingRef.current = false
+    shownRef.current = false
     clearTimer(showTimerRef)
-    clearTimer(hideTimerRef)
+    clearTimer(finishTimerRef)
     clearTimer(maxTimerRef)
+    stopTrickle()
   }
 
   function startNavigation() {
+    // A back-to-back click can land while the previous bar is still lingering at 100%.
+    const hadPendingFinish = finishTimerRef.current != null
     reset()
+    if (hadPendingFinish) setProgress(null)
     navPendingRef.current = true
 
     showTimerRef.current = window.setTimeout(() => {
       showTimerRef.current = null
       if (!navPendingRef.current) return
-      shownAtRef.current = Date.now()
-      setVisible(true)
+
+      shownRef.current = true
+      setProgress(8)
+      trickleTimerRef.current = window.setInterval(() => {
+        setProgress((current) => {
+          if (current == null) return current
+          return Math.min(TRICKLE_CEILING, current + Math.max(1, (TRICKLE_CEILING - current) * 0.18))
+        })
+      }, TRICKLE_MS)
+
       maxTimerRef.current = window.setTimeout(() => {
         maxTimerRef.current = null
-        navPendingRef.current = false
-        setVisible(false)
+        finishNavigation()
       }, MAX_VISIBLE_MS)
     }, SHOW_DELAY_MS)
   }
 
   function finishNavigation() {
-    const wasShown = showTimerRef.current == null && navPendingRef.current
+    const wasShown = shownRef.current
     reset()
 
     if (!wasShown) {
-      setVisible(false)
+      setProgress(null)
       return
     }
 
-    const remaining = Math.max(0, MIN_VISIBLE_MS - (Date.now() - shownAtRef.current))
-    if (remaining === 0) {
-      setVisible(false)
-      return
-    }
-    hideTimerRef.current = window.setTimeout(() => {
-      hideTimerRef.current = null
-      setVisible(false)
-    }, remaining)
+    setProgress(100)
+    finishTimerRef.current = window.setTimeout(() => {
+      finishTimerRef.current = null
+      setProgress(null)
+    }, FINISH_LINGER_MS)
   }
 
   useEffect(() => {
@@ -116,15 +139,18 @@ export function RouteChangeLoader() {
 
   useEffect(() => () => reset(), [])
 
-  if (!visible) return null
+  if (progress == null) return null
 
   return (
     <div
-      className="pointer-events-none fixed inset-0 z-[200] flex items-center justify-center bg-[#06080c]/90"
+      className="pointer-events-none fixed inset-x-0 top-0 z-[200] h-0.5 bg-transparent"
       aria-busy="true"
       aria-live="polite"
     >
-      <NeonPulseLoader status="CONNECTING..." className="scale-125" />
+      <div
+        className="h-full bg-gradient-to-r from-cyan-500 via-cyan-300 to-violet-400 shadow-[0_0_10px_rgba(34,211,238,0.7)] transition-[width] duration-200 ease-out"
+        style={{ width: `${progress}%` }}
+      />
     </div>
   )
 }

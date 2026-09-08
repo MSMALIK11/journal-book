@@ -649,7 +649,11 @@ export async function GET(request: NextRequest) {
       query.accountId = String(targetAccount._id)
     }
 
+    // Only the extension's `fetchKnownTradeSnapshot` reads this, and it needs just enough to build
+    // its id/fingerprint sets: external_id, instrument, entry_date, trade_type, plus exit_date for
+    // the is_open flag. Returning whole documents made a 1500-row poll needlessly heavy.
     const trades = await Trade.find(query)
+      .select("_id accountId external_id instrument trade_type entry_date exit_date")
       .sort({ entry_date: -1 })
       .limit(limit)
       .lean()

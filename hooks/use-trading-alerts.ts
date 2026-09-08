@@ -32,7 +32,43 @@ function todayKey() {
   return new Date().toISOString().slice(0, 10)
 }
 
-export function useTradingAlerts() {
+/**
+ * Evaluation is a single expensive server pass, and this hook has several consumers (header, both
+ * bells, the sync watcher). SWR already dedupes the GET, but the POST needs its own guard or every
+ * consumer fires an identical request at once.
+ */
+let inFlightEvaluate: Promise<void> | null = null
+
+function postEvaluate(includeDigest: boolean) {
+  if (inFlightEvaluate) return inFlightEvaluate
+
+  inFlightEvaluate = (async () => {
+    try {
+      await authFetch("/api/alerts/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeDigest }),
+      })
+    } catch {
+      // Coaching evaluate can fail; callers still reload stored new-trade alerts.
+    } finally {
+      inFlightEvaluate = null
+    }
+  })()
+
+  return inFlightEvaluate
+}
+
+type UseTradingAlertsOptions = {
+  /**
+   * Owns the periodic evaluate/digest/session passes. Exactly one mounted consumer should set this
+   * (`TradingAlertsSync`); read-only consumers just share the SWR cache.
+   */
+  poll?: boolean
+}
+
+export function useTradingAlerts(options?: UseTradingAlertsOptions) {
+  const poll = options?.poll ?? false
   const { activeAccountId, switchVersion } = useActiveAccount()
   const digestRequested = useRef(false)
   const lastSessionRef = useRef<string | null>(null)
@@ -47,15 +83,7 @@ export function useTradingAlerts() {
   const evaluate = useCallback(
     async (includeDigest = false) => {
       if (!activeAccountId) return
-      try {
-        await authFetch("/api/alerts/evaluate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ includeDigest }),
-        })
-      } catch {
-        // Coaching evaluate can fail; still reload stored new-trade alerts.
-      }
+      await postEvaluate(includeDigest)
       try {
         await mutate()
       } catch {
@@ -79,7 +107,7 @@ export function useTradingAlerts() {
   )
 
   useEffect(() => {
-    if (!activeAccountId) return
+    if (!poll || !activeAccountId) return
 
     void evaluate(false)
 
@@ -88,10 +116,10 @@ export function useTradingAlerts() {
     }, 60_000)
 
     return () => clearInterval(interval)
-  }, [activeAccountId, switchVersion, evaluate])
+  }, [poll, activeAccountId, switchVersion, evaluate])
 
   useEffect(() => {
-    if (!activeAccountId || digestRequested.current) return
+    if (!poll || !activeAccountId || digestRequested.current) return
 
     const storageKey = `${DIGEST_STORAGE_KEY}:${activeAccountId}`
     const lastDigest = localStorage.getItem(storageKey)
@@ -103,11 +131,11 @@ export function useTradingAlerts() {
         localStorage.setItem(storageKey, today)
       })
     }
-  }, [activeAccountId, switchVersion, evaluate])
+  }, [poll, activeAccountId, switchVersion, evaluate])
 
   useEffect(() => {
     const timezone = data?.timezone
-    if (!timezone || !activeAccountId) return
+    if (!poll || !timezone || !activeAccountId) return
 
     const checkSessionChange = () => {
       const now = new Date()
@@ -131,7 +159,7 @@ export function useTradingAlerts() {
     checkSessionChange()
     const interval = setInterval(checkSessionChange, 30_000)
     return () => clearInterval(interval)
-  }, [activeAccountId, data?.timezone, evaluate])
+  }, [poll, activeAccountId, data?.timezone, evaluate])
 
   return {
     active: data?.active ?? [],
