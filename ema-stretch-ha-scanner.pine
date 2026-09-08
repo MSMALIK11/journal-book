@@ -1,0 +1,661 @@
+//@version=5
+// @strategy_alert_message {{strategy.order.alert_message}}
+strategy("EMA Stretch Long + Short Reversal and HA Scanner", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, calc_on_every_tick=true, pyramiding=0)
+
+//────────────────────────────────────────────
+// STRATEGY SETTINGS
+//────────────────────────────────────────────
+strategyGroup = "Strategy Settings"
+
+enableLong = input.bool(true, "Enable Long Trades", group=strategyGroup)
+enableShort = input.bool(true, "Enable Short Trades", group=strategyGroup)
+
+emaLen = input.int(5, "Fast EMA Length", minval=1, group=strategyGroup)
+emaLen20 = input.int(20, "Slow EMA Length", minval=1, group=strategyGroup)
+rr = input.float(1.5, "Risk-Reward Ratio", minval=0.1, step=0.1, group=strategyGroup)
+
+//────────────────────────────────────────────
+// TP/SL CHART LABELS
+//────────────────────────────────────────────
+labelGroup = "TP/SL Chart Labels"
+
+showTpSlLabels = input.bool(true, "Show TP/SL price labels on chart (open trade only)", group=labelGroup)
+labelExtendBars = input.int(15, "Extend labels to the right (bars)", minval=5, maxval=80, group=labelGroup)
+fullTableSignals = input.bool(false, "Full TP/SL in List of Trades (adds text on chart markers)", group=labelGroup)
+
+//────────────────────────────────────────────
+// HEIKIN ASHI ENTRY FILTERS
+//────────────────────────────────────────────
+filterGroup = "Heikin Ashi Entry Filters"
+
+enableBodyFilter = input.bool(true, "Enable Minimum Body Filter", group=filterGroup)
+minimumBodyPercent = input.float(50, "Minimum Body % of Range", minval=0, maxval=100, step=1, group=filterGroup)
+
+enableEmaTouchFilter = input.bool(true, "Require EMA Touch / Directional Close", group=filterGroup)
+
+avoidLongBottomWick = input.bool(false, "Avoid Long With Bottom Wick", group=filterGroup)
+avoidShortTopWick = input.bool(false, "Avoid Short With Top Wick", group=filterGroup)
+
+//────────────────────────────────────────────
+// SCANNER SETTINGS
+//────────────────────────────────────────────
+scannerGroup = "Heikin Ashi Multi Pair Scanner"
+
+confirmedOnly = input.bool(false, "Confirmed Closed Candle Only", group=scannerGroup)
+
+enableGOLD = input.bool(true, "Enable GOLD", group=scannerGroup)
+enableBTC = input.bool(true, "Enable BTC", group=scannerGroup)
+enableETH = input.bool(true, "Enable ETH", group=scannerGroup)
+enableSOL = input.bool(true, "Enable SOLUSD", group=scannerGroup)
+enableXAG = input.bool(true, "Enable XAGUSD", group=scannerGroup)
+enableOIL = input.bool(true, "Enable USOIL", group=scannerGroup)
+
+goldSymbol = input.symbol("OANDA:XAUUSD", "GOLD Symbol", group=scannerGroup)
+btcSymbol = input.symbol("BINANCE:BTCUSDT", "BTC Symbol", group=scannerGroup)
+ethSymbol = input.symbol("BINANCE:ETHUSDT", "ETH Symbol", group=scannerGroup)
+solSymbol = input.symbol("COINBASE:SOLUSD", "SOLUSD Symbol", group=scannerGroup)
+xagSymbol = input.symbol("OANDA:XAGUSD", "XAGUSD Symbol", group=scannerGroup)
+oilSymbol = input.symbol("TVC:USOIL", "USOIL Symbol", group=scannerGroup)
+
+//────────────────────────────────────────────
+// CHART EMA
+//────────────────────────────────────────────
+ema5 = ta.ema(close, emaLen)
+ema20 = ta.ema(close, emaLen20)
+
+//────────────────────────────────────────────
+// COMMON HA CANDLE FILTER
+//────────────────────────────────────────────
+isBodyValid() =>
+    candleRange = high - low
+    bodySize = math.abs(close - open)
+    bodyPercent = candleRange > 0 ? bodySize / candleRange * 100 : 0.0
+
+    not enableBodyFilter or bodyPercent >= minimumBodyPercent
+
+// Human-readable price + journal-parseable entry comment (TP: / SL: tokens).
+f_priceLabel(_price) =>
+    str.tostring(_price, format.mintick)
+
+f_entryTableComment(_side, _tp, _sl) =>
+    _side + " | TP: " + f_priceLabel(_tp) + " | SL: " + f_priceLabel(_sl)
+
+// Chart order markers: side only. List of Trades + alerts: full TP/SL string.
+f_entryOrderComment(_side, _tp, _sl) =>
+    fullTableSignals ? f_entryTableComment(_side, _tp, _sl) : _side
+
+f_exitTpComment(_tp) =>
+    "TP " + f_priceLabel(_tp)
+
+f_exitSlComment(_sl) =>
+    "SL " + f_priceLabel(_sl)
+
+var line activeTpLine = na
+var line activeSlLine = na
+var label activeTpLabel = na
+var label activeSlLabel = na
+var int activeLabelEndBar = na
+var float tradeTp = na
+var float tradeSl = na
+var int openTradeSerial = 0
+var int drawnTradeSerial = na
+
+tpColor = color.new(#00c853, 0)
+slColor = color.new(#ff5252, 0)
+
+//────────────────────────────────────────────
+// LONG SIGNAL
+//────────────────────────────────────────────
+getLongSignal(_ema) =>
+    // Previous HA candle fully below EMA.
+    candleANoTouch = high[1] < _ema[1]
+
+    // Current HA candle breaks previous high.
+    bullishBreak = high > high[1] and close > high[1]
+    rawLongSignal = candleANoTouch and bullishBreak
+
+    bodyValid = isBodyValid()
+
+    // Touch/cross EMA or close above EMA.
+    emaTouched = low <= _ema and high >= _ema
+    emaValid = not enableEmaTouchFilter or emaTouched or close > _ema
+
+    // Bottom wick check.
+    bottomWick = math.min(open, close) - low
+    hasBottomWick = bottomWick > syminfo.mintick
+    wickValid = not avoidLongBottomWick or not hasBottomWick
+
+    // Wait after raw reversal when EMA confirmation is missing.
+    var bool waitingForLongEma = false
+    bool finalLongSignal = false
+
+    if rawLongSignal
+        if emaValid
+            finalLongSignal := bodyValid and wickValid
+            waitingForLongEma := false
+        else
+            waitingForLongEma := true
+    else if waitingForLongEma and emaValid
+        if bodyValid and wickValid
+            finalLongSignal := true
+            waitingForLongEma := false
+
+    finalLongSignal
+
+//────────────────────────────────────────────
+// SHORT SIGNAL
+//────────────────────────────────────────────
+getShortSignal(_ema) =>
+    // Previous HA candle fully above EMA.
+    candleANoTouch = low[1] > _ema[1]
+
+    // Current HA candle breaks previous low.
+    bearishBreak = low < low[1] and close < low[1]
+    rawShortSignal = candleANoTouch and bearishBreak
+
+    bodyValid = isBodyValid()
+
+    // Touch/cross EMA or close below EMA.
+    emaTouched = low <= _ema and high >= _ema
+    emaValid = not enableEmaTouchFilter or emaTouched or close < _ema
+
+    // Top wick check.
+    topWick = high - math.max(open, close)
+    hasTopWick = topWick > syminfo.mintick
+    wickValid = not avoidShortTopWick or not hasTopWick
+
+    // Wait after raw reversal when EMA confirmation is missing.
+    var bool waitingForShortEma = false
+    bool finalShortSignal = false
+
+    if rawShortSignal
+        if emaValid
+            finalShortSignal := bodyValid and wickValid
+            waitingForShortEma := false
+        else
+            waitingForShortEma := true
+    else if waitingForShortEma and emaValid
+        if bodyValid and wickValid
+            finalShortSignal := true
+            waitingForShortEma := false
+
+    finalShortSignal
+
+//────────────────────────────────────────────
+// CURRENT CHART HA SIGNALS
+//────────────────────────────────────────────
+[longSignal, shortSignal] = request.security(
+     ticker.heikinashi(syminfo.tickerid),
+     timeframe.period,
+     [
+         getLongSignal(ta.ema(close, emaLen)),
+         getShortSignal(ta.ema(close, emaLen))
+     ],
+     lookahead=barmerge.lookahead_off)
+
+//────────────────────────────────────────────
+// LONG AND SHORT STRATEGY
+// Opposite entry automatically reverses position.
+// Entry comment → List of Trades (every trade). Chart labels → open trade only.
+//────────────────────────────────────────────
+if enableLong and longSignal and strategy.position_size <= 0
+    longStop = low[1]
+    longRisk = close - longStop
+
+    if longRisk > syminfo.mintick
+        longTarget = close + longRisk * rr
+        openTradeSerial += 1
+        tradeTp := longTarget
+        tradeSl := longStop
+        line.delete(activeTpLine)
+        line.delete(activeSlLine)
+        label.delete(activeTpLabel)
+        label.delete(activeSlLabel)
+        activeTpLine := na
+        activeSlLine := na
+        activeTpLabel := na
+        activeSlLabel := na
+        activeLabelEndBar := na
+        drawnTradeSerial := na
+
+        strategy.entry(
+             "Long",
+             strategy.long,
+             comment=f_entryOrderComment("LONG", longTarget, longStop),
+             alert_message=f_entryTableComment("LONG", longTarget, longStop))
+
+        strategy.exit(
+             "Long TP/SL",
+             from_entry="Long",
+             stop=longStop,
+             limit=longTarget,
+             comment="",
+             comment_profit="",
+             comment_loss="",
+             alert_message="LONG exit | TP: " + f_priceLabel(longTarget) + " | SL: " + f_priceLabel(longStop))
+
+else if enableShort and shortSignal and strategy.position_size >= 0
+    shortStop = high[1]
+    shortRisk = shortStop - close
+
+    if shortRisk > syminfo.mintick
+        shortTarget = close - shortRisk * rr
+        openTradeSerial += 1
+        tradeTp := shortTarget
+        tradeSl := shortStop
+        line.delete(activeTpLine)
+        line.delete(activeSlLine)
+        label.delete(activeTpLabel)
+        label.delete(activeSlLabel)
+        activeTpLine := na
+        activeSlLine := na
+        activeTpLabel := na
+        activeSlLabel := na
+        activeLabelEndBar := na
+        drawnTradeSerial := na
+
+        strategy.entry(
+             "Short",
+             strategy.short,
+             comment=f_entryOrderComment("SHORT", shortTarget, shortStop),
+             alert_message=f_entryTableComment("SHORT", shortTarget, shortStop))
+
+        strategy.exit(
+             "Short TP/SL",
+             from_entry="Short",
+             stop=shortStop,
+             limit=shortTarget,
+             comment="",
+             comment_profit="",
+             comment_loss="",
+             alert_message="SHORT exit | TP: " + f_priceLabel(shortTarget) + " | SL: " + f_priceLabel(shortStop))
+
+// Reset open-trade chart state when position closes (any bar).
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    tradeTp := na
+    tradeSl := na
+    drawnTradeSerial := na
+    line.delete(activeTpLine)
+    line.delete(activeSlLine)
+    label.delete(activeTpLabel)
+    label.delete(activeSlLabel)
+    activeTpLine := na
+    activeSlLine := na
+    activeTpLabel := na
+    activeSlLabel := na
+    activeLabelEndBar := na
+
+// Chart: only the live open trade — never old/historical trades.
+if barstate.islast and showTpSlLabels
+    if strategy.position_size != 0 and not na(tradeTp) and not na(tradeSl)
+        endBar = bar_index + labelExtendBars
+        needsRedraw = na(activeTpLine) or drawnTradeSerial != openTradeSerial or endBar != activeLabelEndBar
+        if needsRedraw
+            line.delete(activeTpLine)
+            line.delete(activeSlLine)
+            label.delete(activeTpLabel)
+            label.delete(activeSlLabel)
+            activeLabelEndBar := endBar
+            drawnTradeSerial := openTradeSerial
+            activeTpLine := line.new(bar_index, tradeTp, endBar, tradeTp, color=tpColor, width=2, style=line.style_dashed)
+            activeSlLine := line.new(bar_index, tradeSl, endBar, tradeSl, color=slColor, width=2, style=line.style_dashed)
+            activeTpLabel := label.new(endBar, tradeTp, "TP  " + f_priceLabel(tradeTp), style=label.style_label_left, color=tpColor, textcolor=color.white, size=size.normal)
+            activeSlLabel := label.new(endBar, tradeSl, "SL  " + f_priceLabel(tradeSl), style=label.style_label_left, color=slColor, textcolor=color.white, size=size.normal)
+    else if not na(activeTpLine) or not na(activeTpLabel)
+        line.delete(activeTpLine)
+        line.delete(activeSlLine)
+        label.delete(activeTpLabel)
+        label.delete(activeSlLabel)
+        activeTpLine := na
+        activeSlLine := na
+        activeTpLabel := na
+        activeSlLabel := na
+        activeLabelEndBar := na
+        drawnTradeSerial := na
+
+//────────────────────────────────────────────
+// TODAY'S CLOSED-TRADE PERFORMANCE
+//────────────────────────────────────────────
+todayStart = time("D")
+
+float todayProfit = 0.0
+float todayLoss = 0.0
+float todayNet = 0.0
+int todayWins = 0
+int todayLosses = 0
+
+if strategy.closedtrades > 0
+    for tradeIndex = 0 to strategy.closedtrades - 1
+        tradeExitTime = strategy.closedtrades.exit_time(tradeIndex)
+
+        if not na(todayStart) and tradeExitTime >= todayStart
+            tradePnl = strategy.closedtrades.profit(tradeIndex)
+
+            todayNet += tradePnl
+
+            if tradePnl > 0
+                todayProfit += tradePnl
+                todayWins += 1
+            else if tradePnl < 0
+                todayLoss += math.abs(tradePnl)
+                todayLosses += 1
+
+formatMoney(_value) =>
+    str.tostring(_value, "#.##")
+
+//────────────────────────────────────────────
+// HA SCANNER FUNCTION
+//────────────────────────────────────────────
+getScannerSignals(_symbol, _timeframe) =>
+    request.security(
+         ticker.heikinashi(_symbol),
+         _timeframe,
+         [
+             confirmedOnly
+                 ? getLongSignal(ta.ema(close, emaLen))[1]
+                 : getLongSignal(ta.ema(close, emaLen)),
+             confirmedOnly
+                 ? getShortSignal(ta.ema(close, emaLen))[1]
+                 : getShortSignal(ta.ema(close, emaLen))
+         ],
+         lookahead=barmerge.lookahead_off)
+
+//────────────────────────────────────────────
+// GOLD
+//────────────────────────────────────────────
+[goldM1Long, goldM1Short] = getScannerSignals(goldSymbol, "1")
+[goldM3Long, goldM3Short] = getScannerSignals(goldSymbol, "3")
+[goldM5Long, goldM5Short] = getScannerSignals(goldSymbol, "5")
+[goldM15Long, goldM15Short] = getScannerSignals(goldSymbol, "15")
+[goldM30Long, goldM30Short] = getScannerSignals(goldSymbol, "30")
+[goldH1Long, goldH1Short] = getScannerSignals(goldSymbol, "60")
+
+//────────────────────────────────────────────
+// BTC
+//────────────────────────────────────────────
+[btcM1Long, btcM1Short] = getScannerSignals(btcSymbol, "1")
+[btcM3Long, btcM3Short] = getScannerSignals(btcSymbol, "3")
+[btcM5Long, btcM5Short] = getScannerSignals(btcSymbol, "5")
+[btcM15Long, btcM15Short] = getScannerSignals(btcSymbol, "15")
+[btcM30Long, btcM30Short] = getScannerSignals(btcSymbol, "30")
+[btcH1Long, btcH1Short] = getScannerSignals(btcSymbol, "60")
+
+//────────────────────────────────────────────
+// ETH
+//────────────────────────────────────────────
+[ethM1Long, ethM1Short] = getScannerSignals(ethSymbol, "1")
+[ethM3Long, ethM3Short] = getScannerSignals(ethSymbol, "3")
+[ethM5Long, ethM5Short] = getScannerSignals(ethSymbol, "5")
+[ethM15Long, ethM15Short] = getScannerSignals(ethSymbol, "15")
+[ethM30Long, ethM30Short] = getScannerSignals(ethSymbol, "30")
+[ethH1Long, ethH1Short] = getScannerSignals(ethSymbol, "60")
+
+//────────────────────────────────────────────
+// SOLUSD
+//────────────────────────────────────────────
+[solM1Long, solM1Short] = getScannerSignals(solSymbol, "1")
+[solM3Long, solM3Short] = getScannerSignals(solSymbol, "3")
+[solM5Long, solM5Short] = getScannerSignals(solSymbol, "5")
+[solM15Long, solM15Short] = getScannerSignals(solSymbol, "15")
+[solM30Long, solM30Short] = getScannerSignals(solSymbol, "30")
+[solH1Long, solH1Short] = getScannerSignals(solSymbol, "60")
+
+//────────────────────────────────────────────
+// XAGUSD
+//────────────────────────────────────────────
+[xagM1Long, xagM1Short] = getScannerSignals(xagSymbol, "1")
+[xagM3Long, xagM3Short] = getScannerSignals(xagSymbol, "3")
+[xagM5Long, xagM5Short] = getScannerSignals(xagSymbol, "5")
+[xagM15Long, xagM15Short] = getScannerSignals(xagSymbol, "15")
+[xagM30Long, xagM30Short] = getScannerSignals(xagSymbol, "30")
+[xagH1Long, xagH1Short] = getScannerSignals(xagSymbol, "60")
+
+//────────────────────────────────────────────
+// USOIL
+//────────────────────────────────────────────
+[oilM1Long, oilM1Short] = getScannerSignals(oilSymbol, "1")
+[oilM3Long, oilM3Short] = getScannerSignals(oilSymbol, "3")
+[oilM5Long, oilM5Short] = getScannerSignals(oilSymbol, "5")
+[oilM15Long, oilM15Short] = getScannerSignals(oilSymbol, "15")
+[oilM30Long, oilM30Short] = getScannerSignals(oilSymbol, "30")
+[oilH1Long, oilH1Short] = getScannerSignals(oilSymbol, "60")
+
+//────────────────────────────────────────────
+// DASHBOARD COLORS
+//────────────────────────────────────────────
+headerBg = color.rgb(20, 20, 20)
+pairBg = color.rgb(12, 12, 12)
+longBg = color.rgb(0, 130, 70)
+shortBg = color.rgb(170, 30, 30)
+waitBg = color.rgb(145, 95, 20)
+disabledBg = color.rgb(75, 75, 75)
+profitBg = color.rgb(0, 90, 50)
+lossBg = color.rgb(120, 25, 25)
+whiteText = color.white
+
+netBg = todayNet >= 0
+     ? color.rgb(0, 70, 45)
+     : color.rgb(100, 20, 20)
+
+//────────────────────────────────────────────
+// DASHBOARD
+//────────────────────────────────────────────
+var table scannerTable = table.new(
+     position.top_right,
+     7,
+     10,
+     bgcolor=pairBg,
+     frame_color=color.gray,
+     frame_width=1,
+     border_color=color.rgb(55, 55, 55),
+     border_width=1)
+
+// Merge summary rows once.
+var bool summaryMerged = false
+
+if not summaryMerged
+    table.merge_cells(scannerTable, 0, 7, 6, 7)
+    table.merge_cells(scannerTable, 0, 8, 6, 8)
+    table.merge_cells(scannerTable, 0, 9, 6, 9)
+    summaryMerged := true
+
+drawCell(_column, _row, _longSignal, _shortSignal, _pairEnabled) =>
+    scannerEnabled = _pairEnabled and (enableLong or enableShort)
+    validLong = enableLong and _longSignal
+    validShort = enableShort and _shortSignal
+
+    cellText = not scannerEnabled
+         ? "OFF"
+         : validLong
+             ? "LONG"
+             : validShort
+                 ? "SHORT"
+                 : "WAIT"
+
+    cellBackground = not scannerEnabled
+         ? disabledBg
+         : validLong
+             ? longBg
+             : validShort
+                 ? shortBg
+                 : waitBg
+
+    table.cell(
+         scannerTable,
+         _column,
+         _row,
+         cellText,
+         text_color=whiteText,
+         bgcolor=cellBackground,
+         text_halign=text.align_center,
+         text_size=size.tiny)
+
+drawRow(
+     _row,
+     _name,
+     _enabled,
+     _m1Long,
+     _m1Short,
+     _m3Long,
+     _m3Short,
+     _m5Long,
+     _m5Short,
+     _m15Long,
+     _m15Short,
+     _m30Long,
+     _m30Short,
+     _h1Long,
+     _h1Short) =>
+
+    rowEnabled = _enabled and (enableLong or enableShort)
+
+    table.cell(
+         scannerTable,
+         0,
+         _row,
+         _name,
+         text_color=whiteText,
+         bgcolor=rowEnabled ? pairBg : disabledBg,
+         text_halign=text.align_center,
+         text_size=size.tiny)
+
+    drawCell(1, _row, _m1Long, _m1Short, _enabled)
+    drawCell(2, _row, _m3Long, _m3Short, _enabled)
+    drawCell(3, _row, _m5Long, _m5Short, _enabled)
+    drawCell(4, _row, _m15Long, _m15Short, _enabled)
+    drawCell(5, _row, _m30Long, _m30Short, _enabled)
+    drawCell(6, _row, _h1Long, _h1Short, _enabled)
+
+drawSummaryRow(_row, _label, _value, _background) =>
+    table.cell(
+         scannerTable,
+         0,
+         _row,
+         _label + "  " + _value,
+         text_color=whiteText,
+         bgcolor=_background,
+         text_halign=text.align_center,
+         text_size=size.tiny)
+
+//────────────────────────────────────────────
+// DRAW DASHBOARD
+//────────────────────────────────────────────
+if barstate.islast
+    table.cell(scannerTable, 0, 0, "PAIR", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
+    table.cell(scannerTable, 1, 0, "M1", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
+    table.cell(scannerTable, 2, 0, "M3", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
+    table.cell(scannerTable, 3, 0, "M5", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
+    table.cell(scannerTable, 4, 0, "M15", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
+    table.cell(scannerTable, 5, 0, "M30", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
+    table.cell(scannerTable, 6, 0, "H1", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
+
+    drawRow(
+         1, "GOLD", enableGOLD,
+         goldM1Long, goldM1Short,
+         goldM3Long, goldM3Short,
+         goldM5Long, goldM5Short,
+         goldM15Long, goldM15Short,
+         goldM30Long, goldM30Short,
+         goldH1Long, goldH1Short)
+
+    drawRow(
+         2, "BTC", enableBTC,
+         btcM1Long, btcM1Short,
+         btcM3Long, btcM3Short,
+         btcM5Long, btcM5Short,
+         btcM15Long, btcM15Short,
+         btcM30Long, btcM30Short,
+         btcH1Long, btcH1Short)
+
+    drawRow(
+         3, "ETH", enableETH,
+         ethM1Long, ethM1Short,
+         ethM3Long, ethM3Short,
+         ethM5Long, ethM5Short,
+         ethM15Long, ethM15Short,
+         ethM30Long, ethM30Short,
+         ethH1Long, ethH1Short)
+
+    drawRow(
+         4, "SOLUSD", enableSOL,
+         solM1Long, solM1Short,
+         solM3Long, solM3Short,
+         solM5Long, solM5Short,
+         solM15Long, solM15Short,
+         solM30Long, solM30Short,
+         solH1Long, solH1Short)
+
+    drawRow(
+         5, "XAGUSD", enableXAG,
+         xagM1Long, xagM1Short,
+         xagM3Long, xagM3Short,
+         xagM5Long, xagM5Short,
+         xagM15Long, xagM15Short,
+         xagM30Long, xagM30Short,
+         xagH1Long, xagH1Short)
+
+    drawRow(
+         6, "USOIL", enableOIL,
+         oilM1Long, oilM1Short,
+         oilM3Long, oilM3Short,
+         oilM5Long, oilM5Short,
+         oilM15Long, oilM15Short,
+         oilM30Long, oilM30Short,
+         oilH1Long, oilH1Short)
+
+    drawSummaryRow(
+         7,
+         "TODAY +",
+         "+" + formatMoney(todayProfit) + " (" + str.tostring(todayWins) + ")",
+         profitBg)
+
+    drawSummaryRow(
+         8,
+         "TODAY -",
+         "-" + formatMoney(todayLoss) + " (" + str.tostring(todayLosses) + ")",
+         lossBg)
+
+    drawSummaryRow(
+         9,
+         "NET",
+         (todayNet >= 0 ? "+" : "") + formatMoney(todayNet),
+         netBg)
+
+//────────────────────────────────────────────
+// CHART PLOTS
+//────────────────────────────────────────────
+plot(ema5, color=color.green, title="Fast EMA", linewidth=2)
+plot(ema20, color=color.red, title="Slow EMA", linewidth=2)
+
+plotshape(
+     enableLong and longSignal,
+     title="Long Signal",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.green,
+     text="LONG",
+     textcolor=color.white,
+     size=size.tiny)
+
+plotshape(
+     enableShort and shortSignal,
+     title="Short Signal",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.red,
+     text="SHORT",
+     textcolor=color.white,
+     size=size.tiny)
+
+//────────────────────────────────────────────
+// ALERTS
+//────────────────────────────────────────────
+alertcondition(
+     enableLong and longSignal,
+     title="Bullish HA EMA Reversal",
+     message="LONG Heikin Ashi EMA reversal on {{ticker}} {{interval}}")
+
+alertcondition(
+     enableShort and shortSignal,
+     title="Bearish HA EMA Reversal",
+     message="SHORT Heikin Ashi EMA reversal on {{ticker}} {{interval}}")

@@ -77,12 +77,14 @@ export function NewTradeAlarmModal({ open, alarm, onStop }: NewTradeAlarmModalPr
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <BellRing className="h-5 w-5 text-amber-500 animate-pulse" />
-            {trade.is_open === false ? "New trade synced" : "New open trade"}
+            {trade.is_open === false ? "Trade closed" : "New open trade"}
           </DialogTitle>
           <DialogDescription>
-            {importedCount > 1
-              ? `${importedCount} new trades opened — showing the latest open position.`
-              : "A new open position was detected from Live Sync."}
+            {trade.is_open === false
+              ? "Live Sync closed this position."
+              : importedCount > 1
+                ? `${importedCount} new trades opened — showing the latest open position.`
+                : "A new open position was detected from Live Sync."}
             {accountName ? ` Account: ${accountName}.` : ""}
           </DialogDescription>
         </DialogHeader>
@@ -107,8 +109,15 @@ export function NewTradeAlarmModal({ open, alarm, onStop }: NewTradeAlarmModalPr
               </div>
             </div>
             <div className="mt-2">
-              <span className="inline-flex rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
-                Open
+              <span
+                className={cn(
+                  "inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                  trade.is_open === false
+                    ? "bg-zinc-500/15 text-zinc-700 dark:text-zinc-300"
+                    : "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+                )}
+              >
+                {trade.is_open === false ? "Closed" : "Open"}
               </span>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
@@ -116,6 +125,21 @@ export function NewTradeAlarmModal({ open, alarm, onStop }: NewTradeAlarmModalPr
                 <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Entry</p>
                 <p className="font-medium tabular-nums">{trade.entry_price}</p>
               </div>
+              {trade.is_open === false && trade.exit_price != null ? (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Exit</p>
+                  <p className="font-medium tabular-nums">{trade.exit_price}</p>
+                </div>
+              ) : null}
+              {trade.is_open === false && typeof trade.net_pnl === "number" ? (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">P&L</p>
+                  <p className="font-medium tabular-nums">
+                    {trade.net_pnl > 0 ? "+" : ""}
+                    {trade.net_pnl.toFixed(2)}
+                  </p>
+                </div>
+              ) : null}
               {signalLabel !== "—" ? (
                 <div>
                   <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Signal</p>

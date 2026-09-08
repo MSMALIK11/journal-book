@@ -214,5 +214,8 @@ TradeSchema.index({ accountId: 1, instrument: 1 })
 TradeSchema.index({ accountId: 1, external_id: 1 }, { unique: true, sparse: true })
 TradeSchema.index({ accountId: 1, source: 1, entry_date: -1 })
 TradeSchema.index({ userId: 1, accountId: 1 })
+// The extension's sync snapshot queries by userId + source and sorts by entry_date. Without this
+// the newest-slice lookup scans the user's whole history and sorts in memory.
+TradeSchema.index({ userId: 1, source: 1, entry_date: -1 })
 
 export default mongoose.models.Trade || mongoose.model<ITrade>("Trade", TradeSchema)

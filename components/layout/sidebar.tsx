@@ -18,6 +18,7 @@ import {
   Radio,
   Settings,
   X,
+  Zap,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -28,6 +29,8 @@ import { SystemStatus } from "@/components/layout/live-status"
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: Home },
   { name: "Live Sync", href: "/live-sync", icon: Radio },
+  { name: "Delta Demo", href: "/delta", icon: Zap, description: "Manual Delta testnet orders" },
+  { name: "Delta Live", href: "/delta/live", icon: Zap, description: "Delta India live trading" },
   { name: "Pip Calculator", href: "/pip-calculator", icon: Calculator },
   { name: "Add Trade", href: "/trades/new", icon: PlusCircle },
   { name: "Trade History", href: "/trades", icon: FileText },
@@ -79,9 +82,11 @@ export function Sidebar() {
         <nav className="relative z-[1] flex-1 space-y-1 overflow-y-auto px-3 py-4">
           {navigation.map((item) => {
             const isActive =
-              item.href === "/trades"
-                ? pathname === "/trades"
-                : pathname === item.href || pathname.startsWith(`${item.href}/`)
+              item.href === "/delta"
+                ? pathname === "/delta"
+                : item.href === "/trades"
+                  ? pathname === "/trades"
+                  : pathname === item.href || pathname.startsWith(`${item.href}/`)
 
             return (
               <Link
@@ -95,15 +100,7 @@ export function Sidebar() {
                     ? "border-cyan-400 bg-cyan-400/10 text-cyan-200"
                     : "border-transparent text-muted-foreground hover:bg-cyan-400/5 hover:text-cyan-100",
                 )}
-                onPointerDown={(event) => {
-                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-                    return
-                  }
-                  setIsMobileMenuOpen(false)
-                  if (pathname !== item.href) {
-                    router.push(item.href)
-                  }
-                }}
+                onClick={() => setIsMobileMenuOpen(false)}
               >
                 <item.icon className="h-4 w-4 shrink-0" />
                 {item.name}

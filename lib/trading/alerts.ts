@@ -50,6 +50,7 @@ export type AlertCategory =
   | "weekly_momentum"
   | "session_boundary"
   | "new_trade"
+  | "delta_trade"
 
 export type AlertContext = {
   hour?: number
@@ -59,6 +60,20 @@ export type AlertContext = {
   instrument?: string
   zone?: string
   telegramSentAt?: string
+  source?: string
+  environment?: string
+  accountLabel?: string
+  accountId?: string
+  symbol?: string
+  kind?: string
+  side?: string
+  lots?: number
+  tradeSource?: string
+  okCount?: number
+  total?: number
+  status?: string
+  tvTradeId?: string
+  accountResults?: Array<{ accountId?: string; label?: string; ok?: boolean; error?: string }>
 }
 
 export type TradingAlertPayload = {

@@ -5,6 +5,8 @@ import { getSyncCorsHeaders } from "@/lib/sync-cors"
 const protectedPrefixes = [
   "/dashboard",
   "/live-sync",
+  "/delta",
+  "/delta/live",
   "/trades",
   "/profile",
   "/analytics",
@@ -58,6 +60,7 @@ export const config = {
     "/",
     "/dashboard/:path*",
     "/live-sync/:path*",
+    "/delta/:path*",
     "/trades/:path*",
     "/profile/:path*",
     "/analytics/:path*",
