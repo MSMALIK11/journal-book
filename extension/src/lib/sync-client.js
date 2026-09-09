@@ -421,7 +421,27 @@ JBSync.readChartSymbolFromTab = async function readChartSymbolFromTab(tab) {
   return JBSync.symbolFromTabUrl(tab.url)
 }
 
-/** Reject BTC leftovers stamped onto GOLD, etc. */
+const JB_FIAT_CURRENCIES = new Set([
+  "USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF",
+  "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "TRY", "ZAR",
+  "MXN", "SGD", "HKD", "CNH", "CNY", "INR", "KRW", "THB", "BRL",
+])
+
+const JB_HIGH_UNIT_QUOTES = new Set([
+  "JPY", "TRY", "ZAR", "MXN", "SEK", "NOK", "DKK", "HUF", "CZK", "INR", "KRW", "THB", "BRL",
+])
+
+/** Keep in sync with lib/trading/price-sanity.ts on the server. */
+function jbFiatPairRange(symbol) {
+  if (symbol.length !== 6) return null
+  const base = symbol.slice(0, 3)
+  const quote = symbol.slice(3)
+  if (!JB_FIAT_CURRENCIES.has(base) || !JB_FIAT_CURRENCIES.has(quote)) return null
+
+  return JB_HIGH_UNIT_QUOTES.has(quote) ? [1, 2000] : [0.05, 20]
+}
+
+/** Reject BTC leftovers stamped onto GOLD, gold prints stamped onto GBPUSD, etc. */
 JBSync.priceMatchesInstrument = function priceMatchesInstrument(price, symbol) {
   if (!Number.isFinite(price) || price <= 0) return false
   const s = String(symbol || "")
@@ -434,7 +454,14 @@ JBSync.priceMatchesInstrument = function priceMatchesInstrument(price, symbol) {
   if (/ETH/.test(s)) return price >= 50 && price <= 50000
   if (/SOL/.test(s)) return price >= 1 && price <= 5000
   if (/^(USOIL|UKOIL|WTI|CRUDE|OIL|CL)/.test(s)) return price >= 10 && price <= 500
-  // Forex / unknown — only block absurd crypto-scale prices
+  if (/^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225)/.test(s)) {
+    return price >= 100 && price <= 200000
+  }
+
+  const fx = jbFiatPairRange(s)
+  if (fx) return price >= fx[0] && price <= fx[1]
+
+  // Unknown symbol — only block absurd crypto-scale prices
   if (price >= 20000) return false
   return true
 }

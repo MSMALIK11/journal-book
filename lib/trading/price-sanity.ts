@@ -4,6 +4,27 @@ import {
   type TradingViewTradeInput,
 } from "@/lib/validations/tradingview-sync"
 
+const FIAT_CURRENCIES = new Set([
+  "USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF",
+  "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "TRY", "ZAR",
+  "MXN", "SGD", "HKD", "CNH", "CNY", "INR", "KRW", "THB", "BRL",
+])
+
+/** Quotes where one unit of base is worth a lot of quote (USDJPY ~150, USDTRY ~43). */
+const HIGH_UNIT_QUOTES = new Set([
+  "JPY", "TRY", "ZAR", "MXN", "SEK", "NOK", "DKK", "HUF", "CZK", "INR", "KRW", "THB", "BRL",
+])
+
+/** Wide but real FX bands — enough to catch a metal/index print stamped onto a currency pair. */
+function fiatPairRange(symbol: string): [number, number] | null {
+  if (symbol.length !== 6) return null
+  const base = symbol.slice(0, 3)
+  const quote = symbol.slice(3)
+  if (!FIAT_CURRENCIES.has(base) || !FIAT_CURRENCIES.has(quote)) return null
+
+  return HIGH_UNIT_QUOTES.has(quote) ? [1, 2000] : [0.05, 20]
+}
+
 /** Reject cross-symbol sync leftovers (e.g. BTC ~64k stamped as XAUUSD). */
 export function priceMatchesInstrument(price: number | null | undefined, instrument: string): boolean {
   if (price == null || !Number.isFinite(price) || price <= 0) return false
@@ -16,10 +37,35 @@ export function priceMatchesInstrument(price: number | null | undefined, instrum
   if (/ETH/.test(s)) return price >= 50 && price <= 50000
   if (/SOL/.test(s)) return price >= 1 && price <= 5000
   if (/^(USOIL|UKOIL|WTI|CRUDE|OIL|CL)/.test(s)) return price >= 10 && price <= 500
+  if (/^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225)/.test(s)) {
+    return price >= 100 && price <= 200000
+  }
 
-  // Forex / unknown — block absurd crypto-scale prices
+  // A currency pair must look like a currency pair — a 4,375 gold print is not GBPUSD.
+  const fx = fiatPairRange(s)
+  if (fx) return price >= fx[0] && price <= fx[1]
+
+  // Unknown symbol — block absurd crypto-scale prices
   if (price >= 20000) return false
   return true
+}
+
+/**
+ * The extension's `chartSymbol` can go stale (TradingView leaves an old `?symbol=` in the URL, or
+ * another chart tab wins the lookup), and it used to be stamped onto every trade unconditionally —
+ * that is how 4,375 gold fills landed under GBPUSD. Trust the chart symbol only when the price
+ * actually fits it, otherwise fall back to the instrument the trade carried, and skip when neither
+ * is plausible rather than mislabelling the fill.
+ */
+export function resolveSyncedInstrument(
+  price: number | null | undefined,
+  chartSymbol: string | null,
+  tradeSymbol: string,
+): string | null {
+  for (const candidate of [chartSymbol, tradeSymbol]) {
+    if (candidate && priceMatchesInstrument(price, candidate)) return candidate
+  }
+  return null
 }
 
 function entryMs(trade: TradingViewTradeInput) {

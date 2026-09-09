@@ -3,7 +3,7 @@ import connectDB from "@/app/api/db/mongoose"
 import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
-import { dropSupersededOpenTradesFromPayload, priceMatchesInstrument } from "@/lib/trading/price-sanity"
+import { dropSupersededOpenTradesFromPayload, resolveSyncedInstrument } from "@/lib/trading/price-sanity"
 import { closeDuplicateLiveOpens, healIncompleteTvCloses, healMisclosedSameFillOpens, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
@@ -280,9 +280,13 @@ export async function POST(request: NextRequest) {
     const fillEvents: LiveFillEvent[] = []
 
     for (const tvTrade of incomingTrades) {
-      const symbol = chartSymbolOverride || canonicalInstrumentSymbol(tvTrade.instrument)
+      const symbol = resolveSyncedInstrument(
+        tvTrade.entry?.price,
+        chartSymbolOverride,
+        canonicalInstrumentSymbol(tvTrade.instrument),
+      )
 
-      if (!priceMatchesInstrument(tvTrade.entry?.price, symbol)) {
+      if (!symbol) {
         skipped += 1
         continue
       }
