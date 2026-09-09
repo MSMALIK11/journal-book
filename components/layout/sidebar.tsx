@@ -5,8 +5,9 @@ import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import {
   BarChart3,
-  Calendar,
+  Cable,
   Calculator,
+  Calendar,
   FileText,
   Home,
   LogOut,
@@ -31,6 +32,7 @@ const navigation = [
   { name: "Live Sync", href: "/live-sync", icon: Radio },
   { name: "Delta Demo", href: "/delta", icon: Zap, description: "Manual Delta testnet orders" },
   { name: "Delta Live", href: "/delta/live", icon: Zap, description: "Delta India live trading" },
+  { name: "MT5 Integration", href: "/settings/broker", icon: Cable, description: "XM MetaTrader 5 configuration" },
   { name: "Pip Calculator", href: "/pip-calculator", icon: Calculator },
   { name: "Add Trade", href: "/trades/new", icon: PlusCircle },
   { name: "Trade History", href: "/trades", icon: FileText },
@@ -86,7 +88,9 @@ export function Sidebar() {
                 ? pathname === "/delta"
                 : item.href === "/trades"
                   ? pathname === "/trades"
-                  : pathname === item.href || pathname.startsWith(`${item.href}/`)
+                  : item.href === "/settings"
+                    ? pathname === "/settings"
+                    : pathname === item.href || pathname.startsWith(`${item.href}/`)
 
             return (
               <Link

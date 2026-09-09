@@ -83,6 +83,7 @@ export interface IUser {
     demo?: Record<string, unknown>;
     live?: Record<string, unknown>;
   };
+  brokerExecutionPreferences?: Record<string, unknown>;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -173,6 +174,10 @@ const UserSchema = new Schema<IUser>(
       default: false,
     },
     deltaAutoTradePreferences: {
+      type: Schema.Types.Mixed,
+      default: {},
+    },
+    brokerExecutionPreferences: {
       type: Schema.Types.Mixed,
       default: {},
     },

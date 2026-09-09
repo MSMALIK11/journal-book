@@ -11,7 +11,9 @@
     "dev": "next dev --turbopack",
     "dev:webpack": "next dev",
     "lint": "next lint",
-    "start": "next start"
+    "start": "next start",
+    "mt5:setup": "cd workers/mt5 && python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt",
+    "mt5:worker": "cd workers/mt5 && .venv/bin/uvicorn app:app --host 127.0.0.1 --port 8100 --log-level warning"
   },
   "dependencies": {
     "@aws-sdk/credential-providers": "^3.1087.0",

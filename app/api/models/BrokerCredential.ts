@@ -2,10 +2,12 @@ import mongoose, { Schema, model, models, type Model } from "mongoose"
 
 export type DeltaCredentialEnvironment = "demo" | "live"
 
+export type BrokerCredentialProvider = "delta" | "xm"
+
 export interface IBrokerCredential {
   _id?: string
   userId: mongoose.Types.ObjectId
-  provider: "delta"
+  provider: BrokerCredentialProvider
   environment?: DeltaCredentialEnvironment
   label: string
   isDefault?: boolean
@@ -13,6 +15,12 @@ export interface IBrokerCredential {
   encryptedKey: string
   encryptedSecret: string
   lastFour?: string
+  platform?: "mt5"
+  server?: string
+  brokerName?: "xm" | "other"
+  lastConnectionStatus?: "not_connected" | "connecting" | "connected" | "error" | "unavailable"
+  lastCheckedAt?: Date
+  lastConnectionMessage?: string | null
   createdAt?: Date
   updatedAt?: Date
 }
@@ -20,7 +28,7 @@ export interface IBrokerCredential {
 const BrokerCredentialSchema = new Schema<IBrokerCredential>(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
-    provider: { type: String, enum: ["delta"], required: true },
+    provider: { type: String, enum: ["delta", "xm"], required: true },
     environment: { type: String, enum: ["demo", "live"], default: "demo" },
     label: { type: String, required: true, trim: true, maxlength: 40 },
     isDefault: { type: Boolean, default: false },
@@ -28,6 +36,15 @@ const BrokerCredentialSchema = new Schema<IBrokerCredential>(
     encryptedKey: { type: String, required: true },
     encryptedSecret: { type: String, required: true },
     lastFour: { type: String },
+    platform: { type: String, enum: ["mt5"] },
+    server: { type: String, trim: true, maxlength: 80 },
+    brokerName: { type: String, enum: ["xm", "other"] },
+    lastConnectionStatus: {
+      type: String,
+      enum: ["not_connected", "connecting", "connected", "error", "unavailable"],
+    },
+    lastCheckedAt: { type: Date },
+    lastConnectionMessage: { type: String, maxlength: 240 },
   },
   { timestamps: true },
 )
