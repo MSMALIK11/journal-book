@@ -17,7 +17,7 @@ export function normalizeDeltaPositions(raw: unknown): DeltaPositionRow[] {
   if (!Array.isArray(raw)) return []
 
   return raw
-    .map<DeltaPositionRow | null>((item) => {
+    .map((item) => {
       if (!item || typeof item !== "object") return null
       const row = item as Record<string, unknown>
       const size = toNumber(row.size) ?? 0

@@ -1,5 +1,4 @@
 import { classifySession, getSessionDef, getZonedParts, normalizeWeekday } from "@/lib/trading/sessions"
-import { normalizeSignalLabel } from "@/lib/trading/signal-levels"
 
 export type TradeLegInput = {
   entry_date: string
@@ -22,9 +21,11 @@ export function tradeSideLabel(tradeType: "Buy" | "Sell"): "Long" | "Short" {
   return tradeType === "Buy" ? "Long" : "Short"
 }
 
-/** Stored signal, with duplicate Long/Short/Open tokens collapsed. */
+/** Placeholder "Open" belongs in Exit, not Signal. */
 export function formatTradeSignal(signal?: string | null): string {
-  return normalizeSignalLabel(signal) || "—"
+  const text = (signal || "").trim()
+  if (!text || text.toLowerCase() === "open") return "—"
+  return text
 }
 
 const GENERIC_SYNC_STRATEGY = "TradingView Strategy"

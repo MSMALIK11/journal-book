@@ -14,7 +14,6 @@ import {
 import { authFetch } from "@/lib/client-auth"
 import {
   DEFAULT_TRADE_ALARM_PREFERENCES,
-  TRADE_ALARM_REPEAT_MAX_MS,
   TRADE_ALARM_SOUNDS,
   normalizeTradeAlarmPreferences,
   type TradeAlarmPreferences,
@@ -40,7 +39,7 @@ const SOUND_MODE_OPTIONS: Array<{
   {
     value: "manual",
     title: "Repeat until I stop",
-    description: "Keeps playing until you tap Stop, or auto-stops after 3 minutes.",
+    description: "Keeps playing until you tap Stop alert on the modal.",
   },
 ]
 
@@ -66,8 +65,6 @@ export function TradeAlarmSettings() {
     playTradeAlarmSound(preferences.soundId, mode)
     if (mode === "once") {
       window.setTimeout(() => setTesting(false), 3000)
-    } else {
-      window.setTimeout(() => setTesting(false), TRADE_ALARM_REPEAT_MAX_MS)
     }
   }
 

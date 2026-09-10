@@ -1,8 +1,6 @@
 import type { AssetType } from "@/lib/instruments"
 import { ASSET_TYPE_DEFAULTS, getQuantityMode, INSTRUMENTS } from "@/lib/instruments"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
-import { resolveClosedTradeMetrics } from "@/lib/trading/close-pnl"
-import { normalizeSignalLabel, parseSignalLevels } from "@/lib/trading/signal-levels"
 import { isOpenTvSignal, isOpenTvTrade } from "@/lib/trading/tradingview-open"
 import {
   buildExternalId,
@@ -82,24 +80,6 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
     exit_price = trade.entry.price
   }
 
-  const quantity = trade.entry.size ?? 1
-  const storedSignal = pickStoredSignal(trade, open)
-  const levels = parseSignalLevels(
-    [storedSignal, trade.entry.signal, trade.exit?.signal].filter(Boolean).join(" | "),
-  )
-  const closedMetrics =
-    !open && exit_price != null
-      ? resolveClosedTradeMetrics({
-          trade_type: trade.direction === "long" ? "Buy" : "Sell",
-          entry_price,
-          exit_price,
-          quantity,
-          contract_size: instrument.contractSize,
-          net_pnl: trade.netPnl,
-          return_pct: trade.returnPct,
-        })
-      : null
-
   return {
     userId,
     accountId,
@@ -110,7 +90,7 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
     order_type: "Futures" as const,
     entry_price,
     exit_price,
-    quantity,
+    quantity: trade.entry.size ?? 1,
     asset_type: instrument.assetType,
     quantity_mode: getQuantityMode(instrument.assetType),
     base_currency: instrument.baseCurrency,
@@ -123,12 +103,10 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
     min_lot: instrument.minLot,
     max_lot: instrument.maxLot,
     lot_step: instrument.lotStep,
-    net_pnl: closedMetrics?.net_pnl ?? trade.netPnl,
-    return_pct: closedMetrics?.return_pct ?? trade.returnPct,
+    net_pnl: trade.netPnl,
+    return_pct: trade.returnPct,
     commission: trade.commission,
-    signal: normalizeSignalLabel(storedSignal) || levels.label || undefined,
-    stop_loss: levels.stopLoss,
-    target: levels.takeProfit,
+    signal: pickStoredSignal(trade, open),
     strategy: trade.strategy || undefined,
     source: "tradingview" as const,
     external_id,
