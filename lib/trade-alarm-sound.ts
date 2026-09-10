@@ -1,4 +1,5 @@
 import {
+  TRADE_ALARM_REPEAT_MAX_MS,
   getTradeAlarmSound,
   type TradeAlarmSoundId,
   type TradeAlarmSoundMode,
@@ -7,12 +8,19 @@ import {
 let activeAudio: HTMLAudioElement | null = null
 let audioUnlocked = false
 let gestureRetry: (() => void) | null = null
+let repeatStopTimer: number | null = null
 
 function clearGestureRetry() {
   if (!gestureRetry) return
   window.removeEventListener("pointerdown", gestureRetry, true)
   window.removeEventListener("keydown", gestureRetry, true)
   gestureRetry = null
+}
+
+function clearRepeatStopTimer() {
+  if (repeatStopTimer == null) return
+  window.clearTimeout(repeatStopTimer)
+  repeatStopTimer = null
 }
 
 /**
@@ -34,6 +42,7 @@ function retrySoundOnNextGesture(audio: HTMLAudioElement) {
 }
 
 function stopActiveAudio() {
+  clearRepeatStopTimer()
   clearGestureRetry()
   if (!activeAudio) return
   activeAudio.pause()
@@ -97,6 +106,10 @@ export function playTradeAlarmSound(soundId: TradeAlarmSoundId, mode: TradeAlarm
       }
     }
     startAudio(audio)
+    repeatStopTimer = window.setTimeout(() => {
+      repeatStopTimer = null
+      stopTradeAlarmSound()
+    }, TRADE_ALARM_REPEAT_MAX_MS)
     return
   }
 

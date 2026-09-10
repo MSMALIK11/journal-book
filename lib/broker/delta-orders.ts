@@ -24,11 +24,17 @@ export type DeltaBatchOrderResult = {
 }
 
 export function getDeltaSymbolCandidates(symbol: string): string[] {
-  const normalized = symbol.toUpperCase()
+  const normalized = symbol.toUpperCase().replace(/[^A-Za-z0-9]/g, "")
   const candidates = [normalized]
   if (normalized.endsWith("USDT")) {
     candidates.push(normalized.slice(0, -4) + "USD")
   }
+  if (["XAUUSD", "XAUUSDT", "XAU", "GOLD", "XAUT", "XAUTUSD"].includes(normalized)) {
+    candidates.push("XAUTUSD")
+  }
+  if (normalized === "BTC") candidates.push("BTCUSD")
+  if (normalized === "ETH") candidates.push("ETHUSD")
+  if (normalized === "SOL") candidates.push("SOLUSD")
   return candidates.filter((candidate, idx) => candidates.indexOf(candidate) === idx)
 }
 

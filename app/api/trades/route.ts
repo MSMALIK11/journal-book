@@ -7,8 +7,13 @@ import { resolveInstrumentForUser } from "@/lib/instruments-server"
 import { getAccountContext } from "@/lib/active-account"
 import { getSession } from "@/lib/session"
 import { calculateProfit } from "@/lib/trading/calculator"
+import { healSignalLevels } from "@/lib/trading/reconcile-open-trades"
+import { buildTradeListSummary } from "@/lib/trading/trade-list-summary"
 import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
 import { tradeSchema } from "@/lib/validations/trade"
+
+const DEFAULT_TRADE_LIMIT = 50
+const MAX_TRADE_LIMIT = 1000
 
 export async function GET(request: NextRequest) {
   try {
@@ -41,11 +46,12 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate")
     const endDate = searchParams.get("endDate")
     const requestedPage = Number.parseInt(searchParams.get("page") || "1")
-    const requestedLimit = Number.parseInt(searchParams.get("limit") || "10")
+    const requestedLimit = Number.parseInt(searchParams.get("limit") || String(DEFAULT_TRADE_LIMIT))
     const page = Number.isFinite(requestedPage) ? Math.max(1, requestedPage) : 1
     const limit = Number.isFinite(requestedLimit)
-      ? Math.min(source === "tradingview" ? 10000 : 1000, Math.max(1, requestedLimit))
-      : 10
+      ? Math.min(MAX_TRADE_LIMIT, Math.max(1, requestedLimit))
+      : DEFAULT_TRADE_LIMIT
+    const includeSummary = searchParams.get("summary") === "1"
 
     if (search) {
       query.$or = [
@@ -71,13 +77,19 @@ export async function GET(request: NextRequest) {
       if (endDate) query.entry_date.$lte = new Date(`${endDate}T23:59:59.999Z`)
     }
 
-    const trades = await Trade.find(query)
-      .sort({ entry_date: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .lean()
+    if (source === "tradingview" && page === 1) {
+      await healSignalLevels(session.sub, accountId)
+    }
 
-    const total = await Trade.countDocuments(query)
+    const [trades, total, summary] = await Promise.all([
+      Trade.find(query)
+        .sort({ entry_date: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      Trade.countDocuments(query),
+      includeSummary ? buildTradeListSummary(query) : Promise.resolve(null),
+    ])
 
     const formatted = trades.map((t) => ({
       ...t,
@@ -93,10 +105,15 @@ export async function GET(request: NextRequest) {
       is_open: t.source === "tradingview" ? isOpenSyncedTrade(t) : !t.exit_date,
     }))
 
+    const totalPages = Math.ceil(total / limit)
     return NextResponse.json({
       trades: formatted,
       total,
-      totalPages: Math.ceil(total / limit),
+      page,
+      limit,
+      totalPages,
+      hasMore: page < totalPages,
+      ...(summary ? { summary } : {}),
     })
   } catch (error) {
     console.error("Failed to load trades:", error)

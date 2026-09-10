@@ -1,20 +1,6 @@
 "use client"
 
 import { useMemo } from "react"
-import { format } from "date-fns"
-import { RefreshCw, XCircle } from "lucide-react"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import { DeltaAccountSelector, type DeltaTradeMode } from "@/components/delta/delta-account-selector"
@@ -22,19 +8,10 @@ import { DeltaOrderTicket } from "@/components/delta/delta-order-ticket"
 import type { DeltaAccountMarginEntry } from "@/components/delta/use-delta-account-margins"
 import {
   DEMO_SYMBOLS,
-  deltaApiPath,
-  formatPrice,
   formatUsd,
-  orderRowPnl,
-  pnlClassName,
   type DeltaAccount,
   type DeltaEnvironment,
-  type OrderRow,
-  type PositionRow,
 } from "@/components/delta/delta-shared"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { authFetch } from "@/lib/client-auth"
-import { useToast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
 
 type DeltaTradingTabProps = {
@@ -46,8 +23,6 @@ type DeltaTradingTabProps = {
   serverLiveBlocked: boolean
   envOverride: boolean
   maxOrderSize: number
-  positions: PositionRow[]
-  orders: OrderRow[]
   symbol: (typeof DEMO_SYMBOLS)[number]
   onSymbolChange: (symbol: (typeof DEMO_SYMBOLS)[number]) => void
   busy: string | null
@@ -58,11 +33,11 @@ type DeltaTradingTabProps = {
   onTradeModeChange: (mode: DeltaTradeMode) => void
   onSingleAccountChange: (accountId: string | null) => void
   onBroadcastAccountIdsChange: (ids: string[]) => void
-  onRefreshPositions: () => Promise<void>
   onOrderPlaced: () => Promise<void>
   marginEntries?: Record<string, DeltaAccountMarginEntry>
   marginReadyCount?: number
   onRefreshMargins?: () => void
+  persistReady?: boolean
 }
 
 function KpiCard({ label, value, sub, valueClass }: { label: string; value: string; sub?: string; valueClass?: string }) {
@@ -86,8 +61,6 @@ export function DeltaTradingTab({
   serverLiveBlocked,
   envOverride,
   maxOrderSize,
-  positions,
-  orders,
   symbol,
   onSymbolChange,
   busy,
@@ -98,14 +71,12 @@ export function DeltaTradingTab({
   onTradeModeChange,
   onSingleAccountChange,
   onBroadcastAccountIdsChange,
-  onRefreshPositions,
   onOrderPlaced,
   marginEntries,
   marginReadyCount = 0,
   onRefreshMargins,
+  persistReady = true,
 }: DeltaTradingTabProps) {
-  const { toast } = useToast()
-
   const targetLabels = useMemo(() => {
     if (tradeMode === "broadcast") {
       return enabledAccounts.filter((a) => broadcastAccountIds.includes(a.id)).map((a) => a.label)
@@ -113,11 +84,6 @@ export function DeltaTradingTab({
     const one = enabledAccounts.find((a) => a.id === singleAccountId)
     return one ? [one.label] : []
   }, [broadcastAccountIds, enabledAccounts, singleAccountId, tradeMode])
-
-  const unrealizedPnlTotal = useMemo(
-    () => positions.reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0),
-    [positions],
-  )
 
   const singleMargin = singleAccountId ? marginEntries?.[singleAccountId]?.marginUsd ?? null : null
   const broadcastMargins = useMemo(() => {
@@ -132,69 +98,6 @@ export function DeltaTradingTab({
     if (funded.length === 0) return null
     return funded.reduce((min, cur) => ((cur.marginUsd ?? 0) < (min.marginUsd ?? 0) ? cur : min), funded[0])
   }, [broadcastMargins])
-
-  async function closePosition(row: PositionRow) {
-    if (!row.accountId || !row.side || row.side === "flat") return
-    onBusyChange(`close-${row.accountId}-${row.symbol}`)
-    try {
-      const response = await authFetch(deltaApiPath("/api/delta/positions/close", environment), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accountId: row.accountId,
-          symbol: row.symbol,
-          side: row.side,
-          size: Math.max(1, Math.floor(row.size)),
-        }),
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || "Close failed")
-      toast({
-        title: "Position closed",
-        description: `${row.accountLabel} · ${row.symbol}`,
-      })
-      await onRefreshPositions()
-    } catch (error) {
-      toast({
-        title: "Close failed",
-        description: error instanceof Error ? error.message : "Unknown error",
-        variant: "destructive",
-      })
-    } finally {
-      onBusyChange(null)
-    }
-  }
-
-  async function closeAllSelected() {
-    const ids = tradeMode === "broadcast" ? broadcastAccountIds : singleAccountId ? [singleAccountId] : []
-    if (ids.length === 0) {
-      toast({ title: "Select account(s) first", variant: "destructive" })
-      return
-    }
-    onBusyChange("close-all")
-    try {
-      const response = await authFetch(deltaApiPath("/api/delta/positions/close-all", environment), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountIds: ids }),
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || "Close all failed")
-      toast({
-        title: `Closed on ${data.okCount}/${data.total} account(s)`,
-        variant: data.okCount === data.total ? "default" : "destructive",
-      })
-      await onRefreshPositions()
-    } catch (error) {
-      toast({
-        title: "Close all failed",
-        description: error instanceof Error ? error.message : "Unknown error",
-        variant: "destructive",
-      })
-    } finally {
-      onBusyChange(null)
-    }
-  }
 
   const marginEntriesInScope =
     tradeMode === "broadcast"
@@ -235,14 +138,7 @@ export function DeltaTradingTab({
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiCard
-          label="Unrealized P&L"
-          value={`${unrealizedPnlTotal >= 0 ? "+" : ""}${formatUsd(unrealizedPnlTotal)}`}
-          sub="Enabled accounts only"
-          valueClass={pnlClassName(unrealizedPnlTotal)}
-        />
-        <KpiCard label="Open positions" value={String(positions.length)} />
+      <div className="grid gap-3 sm:grid-cols-2">
         <KpiCard
           label="Active accounts"
           value={String(enabledAccounts.length)}
@@ -251,10 +147,10 @@ export function DeltaTradingTab({
         <KpiCard label="Available margin" value={marginDisplay} sub={marginSub} />
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,22rem)_1fr]">
-        <HudPanel glow="none" className="border-violet-500/20 xl:max-w-md">
-          <HudPanelHeader title="Order ticket" />
-          <div className="space-y-4 px-5 py-4">
+      <HudPanel glow="none" className="border-violet-500/20">
+        <HudPanelHeader title="Order ticket" />
+        <div className="grid gap-5 px-5 py-4 xl:grid-cols-[minmax(0,18rem)_1fr] xl:items-start">
+          <div className="space-y-4">
             <DeltaAccountSelector
               environment={environment}
               accounts={enabledAccounts}
@@ -266,6 +162,7 @@ export function DeltaTradingTab({
               onModeChange={onTradeModeChange}
               onSingleAccountChange={onSingleAccountChange}
               onBroadcastAccountIdsChange={onBroadcastAccountIdsChange}
+              skipLocalHydrate={persistReady}
             />
             <div className="grid gap-2">
               <Label>Symbol</Label>
@@ -282,161 +179,26 @@ export function DeltaTradingTab({
                 ))}
               </select>
             </div>
-            <DeltaOrderTicket
-              environment={environment}
-              symbol={symbol}
-              configured={configured}
-              tradingAllowed={tradingAllowed}
-              serverLiveBlocked={serverLiveBlocked}
-              maxOrderSize={maxOrderSize}
-              tradeMode={tradeMode}
-              accountId={singleAccountId}
-              accountIds={broadcastAccountIds}
-              targetLabels={targetLabels}
-              marginEntries={marginEntries}
-              marginReadyCount={marginReadyCount}
-              onRefreshMargins={onRefreshMargins}
-              busy={busy}
-              onBusyChange={onBusyChange}
-              onOrderPlaced={() => void onOrderPlaced()}
-            />
           </div>
-        </HudPanel>
-
-        <HudPanel>
-          <HudPanelHeader
-            title="Open positions"
-            action={
-              <div className="flex gap-2">
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="outline" size="sm" disabled={!tradingAllowed || busy != null || positions.length === 0}>
-                      <XCircle className="mr-1 h-4 w-4" />
-                      Close all
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Close all positions?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Closes every open position on{" "}
-                        {tradeMode === "broadcast"
-                          ? `${broadcastAccountIds.length} selected account(s)`
-                          : targetLabels[0] ?? "selected account"}
-                        .
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => void closeAllSelected()}>Close all</AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-                <Button variant="ghost" size="sm" onClick={() => void onRefreshPositions()} disabled={busy != null}>
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-              </div>
-            }
+          <DeltaOrderTicket
+            environment={environment}
+            symbol={symbol}
+            configured={configured}
+            tradingAllowed={tradingAllowed}
+            serverLiveBlocked={serverLiveBlocked}
+            maxOrderSize={maxOrderSize}
+            tradeMode={tradeMode}
+            accountId={singleAccountId}
+            accountIds={broadcastAccountIds}
+            targetLabels={targetLabels}
+            marginEntries={marginEntries}
+            marginReadyCount={marginReadyCount}
+            onRefreshMargins={onRefreshMargins}
+            busy={busy}
+            onBusyChange={onBusyChange}
+            onOrderPlaced={() => void onOrderPlaced()}
+            persistReady={persistReady}
           />
-          <div className="overflow-x-auto px-2 pb-4">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Account</TableHead>
-                  <TableHead>Symbol</TableHead>
-                  <TableHead>Side</TableHead>
-                  <TableHead>Size</TableHead>
-                  <TableHead>Entry</TableHead>
-                  <TableHead>Mark</TableHead>
-                  <TableHead>Unrealized PnL</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {positions.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
-                      No open positions — place a trade from the ticket
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  positions.map((row) => (
-                    <TableRow key={`${row.accountId}-${row.symbol}-${row.side}`}>
-                      <TableCell className="text-xs">{row.accountLabel ?? "—"}</TableCell>
-                      <TableCell>{row.symbol}</TableCell>
-                      <TableCell className={row.side === "long" ? "text-emerald-400" : "text-rose-400"}>
-                        {row.side}
-                      </TableCell>
-                      <TableCell>{row.size}</TableCell>
-                      <TableCell>{formatPrice(row.entryPrice)}</TableCell>
-                      <TableCell>{formatPrice(row.markPrice)}</TableCell>
-                      <TableCell className={pnlClassName(row.unrealizedPnl)}>{formatPrice(row.unrealizedPnl)}</TableCell>
-                      <TableCell>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="text-rose-400"
-                          disabled={busy != null || !tradingAllowed}
-                          onClick={() => void closePosition(row)}
-                        >
-                          Close
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </HudPanel>
-      </div>
-
-      <HudPanel>
-        <HudPanelHeader title="Recent orders" />
-        <div className="overflow-x-auto px-2 pb-4">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Time</TableHead>
-                <TableHead>Account</TableHead>
-                <TableHead>Symbol</TableHead>
-                <TableHead>Side</TableHead>
-                <TableHead>Size</TableHead>
-                <TableHead>Entry price</TableHead>
-                <TableHead>P&L</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {orders.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
-                    No orders yet — your fills will appear here
-                  </TableCell>
-                </TableRow>
-              ) : (
-                orders.map((row) => {
-                  const pnl = orderRowPnl(row, positions)
-                  return (
-                    <TableRow key={row.id}>
-                      <TableCell className="whitespace-nowrap text-xs">
-                        {row.createdAt ? format(new Date(row.createdAt), "MMM d HH:mm") : "—"}
-                      </TableCell>
-                      <TableCell className="text-xs">{row.accountLabel ?? "—"}</TableCell>
-                      <TableCell>{row.symbol}</TableCell>
-                      <TableCell className={row.side === "buy" ? "text-emerald-400" : "text-rose-400"}>
-                        {row.side}
-                      </TableCell>
-                      <TableCell>{row.size}</TableCell>
-                      <TableCell>{formatPrice(row.price)}</TableCell>
-                      <TableCell className={pnl != null ? pnlClassName(pnl) : "text-muted-foreground"}>
-                        {pnl != null ? formatPrice(pnl) : "—"}
-                      </TableCell>
-                    </TableRow>
-                  )
-                })
-              )}
-            </TableBody>
-          </Table>
         </div>
       </HudPanel>
     </div>

@@ -1,13 +1,19 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { RefreshCw } from "lucide-react"
 import { NeonPulseLoader } from "@/components/ui/neon-pulse-loader"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DeltaIntegrationsTab } from "@/components/delta/delta-integrations-tab"
-import { type DeltaTradeMode } from "@/components/delta/delta-account-selector"
+import { DeltaPositionsTab } from "@/components/delta/delta-positions-tab"
+import {
+  loadDeltaBroadcastAccountIds,
+  loadDeltaSingleAccountId,
+  loadDeltaTradeMode,
+  type DeltaTradeMode,
+} from "@/components/delta/delta-account-selector"
 import { DeltaTradingTab } from "@/components/delta/delta-trading-tab"
 import { useDeltaAccountMargins } from "@/components/delta/use-delta-account-margins"
 import {
@@ -19,10 +25,16 @@ import {
 } from "@/components/delta/use-delta-dashboard-data"
 import {
   deltaActiveTabKey,
+  deltaApiPath,
   DEMO_SYMBOLS,
   type DeltaAccount,
   type DeltaEnvironment,
 } from "@/components/delta/delta-shared"
+import { authFetch } from "@/lib/client-auth"
+import {
+  isDeltaAutoTradeSymbol,
+  type DeltaAutoTradeConfig,
+} from "@/lib/delta/auto-trade-settings"
 import { useToast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
 
@@ -39,6 +51,8 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
   const [tradeMode, setTradeMode] = useState<DeltaTradeMode>("single")
   const [singleAccountId, setSingleAccountId] = useState<string | null>(null)
   const [broadcastAccountIds, setBroadcastAccountIds] = useState<string[]>([])
+  const [configReady, setConfigReady] = useState(false)
+  const syncedAccountsRef = useRef(false)
 
   const {
     data: accountsData,
@@ -88,11 +102,58 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
     prefetchDeltaMarketData(environment, DEMO_SYMBOLS, prefetchAccountId)
   }, [configured, environment, prefetchAccountId])
 
+  useEffect(() => {
+    let cancelled = false
+    syncedAccountsRef.current = false
+    setConfigReady(false)
+    void (async () => {
+      try {
+        const response = await authFetch(deltaApiPath("/api/delta/auto-trade-settings", environment))
+        const data = await response.json()
+        if (cancelled) return
+        if (response.ok && data.config) {
+          const config = data.config as DeltaAutoTradeConfig
+          setTradeMode(config.tradeMode)
+          if (isDeltaAutoTradeSymbol(config.symbol) && (DEMO_SYMBOLS as readonly string[]).includes(config.symbol)) {
+            setSymbol(config.symbol as (typeof DEMO_SYMBOLS)[number])
+          }
+          if (config.singleAccountId) setSingleAccountId(config.singleAccountId)
+          if ((config.broadcastAccountIds?.length ?? 0) > 0) {
+            setBroadcastAccountIds(config.broadcastAccountIds ?? [])
+          }
+        } else {
+          setTradeMode(loadDeltaTradeMode(environment))
+        }
+      } catch {
+        if (!cancelled) setTradeMode(loadDeltaTradeMode(environment))
+      } finally {
+        if (!cancelled) setConfigReady(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [environment])
+
+  useEffect(() => {
+    if (!configReady || enabledAccounts.length === 0 || syncedAccountsRef.current) return
+    syncedAccountsRef.current = true
+    setSingleAccountId((prev) => {
+      if (prev && enabledAccounts.some((account) => account.id === prev)) return prev
+      return loadDeltaSingleAccountId(enabledAccounts, environment)
+    })
+    setBroadcastAccountIds((prev) => {
+      const valid = prev.filter((id) => enabledAccounts.some((account) => account.id === id))
+      if (valid.length > 0) return valid
+      return loadDeltaBroadcastAccountIds(enabledAccounts, environment)
+    })
+  }, [configReady, enabledAccounts, environment])
+
   const tabStorageKey = deltaActiveTabKey(environment)
 
   useEffect(() => {
     const saved = localStorage.getItem(tabStorageKey)
-    if (saved === "integrations" || saved === "trading") setActiveTab(saved)
+    if (saved === "integrations" || saved === "trading" || saved === "positions") setActiveTab(saved)
   }, [tabStorageKey])
 
   useEffect(() => {
@@ -208,7 +269,7 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-6">
-        <TabsList className="inline-flex h-10 w-full max-w-md rounded-lg border border-border/60 bg-muted/10 p-1">
+        <TabsList className="inline-flex h-10 w-full max-w-xl rounded-lg border border-border/60 bg-muted/10 p-1">
           <TabsTrigger
             value="integrations"
             className="flex-1 rounded-md text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm"
@@ -219,7 +280,13 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             value="trading"
             className="flex-1 rounded-md text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm"
           >
-            Trading
+            Configuration
+          </TabsTrigger>
+          <TabsTrigger
+            value="positions"
+            className="flex-1 rounded-md text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm"
+          >
+            Positions
           </TabsTrigger>
         </TabsList>
 
@@ -254,8 +321,6 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             serverLiveBlocked={serverLiveBlocked}
             envOverride={envOverride}
             maxOrderSize={maxOrderSize}
-            positions={positions}
-            orders={orders}
             symbol={symbol}
             onSymbolChange={setSymbol}
             busy={busy}
@@ -266,15 +331,31 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             onTradeModeChange={setTradeMode}
             onSingleAccountChange={setSingleAccountId}
             onBroadcastAccountIdsChange={setBroadcastAccountIds}
-            onRefreshPositions={async () => {
-              await mutatePositions()
-            }}
             onOrderPlaced={async () => {
               await handleOrderPlaced()
             }}
             marginEntries={accountMargins.entries}
             marginReadyCount={accountMargins.readyCount}
             onRefreshMargins={accountMargins.refresh}
+            persistReady={configReady}
+          />
+        </TabsContent>
+
+        <TabsContent value="positions" className="mt-0">
+          <DeltaPositionsTab
+            environment={environment}
+            enabledAccounts={enabledAccounts}
+            tradingAllowed={tradingAllowed}
+            positions={positions}
+            orders={orders}
+            busy={busy}
+            onBusyChange={setBusy}
+            tradeMode={tradeMode}
+            singleAccountId={singleAccountId}
+            broadcastAccountIds={broadcastAccountIds}
+            onRefreshPositions={async () => {
+              await mutatePositions()
+            }}
           />
         </TabsContent>
       </Tabs>

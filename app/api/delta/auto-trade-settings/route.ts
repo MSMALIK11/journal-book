@@ -6,6 +6,7 @@ import { getDeltaEnvironmentFromRequest } from "@/lib/broker/delta-api-params"
 import { getRecentAutoTradeLogs } from "@/lib/broker/delta-auto-trade"
 import { listEnabledDeltaAccounts } from "@/lib/broker/delta-credentials"
 import { isServerLiveTradingBlocked } from "@/lib/broker/delta-live-guard"
+import { getDeltaOrderMaxSize } from "@/lib/broker/delta-orders"
 import {
   DELTA_AUTO_TRADE_MARGIN_PCTS,
   DELTA_AUTO_TRADE_SYMBOLS,
@@ -22,6 +23,7 @@ const patchSchema = z.object({
   singleAccountId: z.string().optional(),
   broadcastAccountIds: z.array(z.string()).optional(),
   symbol: z.enum(DELTA_AUTO_TRADE_SYMBOLS).optional(),
+  symbols: z.array(z.enum(DELTA_AUTO_TRADE_SYMBOLS)).min(1).optional(),
   marginPct: z.union([
     z.literal(10),
     z.literal(25),
@@ -30,6 +32,7 @@ const patchSchema = z.object({
     z.literal(100),
   ]).optional(),
   leverage: z.number().int().positive().optional(),
+  lotSize: z.number().int().positive().nullable().optional(),
 })
 
 export async function GET(request: NextRequest) {
@@ -49,7 +52,11 @@ export async function GET(request: NextRequest) {
         singleAccountId: enabledAccounts.find((a) => a.isDefault)?.id ?? enabledAccounts[0].id,
       }
     }
-    if (config.tradeMode === "broadcast" && config.broadcastAccountIds.length === 0 && enabledAccounts.length > 0) {
+    if (
+      config.tradeMode === "broadcast" &&
+      (config.broadcastAccountIds?.length ?? 0) === 0 &&
+      enabledAccounts.length > 0
+    ) {
       config = { ...config, broadcastAccountIds: enabledAccounts.map((a) => a.id) }
     }
 
@@ -87,10 +94,16 @@ export async function PATCH(request: NextRequest) {
     await connectDB()
     const user = await User.findById(session.sub).select("deltaAutoTradePreferences").lean()
     const current = getDeltaAutoTradeConfig(user?.deltaAutoTradePreferences, environment)
-    const { leverage: leveragePatch, ...rest } = parsed.data
+    const { leverage: leveragePatch, lotSize: lotSizePatch, ...rest } = parsed.data
 
     if (leveragePatch != null && !DELTA_LEVERAGE_STEPS.includes(leveragePatch as (typeof DELTA_LEVERAGE_STEPS)[number])) {
       return NextResponse.json({ error: "Unsupported leverage value" }, { status: 400 })
+    }
+    if (lotSizePatch != null && lotSizePatch > getDeltaOrderMaxSize(environment)) {
+      return NextResponse.json(
+        { error: `Lot size exceeds the ${getDeltaOrderMaxSize(environment)} Lot per-order limit` },
+        { status: 400 },
+      )
     }
 
     const symbolForLeverage = rest.symbol ?? current.symbol
@@ -98,8 +111,19 @@ export async function PATCH(request: NextRequest) {
       leveragePatch != null
         ? { ...current.leverageBySymbol, [symbolForLeverage]: leveragePatch }
         : current.leverageBySymbol
+    const lotSizeBySymbol = { ...current.lotSizeBySymbol }
+    if (lotSizePatch === null) {
+      delete lotSizeBySymbol[symbolForLeverage]
+    } else if (lotSizePatch != null) {
+      lotSizeBySymbol[symbolForLeverage] = lotSizePatch
+    }
 
-    const next = normalizeDeltaAutoTradeConfig({ ...current, ...rest, leverageBySymbol })
+    const next = normalizeDeltaAutoTradeConfig({
+      ...current,
+      ...rest,
+      leverageBySymbol,
+      lotSizeBySymbol,
+    })
 
     if (next.enabled && environment === "live" && isServerLiveTradingBlocked()) {
       return NextResponse.json(
@@ -115,8 +139,8 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: "Selected account is not enabled" }, { status: 400 })
     }
 
-    if (next.tradeMode === "broadcast" && next.broadcastAccountIds.length > 0) {
-      const invalid = next.broadcastAccountIds.some((id) => !enabledIds.has(id))
+    if (next.tradeMode === "broadcast" && (next.broadcastAccountIds?.length ?? 0) > 0) {
+      const invalid = next.broadcastAccountIds?.some((id) => !enabledIds.has(id))
       if (invalid) {
         return NextResponse.json({ error: "One or more broadcast accounts are not enabled" }, { status: 400 })
       }
