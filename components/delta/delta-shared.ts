@@ -35,7 +35,7 @@ export type OrderRow = {
   createdAt?: string
 }
 
-export const DEMO_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD"] as const
+export const DEMO_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XAUTUSD"] as const
 
 export function deltaActiveTabKey(environment: DeltaEnvironment): string {
   return `delta-${environment}-active-tab`

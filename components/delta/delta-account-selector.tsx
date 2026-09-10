@@ -33,6 +33,7 @@ type DeltaAccountSelectorProps = {
   onModeChange: (mode: DeltaTradeMode) => void
   onSingleAccountChange: (accountId: string | null) => void
   onBroadcastAccountIdsChange: (ids: string[]) => void
+  skipLocalHydrate?: boolean
 }
 
 export function loadDeltaTradeMode(environment: DeltaEnvironment): DeltaTradeMode {
@@ -71,6 +72,7 @@ export function DeltaAccountSelector({
   onModeChange,
   onSingleAccountChange,
   onBroadcastAccountIdsChange,
+  skipLocalHydrate = false,
 }: DeltaAccountSelectorProps) {
   const { toast } = useToast()
   const [initialized, setInitialized] = useState(false)
@@ -79,11 +81,21 @@ export function DeltaAccountSelector({
 
   useEffect(() => {
     if (initialized || accounts.length === 0) return
-    onModeChange(loadDeltaTradeMode(environment))
-    onSingleAccountChange(loadDeltaSingleAccountId(accounts, environment))
-    onBroadcastAccountIdsChange(loadDeltaBroadcastAccountIds(accounts, environment))
+    if (!skipLocalHydrate) {
+      onModeChange(loadDeltaTradeMode(environment))
+      onSingleAccountChange(loadDeltaSingleAccountId(accounts, environment))
+      onBroadcastAccountIdsChange(loadDeltaBroadcastAccountIds(accounts, environment))
+    }
     setInitialized(true)
-  }, [accounts, environment, initialized, onBroadcastAccountIdsChange, onModeChange, onSingleAccountChange])
+  }, [
+    accounts,
+    environment,
+    initialized,
+    onBroadcastAccountIdsChange,
+    onModeChange,
+    onSingleAccountChange,
+    skipLocalHydrate,
+  ])
 
   useEffect(() => {
     if (!initialized) return

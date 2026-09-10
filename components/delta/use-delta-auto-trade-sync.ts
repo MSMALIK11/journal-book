@@ -5,10 +5,13 @@ import { formatDistanceToNow } from "date-fns"
 import type { DeltaTradeMode } from "@/components/delta/delta-account-selector"
 import { deltaApiPath, type DeltaEnvironment } from "@/components/delta/delta-shared"
 import {
+  DELTA_AUTO_TRADE_SYMBOLS,
+  isDeltaAutoTradeSymbol,
   type DeltaAutoTradeConfig,
   type DeltaAutoTradeMarginPct,
   type DeltaAutoTradeSymbol,
   type DeltaLeverageBySymbol,
+  type DeltaLotSizeBySymbol,
 } from "@/lib/delta/auto-trade-settings"
 import { authFetch } from "@/lib/client-auth"
 
@@ -32,6 +35,11 @@ type UseDeltaAutoTradeSyncInput = {
   broadcastAccountIds: string[]
   symbol: string
   marginPct: number | null
+  persistReady?: boolean
+}
+
+function sameSymbols(a: readonly DeltaAutoTradeSymbol[], b: readonly DeltaAutoTradeSymbol[]) {
+  return a.length === b.length && a.every((item, index) => item === b[index])
 }
 
 export function useDeltaAutoTradeSync({
@@ -43,28 +51,47 @@ export function useDeltaAutoTradeSync({
   broadcastAccountIds,
   symbol,
   marginPct,
+  persistReady = true,
 }: UseDeltaAutoTradeSyncInput) {
   const isLive = environment === "live"
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [enabled, setEnabled] = useState(false)
+  const [enabledSymbols, setEnabledSymbols] = useState<DeltaAutoTradeSymbol[]>(["BTCUSD"])
   const [leverageBySymbol, setLeverageBySymbol] = useState<DeltaLeverageBySymbol>({})
+  const [lotSizeBySymbol, setLotSizeBySymbol] = useState<DeltaLotSizeBySymbol>({})
+  const [savedMarginPct, setSavedMarginPct] = useState<DeltaAutoTradeMarginPct>(25)
   const [lastLog, setLastLog] = useState<AutoTradeLog | null>(null)
   const [serverBlocked, setServerBlocked] = useState(false)
   const hydratedRef = useRef(false)
+  const skipNextPersistRef = useRef(true)
 
   const canEnable = configured && (!isLive || !serverLiveBlocked)
+
+  const applyConfig = useCallback((config: DeltaAutoTradeConfig) => {
+    setEnabled(config.enabled)
+    const nextSymbols = config.symbols.length > 0 ? config.symbols : [config.symbol]
+    // Keep the previous array when the contents match, otherwise a new reference on
+    // every response would retrigger the debounced save and loop forever.
+    setEnabledSymbols((prev) => (sameSymbols(prev, nextSymbols) ? prev : nextSymbols))
+    setLeverageBySymbol(config.leverageBySymbol ?? {})
+    setLotSizeBySymbol(config.lotSizeBySymbol ?? {})
+    setSavedMarginPct(config.marginPct)
+  }, [])
+
+  const ticketSymbol = symbol.toUpperCase()
 
   const buildPayload = useCallback(
     (partial: Partial<DeltaAutoTradeConfig>): Partial<DeltaAutoTradeConfig> => ({
       tradeMode,
       singleAccountId: singleAccountId ?? undefined,
       broadcastAccountIds,
-      symbol: symbol as DeltaAutoTradeConfig["symbol"],
-      marginPct: (marginPct ?? 25) as DeltaAutoTradeMarginPct,
+      symbols: enabledSymbols,
+      symbol: isDeltaAutoTradeSymbol(ticketSymbol) ? ticketSymbol : undefined,
+      marginPct: (marginPct ?? savedMarginPct) as DeltaAutoTradeMarginPct,
       ...partial,
     }),
-    [broadcastAccountIds, marginPct, singleAccountId, symbol, tradeMode],
+    [broadcastAccountIds, enabledSymbols, marginPct, savedMarginPct, singleAccountId, ticketSymbol, tradeMode],
   )
 
   const patchSettings = useCallback(
@@ -79,15 +106,14 @@ export function useDeltaAutoTradeSync({
         const data = await response.json()
         if (!response.ok) throw new Error(data.error || "Failed to save auto-trade settings")
         const config = data.config as DeltaAutoTradeConfig
-        setEnabled(config.enabled)
-        setLeverageBySymbol(config.leverageBySymbol ?? {})
+        applyConfig(config)
         setLastLog(Array.isArray(data.recentLogs) && data.recentLogs.length > 0 ? data.recentLogs[0] : null)
         return config
       } finally {
         setSaving(false)
       }
     },
-    [buildPayload, environment],
+    [applyConfig, buildPayload, environment],
   )
 
   useEffect(() => {
@@ -100,14 +126,14 @@ export function useDeltaAutoTradeSync({
         if (!response.ok) throw new Error(data.error || "Failed to load auto-trade settings")
         if (cancelled) return
         const config = data.config as DeltaAutoTradeConfig
-        setEnabled(config.enabled)
-        setLeverageBySymbol(config.leverageBySymbol ?? {})
+        applyConfig(config)
         setServerBlocked(Boolean(data.serverLiveBlocked) || serverLiveBlocked)
         setLastLog(Array.isArray(data.recentLogs) && data.recentLogs.length > 0 ? data.recentLogs[0] : null)
       } catch {
         if (!cancelled) setEnabled(false)
       } finally {
         if (!cancelled) {
+          skipNextPersistRef.current = true
           hydratedRef.current = true
           setLoading(false)
         }
@@ -116,23 +142,38 @@ export function useDeltaAutoTradeSync({
     return () => {
       cancelled = true
     }
-  }, [environment, serverLiveBlocked])
+  }, [applyConfig, environment, serverLiveBlocked])
+
+  const patchSettingsRef = useRef(patchSettings)
+  patchSettingsRef.current = patchSettings
+
+  const broadcastKey = broadcastAccountIds.join(",")
 
   useEffect(() => {
-    if (!hydratedRef.current || !enabled) return
+    if (!hydratedRef.current || !persistReady) return
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false
+      return
+    }
     const timer = window.setTimeout(() => {
-      void patchSettings({ enabled: true }).catch(() => undefined)
+      void patchSettingsRef.current({}).catch(() => undefined)
     }, 400)
     return () => window.clearTimeout(timer)
-  }, [enabled, tradeMode, singleAccountId, broadcastAccountIds, symbol, marginPct, patchSettings])
+  }, [enabled, persistReady, tradeMode, singleAccountId, broadcastKey, marginPct, ticketSymbol])
 
   async function toggleEnabled(checked: boolean) {
     if (checked && !canEnable) return
     await patchSettings({ enabled: checked })
   }
 
-  const sym = symbol.toUpperCase() as DeltaAutoTradeSymbol
-  const savedLeverage = leverageBySymbol[sym] ?? null
+  async function setSymbols(next: DeltaAutoTradeSymbol[]) {
+    const unique = DELTA_AUTO_TRADE_SYMBOLS.filter((s) => next.includes(s))
+    if (unique.length === 0) return
+    setEnabledSymbols(unique)
+    await patchSettings({ symbols: unique })
+  }
+
+  const savedLeverage = isDeltaAutoTradeSymbol(ticketSymbol) ? leverageBySymbol[ticketSymbol] ?? null : null
   const hasSavedLeverage = savedLeverage != null
 
   async function saveLeverage(leverage: number) {
@@ -144,13 +185,34 @@ export function useDeltaAutoTradeSync({
         body: JSON.stringify({
           ...buildPayload({}),
           leverage,
-          symbol: sym,
+          symbol: ticketSymbol,
         }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Failed to save leverage")
       const config = data.config as DeltaAutoTradeConfig
-      setLeverageBySymbol(config.leverageBySymbol ?? {})
+      applyConfig(config)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function saveLotSize(symbolToSave: DeltaAutoTradeSymbol, lotSize: number | null) {
+    setSaving(true)
+    try {
+      const response = await authFetch(deltaApiPath("/api/delta/auto-trade-settings", environment), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...buildPayload({}),
+          symbol: symbolToSave,
+          lotSize,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Failed to save lot size")
+      const config = data.config as DeltaAutoTradeConfig
+      applyConfig(config)
     } finally {
       setSaving(false)
     }
@@ -160,8 +222,13 @@ export function useDeltaAutoTradeSync({
     loading,
     saving,
     enabled,
+    enabledSymbols,
+    setSymbols,
     leverageBySymbol,
+    lotSizeBySymbol,
+    saveLotSize,
     savedLeverage,
+    savedMarginPct,
     hasSavedLeverage,
     saveLeverage,
     lastLog,

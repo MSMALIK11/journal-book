@@ -27,6 +27,7 @@ import {
   resolveDeltaProductId,
 } from "@/lib/broker/delta-orders"
 import { normalizeDeltaPositions } from "@/lib/broker/delta-positions"
+import { mapTvInstrumentToDelta, isEnabledAutoTradeSymbol } from "@/lib/broker/delta-symbol-map"
 import {
   getDeltaAutoTradeConfig,
   type DeltaAutoTradeConfig,
@@ -59,10 +60,10 @@ function positionSideFromTradeType(tradeType: string): "long" | "short" {
 }
 
 async function resolveAutoTradeSymbol(
-  config: DeltaAutoTradeConfig,
+  mappedSymbol: string,
   environment: DeltaEnvironment,
 ): Promise<string | null> {
-  const candidates = getDeltaSymbolCandidates(config.symbol.toUpperCase())
+  const candidates = getDeltaSymbolCandidates(mappedSymbol)
   for (const candidate of candidates) {
     const productId =
       (await getDeltaProductId(candidate, environment)) ?? resolveDeltaProductId(candidate, environment)
@@ -310,8 +311,8 @@ async function executeAutoTradeClose(input: {
     }
 
     try {
-      const positionsRaw = await getPositions(resolved.creds, input.environment)
-      const positions = normalizeDeltaPositions(positionsRaw)
+      const positionsResponse = await getPositions(resolved.creds, input.environment)
+      const positions = normalizeDeltaPositions(positionsResponse.result)
       const symbolCandidates = new Set(getDeltaSymbolCandidates(input.symbol))
       const match = positions.find(
         (p) => symbolCandidates.has(p.symbol.toUpperCase()) && p.side === positionSide && p.size > 0,
@@ -329,7 +330,7 @@ async function executeAutoTradeClose(input: {
 
       await closeDeltaPosition(resolved.creds, input.environment, {
         symbol: match.symbol,
-        side: match.side,
+        side: positionSide,
         size: Math.max(1, Math.floor(match.size)),
       })
 
@@ -398,6 +399,9 @@ async function processFillForEnvironment(
     return
   }
 
+  const mapped = mapTvInstrumentToDelta(fill.trade.instrument)
+  if (!mapped || !isEnabledAutoTradeSymbol(config.symbols, mapped)) return
+
   const claimed = await claimAutoTradeExecution({
     userId,
     environment,
@@ -407,7 +411,7 @@ async function processFillForEnvironment(
   })
   if (!claimed) return
 
-  const symbol = await resolveAutoTradeSymbol(config, environment)
+  const symbol = await resolveAutoTradeSymbol(mapped, environment)
   if (!symbol) {
     await finalizeAutoTradeLog({
       userId,

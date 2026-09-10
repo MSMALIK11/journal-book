@@ -9,7 +9,11 @@ import {
   normalizeDeltaProduct,
 } from "@/lib/broker/delta-product"
 import { normalizeDeltaWallet } from "@/lib/broker/delta-wallet"
-import { getLeverageForSymbol, type DeltaAutoTradeConfig } from "@/lib/delta/auto-trade-settings"
+import {
+  getLeverageForSymbol,
+  getLotSizeForSymbol,
+  type DeltaAutoTradeConfig,
+} from "@/lib/delta/auto-trade-settings"
 
 export type AccountMarginEligibility = {
   accountId: string
@@ -159,7 +163,7 @@ export async function resolveAutoTradeSizing(input: {
   }
 
   const leverage = getLeverageForSymbol(input.config, input.symbol, product.defaultLeverage)
-  const { eligible, ineligible } = await classifyAccountMargins({
+  let { eligible, ineligible } = await classifyAccountMargins({
     userId: input.userId,
     environment: input.environment,
     accountIds: input.accountIds,
@@ -174,18 +178,57 @@ export async function resolveAutoTradeSizing(input: {
     }
   }
 
-  const minMargin = Math.min(...eligible.map((a) => a.marginUsd))
-  let lots = computeOrderTicketLots({
-    availableMarginUsd: minMargin,
-    pct: input.marginPct,
-    contractValue: product.contractValue,
-    markPrice,
-    leverage,
-    maxNotionalUsd: product.maxLeverageNotional > 0 ? product.maxLeverageNotional : undefined,
-  })
-
   const maxSize = getDeltaOrderMaxSize(input.environment)
-  lots = Math.min(lots, maxSize)
+  const fixedLots = getLotSizeForSymbol(input.config, input.symbol)
+  let lots: number
+
+  if (fixedLots != null) {
+    if (fixedLots > maxSize) {
+      return {
+        ok: false,
+        error: `Configured lot size ${fixedLots} exceeds the ${maxSize} Lot per-order limit`,
+        eligible,
+        ineligible,
+      }
+    }
+
+    lots = fixedLots
+    const requiredMargin = marginRequiredUsd(lots, product.contractValue, markPrice, leverage)
+    const insufficient = eligible.filter((account) => account.marginUsd < requiredMargin)
+    if (insufficient.length > 0) {
+      const insufficientIds = new Set(insufficient.map((account) => account.accountId))
+      eligible = eligible.filter((account) => !insufficientIds.has(account.accountId))
+      ineligible = [
+        ...ineligible,
+        ...insufficient.map((account) => ({
+          accountId: account.accountId,
+          label: account.label,
+          reason: "insufficient_margin",
+        })),
+      ]
+    }
+  } else {
+    const minMargin = Math.min(...eligible.map((a) => a.marginUsd))
+    lots = computeOrderTicketLots({
+      availableMarginUsd: minMargin,
+      pct: input.marginPct,
+      contractValue: product.contractValue,
+      markPrice,
+      leverage,
+      maxNotionalUsd: product.maxLeverageNotional > 0 ? product.maxLeverageNotional : undefined,
+    })
+    lots = Math.min(lots, maxSize)
+  }
+
+  if (eligible.length === 0) {
+    return {
+      ok: false,
+      error: "Insufficient margin for configured lot size",
+      eligible,
+      ineligible,
+    }
+  }
+
   if (lots < 1) {
     return {
       ok: false,
