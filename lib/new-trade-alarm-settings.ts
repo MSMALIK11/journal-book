@@ -46,9 +46,6 @@ export const DEFAULT_TRADE_ALARM_PREFERENCES: TradeAlarmPreferences = {
   soundId: "urgent-simple-tone-loop",
 }
 
-/** Repeat-until-stop rings for this long, then stops on its own. */
-export const TRADE_ALARM_REPEAT_MAX_MS = 3 * 60_000
-
 export function normalizeTradeAlarmPreferences(
   prefs: Partial<TradeAlarmPreferences> | null | undefined,
 ): TradeAlarmPreferences {

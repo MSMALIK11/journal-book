@@ -4,7 +4,7 @@ import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { dropSupersededOpenTradesFromPayload, resolveSyncedInstrument } from "@/lib/trading/price-sanity"
-import { closeDuplicateLiveOpens, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { closeDuplicateLiveOpens, healIncompleteTvCloses, healMisclosedSameFillOpens, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
@@ -56,28 +56,7 @@ function mergeSyncedTrade(
   if (typeof mapped.net_pnl === "number") existing.net_pnl = mapped.net_pnl
   if (typeof mapped.return_pct === "number") existing.return_pct = mapped.return_pct
   if (typeof mapped.commission === "number") existing.commission = mapped.commission
-  persistExtractedLevels(existing, mapped)
   if (mapped.tags?.length) existing.tags = mapped.tags
-}
-
-function persistExtractedLevels(
-  existing: InstanceType<typeof Trade>,
-  mapped: ReturnType<typeof mapTradingViewTrade>,
-) {
-  let changed = false
-  if (typeof mapped.stop_loss === "number" && existing.stop_loss !== mapped.stop_loss) {
-    existing.stop_loss = mapped.stop_loss
-    changed = true
-  }
-  if (typeof mapped.target === "number" && existing.target !== mapped.target) {
-    existing.target = mapped.target
-    changed = true
-  }
-  if (mapped.signal && existing.signal !== mapped.signal) {
-    existing.signal = mapped.signal
-    changed = true
-  }
-  return changed
 }
 
 function syncedTradeChanged(
@@ -85,13 +64,8 @@ function syncedTradeChanged(
   mapped: ReturnType<typeof mapTradingViewTrade>,
 ): boolean {
   // Live TV Open paints MTM time/price every poll — that is not a new fill.
-  // Still persist SL/TP when they first appear so Delta can use them later.
   const stillOpen = !mapped.exit_date && !existing.exit_date
-  if (stillOpen) {
-    if (typeof mapped.stop_loss === "number" && existing.stop_loss !== mapped.stop_loss) return true
-    if (typeof mapped.target === "number" && existing.target !== mapped.target) return true
-    return false
-  }
+  if (stillOpen) return false
 
   if (shouldMigrateExternalId(existing, mapped)) return true
   if (existing.entry_date?.getTime() !== mapped.entry_date.getTime()) return true
@@ -105,8 +79,6 @@ function syncedTradeChanged(
   if (typeof mapped.net_pnl === "number" && existing.net_pnl !== mapped.net_pnl) return true
   if (typeof mapped.return_pct === "number" && existing.return_pct !== mapped.return_pct) return true
   if (typeof mapped.commission === "number" && existing.commission !== mapped.commission) return true
-  if (typeof mapped.stop_loss === "number" && existing.stop_loss !== mapped.stop_loss) return true
-  if (typeof mapped.target === "number" && existing.target !== mapped.target) return true
   if (mapped.signal && existing.signal !== mapped.signal) return true
   return false
 }
@@ -193,8 +165,6 @@ export async function POST(request: NextRequest) {
           parsed.data.reconcileOpens.opens,
         )
       }
-      await healNotionalTvPnls(auth.userId)
-      await healSignalLevels(auth.userId)
       const healResult = await healIncompleteTvCloses(auth.userId)
       closedStale += healResult.healed
       if (closedStale > 0) {
@@ -397,26 +367,6 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      const stillOpen = !mapped.exit_date && !existing.exit_date
-      if (stillOpen) {
-        if (persistExtractedLevels(existing, mapped)) {
-          await existing.save()
-          updated += 1
-          byAccount[accountId].updated += 1
-          touchedAccounts.add(accountId)
-        } else if (existing.accountId !== accountId) {
-          existing.accountId = accountId
-          await existing.save()
-          updated += 1
-          byAccount[accountId].updated += 1
-          touchedAccounts.add(accountId)
-        } else {
-          skipped += 1
-          byAccount[accountId].skipped += 1
-        }
-        continue
-      }
-
       if (syncedTradeChanged(existing, mapped)) {
         const wasOpen = !existing.exit_date
         mergeSyncedTrade(existing, mapped, accountId)
@@ -498,8 +448,6 @@ export async function POST(request: NextRequest) {
         parsed.data.reconcileOpens.opens,
       )
     }
-    await healNotionalTvPnls(auth.userId)
-    await healSignalLevels(auth.userId)
     const healResult = await healIncompleteTvCloses(auth.userId)
     closedStale += healResult.healed
     for (const touch of healResult.touches) {

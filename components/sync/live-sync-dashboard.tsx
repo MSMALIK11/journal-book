@@ -1,9 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import useSWR from "swr"
-import useSWRInfinite from "swr/infinite"
 import { format, isToday, parseISO } from "date-fns"
 import {
   BarChart3,
@@ -52,12 +51,9 @@ import {
   DEFAULT_LIVE_SYNC_POLL_SECONDS,
   getLiveSyncPollSeconds,
 } from "@/lib/live-sync-settings"
-import { resolveClosedTradeMetrics } from "@/lib/trading/close-pnl"
-import type { TradeListSummary } from "@/lib/trading/trade-list-summary"
+import { estimateClosedTradeMetrics } from "@/lib/trading/close-pnl"
 import { formatTradeSignal } from "@/lib/trading/trade-display"
 import { cn } from "@/lib/utils"
-
-const LIVE_SYNC_PAGE_SIZE = 50
 type SyncTrade = {
   id: string
   instrument: string
@@ -72,8 +68,6 @@ type SyncTrade = {
   return_pct?: number
   commission?: number
   signal?: string
-  stop_loss?: number
-  target?: number
   strategy?: string
   external_id?: string
   is_open?: boolean
@@ -87,6 +81,8 @@ function isLiveOpen(trade: SyncTrade) {
 /** Leftover-Open collapse sometimes stored only an exit time. Fill price/P&L from the live keeper. */
 function completeClosedDisplay(trade: SyncTrade, trades: SyncTrade[]): SyncTrade {
   if (isLiveOpen(trade)) return trade
+  if (trade.exit_price != null && typeof trade.net_pnl === "number") return trade
+
   const keeper = trades
     .filter(
       (other) =>
@@ -101,33 +97,20 @@ function completeClosedDisplay(trade: SyncTrade, trades: SyncTrade[]): SyncTrade
   const exit_price = trade.exit_price ?? keeper?.entry_price
   if (exit_price == null) return trade
 
-  const metrics = resolveClosedTradeMetrics({
+  const metrics = estimateClosedTradeMetrics({
     trade_type: trade.trade_type,
     entry_price: trade.entry_price,
     exit_price,
     quantity: trade.quantity,
     contract_size: trade.contract_size,
-    instrument: trade.instrument,
-    net_pnl: trade.net_pnl,
-    return_pct: trade.return_pct,
   })
 
   return {
     ...trade,
     exit_price,
-    net_pnl: metrics.net_pnl,
-    return_pct: metrics.return_pct,
+    net_pnl: typeof trade.net_pnl === "number" ? trade.net_pnl : metrics.net_pnl,
+    return_pct: typeof trade.return_pct === "number" ? trade.return_pct : metrics.return_pct,
   }
-}
-
-type SyncTradesPage = {
-  trades: SyncTrade[]
-  total: number
-  page: number
-  limit: number
-  totalPages: number
-  hasMore: boolean
-  summary?: TradeListSummary
 }
 
 type SyncStatus = {
@@ -158,27 +141,13 @@ export function LiveSyncDashboard() {
   const [pollSeconds, setPollSeconds] = useState(DEFAULT_LIVE_SYNC_POLL_SECONDS)
   const [isRefreshingTv, setIsRefreshingTv] = useState(false)
 
-  const getTradesKey = useCallback(
-    (pageIndex: number, previousPage: SyncTradesPage | null) => {
-      if (!activeAccountId) return null
-      if (previousPage && !previousPage.hasMore) return null
-      const page = pageIndex + 1
-      const summary = page === 1 ? "&summary=1" : ""
-      return `/api/trades?source=tradingview&limit=${LIVE_SYNC_PAGE_SIZE}&page=${page}&account=${activeAccountId}${summary}`
-    },
-    [activeAccountId],
+  const tradesUrl = activeAccountId
+    ? `/api/trades?source=tradingview&limit=5000&account=${activeAccountId}`
+    : null
+  const { data: tradesData, isLoading: tradesLoading, mutate } = useSWR<{ trades: SyncTrade[] }>(
+    tradesUrl,
+    fetcher,
   )
-  const {
-    data: tradePages,
-    isLoading: tradesLoading,
-    isValidating: tradesValidating,
-    mutate,
-    size,
-    setSize,
-  } = useSWRInfinite<SyncTradesPage>(getTradesKey, fetcher, {
-    revalidateFirstPage: true,
-    revalidateAll: false,
-  })
 
   const { data: statusData, error: statusError, mutate: mutateStatus } = useSWR<SyncStatus>(
     "/api/sync/heartbeat",
@@ -187,10 +156,9 @@ export function LiveSyncDashboard() {
   )
 
   const refreshSyncedViews = useCallback(() => {
-    void setSize(1)
     void mutate()
     void mutateStatus()
-  }, [mutate, mutateStatus, setSize])
+  }, [mutate, mutateStatus])
 
   useEffect(() => {
     const updatePoll = () => setPollSeconds(getLiveSyncPollSeconds())
@@ -199,51 +167,16 @@ export function LiveSyncDashboard() {
     return () => window.removeEventListener("jb-live-sync-settings-changed", updatePoll)
   }, [])
 
-  const rawTrades = useMemo(() => {
-    const seen = new Set<string>()
-    const list: SyncTrade[] = []
-    for (const page of tradePages ?? []) {
-      for (const trade of page.trades ?? []) {
-        if (seen.has(trade.id)) continue
-        seen.add(trade.id)
-        list.push(trade)
-      }
-    }
-    return list
-  }, [tradePages])
-
   const trades = useMemo(
-    () => rawTrades.map((trade) => completeClosedDisplay(trade, rawTrades)),
-    [rawTrades],
+    () => (tradesData?.trades ?? []).map((trade) => completeClosedDisplay(trade, tradesData?.trades ?? [])),
+    [tradesData?.trades],
   )
-
-  const hasMoreTrades = Boolean(tradePages?.[tradePages.length - 1]?.hasMore)
-  const summary = tradePages?.[0]?.summary
-  const feedScrollRef = useRef<HTMLDivElement>(null)
-  const feedSentinelRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const root = feedScrollRef.current
-    const target = feedSentinelRef.current
-    if (!root || !target) return
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (!entries[0]?.isIntersecting) return
-        if (!hasMoreTrades || tradesValidating) return
-        void setSize((current) => current + 1)
-      },
-      { root, rootMargin: "120px" },
-    )
-    observer.observe(target)
-    return () => observer.disconnect()
-  }, [hasMoreTrades, tradesValidating, setSize, size])
 
   const onComplete = useCallback((result: import("@/lib/client-extension-sync").ExtensionSyncResult | null) => {
     const imported = result?.imported || 0
     const updated = result?.updated || 0
     const closedStale = result?.closedStale || 0
     if (imported > 0 || updated > 0 || closedStale > 0) {
-      void setSize(1)
       void mutate()
       void mutateStatus()
       void revalidateSyncedData()
@@ -256,7 +189,7 @@ export function LiveSyncDashboard() {
         variant: "destructive",
       })
     }
-  }, [mutate, mutateStatus, revalidateSyncedData, setSize, toast])
+  }, [mutate, mutateStatus, revalidateSyncedData, toast])
 
   const { lastError: syncError } = useLiveSyncAutoRefresh({
     enabled: Boolean(activeAccountId),
@@ -310,13 +243,12 @@ export function LiveSyncDashboard() {
     (data: { type?: string; imported?: number; updated?: number }) => {
       if (data.type !== "trades_updated") return
       if (!(data.imported || data.updated)) return
-      void setSize(1)
       void mutate()
       void mutateStatus()
       void revalidateSyncedData()
       void refresh()
     },
-    [mutate, mutateStatus, refresh, revalidateSyncedData, setSize],
+    [mutate, mutateStatus, refresh, revalidateSyncedData],
   )
 
   useTradeSyncEvent(onTradeSync)
@@ -332,42 +264,38 @@ export function LiveSyncDashboard() {
         return false
       }
     })
+    const todayPnl = todayTrades.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0)
+    const totalPnl = closed.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0)
     const lastTrade = trades[0]
     const recentClosed = [...closed].slice(0, 18).reverse()
     let run = 0
     const pnlSpark = recentClosed.map((trade) => (run += trade.net_pnl ?? 0))
+    const dayCounts: number[] = []
+    for (let offset = 6; offset >= 0; offset -= 1) {
+      const day = new Date()
+      day.setDate(day.getDate() - offset)
+      const key = format(day, "yyyy-MM-dd")
+      dayCounts.push(trades.filter((trade) => trade.entry_date.slice(0, 10) === key).length)
+    }
 
     return {
-      total: summary?.total ?? trades.length,
-      wins: summary?.wins ?? wins.length,
-      losses: summary?.losses ?? losses.length,
-      winRate: summary?.winRate ?? (closed.length ? (wins.length / closed.length) * 100 : 0),
-      todayPnl: summary?.todayPnl ?? todayTrades.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0),
-      totalPnl: summary?.totalPnl ?? closed.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0),
-      bestTrade: summary?.bestTrade ?? (wins.length ? Math.max(...wins.map((trade) => trade.net_pnl ?? 0)) : 0),
-      worstTrade: summary?.worstTrade ?? (losses.length ? Math.min(...losses.map((trade) => trade.net_pnl ?? 0)) : 0),
-      lastTradeTime: summary?.lastTradeAt
-        ? format(parseISO(summary.lastTradeAt), "MMM d, HH:mm")
-        : lastTrade
-          ? format(parseISO(lastTrade.entry_date), "MMM d, HH:mm")
-          : "—",
+      total: trades.length,
+      wins: wins.length,
+      losses: losses.length,
+      winRate: closed.length ? (wins.length / closed.length) * 100 : 0,
+      todayPnl,
+      totalPnl,
+      bestTrade: wins.length ? Math.max(...wins.map((trade) => trade.net_pnl ?? 0)) : 0,
+      worstTrade: losses.length ? Math.min(...losses.map((trade) => trade.net_pnl ?? 0)) : 0,
+      lastTradeTime: lastTrade ? format(parseISO(lastTrade.entry_date), "MMM d, HH:mm") : "—",
       pnlSpark,
-      dayCounts: summary?.dayCounts ?? [],
+      dayCounts,
       recent: trades.slice(0, 8),
     }
-  }, [summary, trades])
+  }, [trades])
 
   /** Months that actually have trades — from first data month → current */
   const availableExportMonths = useMemo(() => {
-    const months = summary?.exportMonths
-    if (months?.length) {
-      return months.map(({ monthKey, count }) => {
-        const [year, month] = monthKey.split("-").map(Number)
-        const label = format(new Date(year, month - 1, 1), "MMM yyyy")
-        return { monthKey, count, label }
-      })
-    }
-
     const counts = new Map<string, number>()
     for (const trade of trades) {
       try {
@@ -385,7 +313,7 @@ export function LiveSyncDashboard() {
         const label = format(new Date(year, month - 1, 1), "MMM yyyy")
         return { monthKey, count, label }
       })
-  }, [summary?.exportMonths, trades])
+  }, [trades])
 
   async function handleSaveToLiveSyncFolder(
     scope: "today" | "month" | "all",
@@ -483,8 +411,7 @@ export function LiveSyncDashboard() {
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Failed to delete trades")
 
-      await setSize(1)
-      await mutate(undefined, { revalidate: true })
+      await mutate({ trades: [] }, { revalidate: true })
 
       toast({
         title: "Synced trades cleared",
@@ -708,10 +635,7 @@ export function LiveSyncDashboard() {
             </div>
           </div>
 
-          <div
-            ref={feedScrollRef}
-            className="max-h-[min(50vh,28rem)] overflow-auto [&_[data-slot=table-container]]:overflow-visible"
-          >
+          <div className="max-h-[min(50vh,28rem)] overflow-auto [&_[data-slot=table-container]]:overflow-visible">
             <Table>
               <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow className="border-cyan-400/10 hover:bg-transparent">
@@ -720,8 +644,6 @@ export function LiveSyncDashboard() {
                   <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Entry</TableHead>
                   <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Exit</TableHead>
                   <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Signal</TableHead>
-                  <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">SL</TableHead>
-                  <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">TP</TableHead>
                   <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">P&amp;L</TableHead>
                   <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Return</TableHead>
                   <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Commission</TableHead>
@@ -730,14 +652,14 @@ export function LiveSyncDashboard() {
               <TableBody>
                 {tradesLoading && (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
                       Loading synced trades...
                     </TableCell>
                   </TableRow>
                 )}
                 {!tradesLoading && trades.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
                       No TradingView trades yet. Install the extension and run an import from Strategy Tester.
                     </TableCell>
                   </TableRow>
@@ -777,12 +699,6 @@ export function LiveSyncDashboard() {
                       )}
                     </TableCell>
                     <TableCell>{formatTradeSignal(trade.signal)}</TableCell>
-                    <TableCell className="tabular-nums text-rose-300">
-                      {trade.stop_loss != null ? currency.format(trade.stop_loss) : "—"}
-                    </TableCell>
-                    <TableCell className="tabular-nums text-emerald-300">
-                      {trade.target != null ? currency.format(trade.target) : "—"}
-                    </TableCell>
                     <TableCell>
                       {typeof trade.net_pnl === "number" ? (
                         <span
@@ -812,18 +728,6 @@ export function LiveSyncDashboard() {
                     </TableCell>
                   </TableRow>
                 ))}
-                {trades.length > 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={10} className="py-3 text-center text-xs text-muted-foreground">
-                      <div ref={feedSentinelRef} />
-                      {hasMoreTrades
-                        ? tradesValidating
-                          ? "Loading more trades..."
-                          : "Scroll for more"
-                        : `Showing ${trades.length} of ${stats.total}`}
-                    </TableCell>
-                  </TableRow>
-                ) : null}
               </TableBody>
             </Table>
           </div>

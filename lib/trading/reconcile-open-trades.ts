@@ -2,8 +2,7 @@ import "server-only"
 
 import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
-import { estimateClosedTradeMetrics, resolveClosedTradeMetrics } from "@/lib/trading/close-pnl"
-import { extractTradeLevelFields } from "@/lib/trading/signal-levels"
+import { estimateClosedTradeMetrics } from "@/lib/trading/close-pnl"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
 import { normalizeTradingViewDatetime } from "@/lib/validations/tradingview-sync"
@@ -310,89 +309,6 @@ export async function healIncompleteTvCloses(userId: string) {
   }
 
   return { healed, touches: [...touches.values()] }
-}
-
-/** Rewrite TV closes whose stored $ P&L is position notional, not the fill move. */
-export async function healNotionalTvPnls(userId: string) {
-  const closed = await Trade.find({
-    userId,
-    source: "tradingview",
-    exit_date: { $exists: true, $ne: null },
-    exit_price: { $exists: true, $ne: null },
-    net_pnl: { $exists: true, $ne: null },
-  }).select(
-    "_id accountId instrument trade_type entry_price exit_price quantity contract_size net_pnl return_pct",
-  )
-
-  let healed = 0
-  for (const trade of closed) {
-    if (trade.exit_price == null || typeof trade.net_pnl !== "number") continue
-    const metrics = resolveClosedTradeMetrics({
-      trade_type: trade.trade_type,
-      entry_price: trade.entry_price,
-      exit_price: trade.exit_price,
-      quantity: trade.quantity,
-      contract_size: trade.contract_size,
-      instrument: trade.instrument,
-      net_pnl: trade.net_pnl,
-      return_pct: trade.return_pct,
-    })
-    if (Math.abs(metrics.net_pnl - trade.net_pnl) < 0.02) continue
-    await Trade.updateOne(
-      { _id: trade._id, userId },
-      { $set: { net_pnl: metrics.net_pnl, return_pct: metrics.return_pct } },
-    )
-    healed += 1
-  }
-  return healed
-}
-
-/** Extract TP/SL from signal/tags and persist them on the trade documents. */
-export async function healSignalLevels(userId: string, accountId?: string) {
-  const query: Record<string, unknown> = {
-    userId,
-    source: "tradingview",
-    $or: [
-      { signal: { $regex: /(?:TP|SL)\s*:|TP\s*\/\s*SL|take\s*profit|stop\s*loss/i } },
-      { signal: { $regex: /\b(?:long|short|open)\b.+\b(?:long|short|open)\b/i } },
-      {
-        $and: [
-          { $or: [{ stop_loss: { $exists: false } }, { stop_loss: null }] },
-          { tags: { $regex: /(?:TP|SL)\s*:/i } },
-        ],
-      },
-      {
-        $and: [
-          { $or: [{ target: { $exists: false } }, { target: null }] },
-          { tags: { $regex: /(?:TP|SL)\s*:/i } },
-        ],
-      },
-    ],
-  }
-  if (accountId) query.accountId = accountId
-
-  const rows = await Trade.find(query).select("_id signal tags stop_loss target")
-  const ops: Array<{
-    updateOne: { filter: { _id: unknown; userId: string }; update: { $set: Record<string, unknown> } }
-  }> = []
-
-  for (const trade of rows) {
-    const next = extractTradeLevelFields({
-      signal: trade.signal,
-      tags: trade.tags,
-      stop_loss: trade.stop_loss,
-      target: trade.target,
-    })
-    const $set: Record<string, unknown> = {}
-    if (next.signal && next.signal !== trade.signal) $set.signal = next.signal
-    if (next.stop_loss != null && next.stop_loss !== trade.stop_loss) $set.stop_loss = next.stop_loss
-    if (next.target != null && next.target !== trade.target) $set.target = next.target
-    if (Object.keys($set).length === 0) continue
-    ops.push({ updateOne: { filter: { _id: trade._id, userId }, update: { $set } } })
-  }
-
-  if (ops.length) await Trade.bulkWrite(ops)
-  return ops.length
 }
 
 /**

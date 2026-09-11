@@ -8,7 +8,6 @@ import { useTradeSyncEvent } from "@/hooks/use-trade-sync-event"
 import { authFetch } from "@/lib/client-auth"
 import {
   DEFAULT_TRADE_ALARM_PREFERENCES,
-  TRADE_ALARM_REPEAT_MAX_MS,
   normalizeTradeAlarmPreferences,
   type TradeAlarmPreferences,
 } from "@/lib/new-trade-alarm-settings"
@@ -141,7 +140,6 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
   const inflightAlarmKeysRef = useRef<Set<string>>(new Set())
   const preferencesRef = useRef(DEFAULT_TRADE_ALARM_PREFERENCES)
   const catchupDoneRef = useRef(false)
-  const repeatAutoStopRef = useRef<number | null>(null)
 
   const { data: preferences = DEFAULT_TRADE_ALARM_PREFERENCES } = useSWR(
     TRADE_ALARM_PREFS_KEY,
@@ -165,18 +163,11 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const clearRepeatAutoStop = useCallback(() => {
-    if (repeatAutoStopRef.current == null) return
-    window.clearTimeout(repeatAutoStopRef.current)
-    repeatAutoStopRef.current = null
-  }, [])
-
   const stopAlarm = useCallback(() => {
-    clearRepeatAutoStop()
     stopTradeAlarmSound()
     setOpen(false)
     setAlarm(null)
-  }, [clearRepeatAutoStop])
+  }, [])
 
   const startSound = useCallback(
     (soundId: TradeAlarmPreferences["soundId"], mode: TradeAlarmPreferences["soundMode"]) => {
@@ -290,13 +281,6 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         advice,
       })
       setOpen(true)
-      clearRepeatAutoStop()
-      if (prefs.soundMode === "manual") {
-        repeatAutoStopRef.current = window.setTimeout(() => {
-          repeatAutoStopRef.current = null
-          stopAlarm()
-        }, TRADE_ALARM_REPEAT_MAX_MS)
-      }
       void unlockTradeAlarmAudio().finally(() => {
         startSound(prefs.soundId, prefs.soundMode)
       })
@@ -321,7 +305,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         }
       })()
     },
-    [activeAccountId, claimKeys, clearRepeatAutoStop, markSeen, releaseKeys, startSound, stopAlarm, switchAccount],
+    [activeAccountId, claimKeys, markSeen, releaseKeys, startSound, switchAccount],
   )
 
   const onSyncEvent = useCallback(
@@ -425,16 +409,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
     })()
   }, [triggerAlarm])
 
-  useEffect(
-    () => () => {
-      if (repeatAutoStopRef.current != null) {
-        window.clearTimeout(repeatAutoStopRef.current)
-        repeatAutoStopRef.current = null
-      }
-      stopTradeAlarmSound()
-    },
-    [],
-  )
+  useEffect(() => () => stopTradeAlarmSound(), [])
 
   return (
     <>
