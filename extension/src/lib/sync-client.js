@@ -320,6 +320,47 @@ JBSync.getTradingViewTab = async function getTradingViewTab() {
   return picked
 }
 
+JBSync.isChartScreenshotDataUrl = function isChartScreenshotDataUrl(value) {
+  return typeof value === "string" && /^data:image\/(jpeg|jpg|png);base64,/i.test(value)
+}
+
+JBSync.captureVisibleTabDataUrl = async function captureVisibleTabDataUrl(windowId) {
+  const attempts = [
+    { format: "jpeg", quality: 70 },
+    { format: "png" },
+  ]
+  let lastError = null
+  for (const options of attempts) {
+    try {
+      const dataUrl =
+        windowId != null
+          ? await chrome.tabs.captureVisibleTab(windowId, options)
+          : await chrome.tabs.captureVisibleTab(options)
+      if (JBSync.isChartScreenshotDataUrl(dataUrl)) return dataUrl
+    } catch (error) {
+      lastError = error
+    }
+  }
+  if (lastError) throw lastError
+  return null
+}
+
+JBSync.captureChartScreenshot = async function captureChartScreenshot(tab) {
+  const target = tab && tab.windowId != null ? tab : await JBSync.getTradingViewTab()
+  if (!target?.windowId) return null
+
+  try {
+    return await JBSync.captureVisibleTabDataUrl(target.windowId)
+  } catch {
+    // Popup / unfocused window often fails with a specific windowId.
+    try {
+      return await JBSync.captureVisibleTabDataUrl()
+    } catch {
+      return null
+    }
+  }
+}
+
 JBSync.normalizeChartSymbol = function normalizeChartSymbol(raw) {
   if (typeof JBSymbol !== "undefined" && JBSymbol.normalize) {
     return JBSymbol.normalize(raw)
@@ -860,6 +901,41 @@ JBSync.postJson = async function postJson(url, token, body) {
   return data
 }
 
+JBSync.pickTelegramTestTrade = function pickTelegramTestTrade(trades) {
+  const list = Array.isArray(trades) ? trades.slice() : []
+  list.sort((a, b) => Number(b.tradeNumber || 0) - Number(a.tradeNumber || 0))
+  const trade = list[0]
+  if (!trade) {
+    return { kind: "open", side: "Long", instrument: "TEST", price: 0 }
+  }
+  const closed = Boolean(trade.exit?.price) && !JBSync.isOpenTrade(trade)
+  return {
+    kind: closed ? "close" : "open",
+    side: String(trade.direction || "long").toLowerCase() === "short" ? "Short" : "Long",
+    instrument: JBSync.normalizeChartSymbol(trade.instrument) || "TEST",
+    price: Number(trade.entry?.price) || 0,
+    exitPrice: Number(trade.exit?.price) || undefined,
+  }
+}
+
+JBSync.sendTelegramScreenshotTest = async function sendTelegramScreenshotTest(config, payload) {
+  return JBSync.postJson(`${config.apiUrl}/api/sync/telegram-screenshot-test`, config.syncToken, payload)
+}
+
+JBSync.sendFollowUpChartPhoto = function sendFollowUpChartPhoto(config, screenshotPromise, syncResult) {
+  const imported = Number(syncResult?.imported) || 0
+  const updated = Number(syncResult?.updated) || 0
+  const closedStale = Number(syncResult?.closedStale) || 0
+  if (imported <= 0 && updated - closedStale <= 0) return
+
+  void Promise.resolve(screenshotPromise)
+    .then((screenshotJpeg) => {
+      if (!JBSync.isChartScreenshotDataUrl(screenshotJpeg) || !config.syncToken) return null
+      return JBSync.sendTelegramScreenshotTest(config, { screenshotJpeg, followUp: true })
+    })
+    .catch(() => null)
+}
+
 JBSync.formatByAccountMessage = function formatByAccountMessage(byAccount) {
   if (!byAccount || typeof byAccount !== "object") return ""
   const parts = Object.values(byAccount)
@@ -948,6 +1024,9 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
     const payload = {
       chartSymbol: normalizedChart || undefined,
       trades: JBSync.normalizeTrades(chunk, config.assetType, chartSymbol),
+    }
+    if (i === 0 && options.screenshotJpeg) {
+      payload.screenshotJpeg = options.screenshotJpeg
     }
     const result = await JBSync.postJson(`${config.apiUrl}/api/sync/trades`, config.syncToken, payload)
     imported += result.imported || 0
@@ -1208,6 +1287,7 @@ JBSync.maybeRunRequestedRefresh = async function maybeRunRequestedRefresh(config
 /** Sync trades already captured from TV network hooks — no Strategy Tester scrape needed. */
 JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, chartSymbol) {
   await JBSync.sendHeartbeat(config)
+  const screenshotPromise = JBSync.captureChartScreenshot()
 
   const list = (trades || []).filter((trade) => trade?.entry?.price && trade?.entry?.datetime)
   if (!list.length) {
@@ -1247,6 +1327,7 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     reconcileFromTrades: stamped,
     reconcile: true,
   })
+  JBSync.sendFollowUpChartPhoto(config, screenshotPromise, syncResult)
 
   const closedStale = syncResult.closedStale || 0
   if (syncResult.imported > 0) {
@@ -1309,6 +1390,7 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
   await JBSync.sendHeartbeat(config)
 
   const tab = await JBSync.getTradingViewTab()
+  const screenshotPromise = JBSync.captureChartScreenshot(tab)
   const captured = await JBSync.readCapturedTradesFromTab(tab)
 
   // Polls use light scrape (top ~40 rows + capture). Never full-table walk.
@@ -1392,6 +1474,7 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
       reconcileFromTrades: result.trades,
       reconcile: scrapedOpens.length > 0,
     })
+    JBSync.sendFollowUpChartPhoto(config, screenshotPromise, syncResult)
   }
 
   const closedStale = syncResult.closedStale || 0

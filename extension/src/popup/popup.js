@@ -45,7 +45,7 @@ async function loadStatus() {
 }
 
 function setButtonsDisabled(disabled) {
-  for (const id of ["testScrape", "importAll", "refreshNew"]) {
+  for (const id of ["testScrape", "testTelegramScreenshot", "importAll", "refreshNew"]) {
     document.getElementById(id).disabled = disabled
   }
 }
@@ -121,6 +121,42 @@ document.getElementById("testScrape").addEventListener("click", async () => {
     }
   } catch (error) {
     statusEl.textContent = `Scrape failed: ${error.message}`
+    statusEl.style.color = "#f85149"
+  } finally {
+    setButtonsDisabled(false)
+  }
+})
+
+document.getElementById("testTelegramScreenshot").addEventListener("click", async () => {
+  const statusEl = document.getElementById("importStatus")
+  const errorEl = document.getElementById("error")
+  statusEl.textContent = "Sending Telegram screenshot..."
+  errorEl.textContent = ""
+  setButtonsDisabled(true)
+
+  try {
+    let screenshotJpeg = null
+    try {
+      screenshotJpeg = await JBSync.captureVisibleTabDataUrl()
+    } catch (error) {
+      throw new Error(
+        error?.message || "Could not capture the chart. Keep TradingView in this window and retry.",
+      )
+    }
+    if (!screenshotJpeg) {
+      throw new Error("Could not capture the chart. Keep TradingView in this window and retry.")
+    }
+
+    const result = await sendBackground("TEST_TELEGRAM_SCREENSHOT", { screenshotJpeg })
+    if (!result?.ok) throw new Error(result?.error || "Telegram screenshot test failed")
+    const side = result.trade?.side || "Long"
+    const instrument = result.trade?.instrument || "TEST"
+    statusEl.textContent = `Telegram photo sent · ${side} ${instrument}`
+    statusEl.style.color = "#1a7f37"
+    errorEl.textContent = "Check Telegram. No journal trade was created."
+    errorEl.style.color = "#8b949e"
+  } catch (error) {
+    statusEl.textContent = `Telegram test failed: ${error.message}`
     statusEl.style.color = "#f85149"
   } finally {
     setButtonsDisabled(false)

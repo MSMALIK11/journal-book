@@ -58,12 +58,12 @@ export function isRealLiveClose(mapped: {
   return false
 }
 
-export async function flushLiveFillAlerts(events: LiveFillEvent[]) {
+export async function flushLiveFillAlerts(events: LiveFillEvent[], photo?: Buffer | null) {
   for (const event of events) {
     if (event.kind === "open") {
-      await persistNewTradeAlert(event.userId, event.accountId, event.trade, event.accountName)
+      await persistNewTradeAlert(event.userId, event.accountId, event.trade, event.accountName, photo)
       continue
     }
-    await persistClosedTradeAlert(event.userId, event.accountId, event.trade, event.accountName)
+    await persistClosedTradeAlert(event.userId, event.accountId, event.trade, event.accountName, photo)
   }
 }

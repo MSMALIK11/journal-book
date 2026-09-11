@@ -23,6 +23,7 @@ import {
 } from "@/lib/trading/live-fill-alerts"
 import { withUserSyncLock } from "@/lib/trading/sync-lock"
 import { tradingViewSyncSchema } from "@/lib/validations/tradingview-sync"
+import { decodeScreenshotJpeg } from "@/lib/telegram/screenshot"
 import { runDeltaAutoTradeForFills } from "@/lib/broker/delta-auto-trade"
 
 function mergeSyncedTrade(
@@ -155,6 +156,8 @@ export async function POST(request: NextRequest) {
         ),
       )
     }
+
+    const chartPhoto = decodeScreenshotJpeg(parsed.data.screenshotJpeg)
 
     await connectDB()
 
@@ -626,7 +629,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    await flushLiveFillAlerts(fillEvents)
+    await flushLiveFillAlerts(fillEvents, chartPhoto)
     void runDeltaAutoTradeForFills(auth.userId, fillEvents).catch((error) => {
       console.error("Delta auto-trade failed:", error)
     })

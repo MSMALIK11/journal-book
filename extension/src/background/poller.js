@@ -1,5 +1,5 @@
 /* global JBSync */
-const VERSION = "1.17.23"
+const VERSION = "1.18.3"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 120
@@ -652,6 +652,54 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       } catch (error) {
         sendResponse({ trades: [], error: error?.message || "Scrape failed" })
+      } finally {
+        releaseUserSyncHold()
+        drainPendingCapture()
+      }
+    })()
+    return true
+  }
+
+  if (message.type === "TEST_TELEGRAM_SCREENSHOT") {
+    void (async () => {
+      acquireUserSyncHold()
+      try {
+        if (await isImportAllBlocking()) {
+          sendResponse({ ok: false, error: "Import all is running — try the Telegram test after it finishes" })
+          return
+        }
+        const config = await JBSync.getConfig()
+        if (!config.syncToken) {
+          sendResponse({ ok: false, error: "Add sync key in extension Options" })
+          return
+        }
+        const tab = await JBSync.getTradingViewTab()
+        if (!tab?.id) {
+          sendResponse({
+            ok: false,
+            error: "Open a TradingView chart tab, then try Test Telegram screenshot.",
+          })
+          return
+        }
+        const screenshotJpeg = JBSync.isChartScreenshotDataUrl(message.screenshotJpeg)
+          ? message.screenshotJpeg
+          : await JBSync.captureChartScreenshot(tab)
+        if (!screenshotJpeg) {
+          sendResponse({
+            ok: false,
+            error: "Could not capture the chart. Keep the TradingView tab visible in this window and retry.",
+          })
+          return
+        }
+        const scrape = await JBSync.scrapeFromActiveTab(false).catch(() => ({ trades: [] }))
+        const trade = JBSync.pickTelegramTestTrade(scrape?.trades)
+        const result = await JBSync.sendTelegramScreenshotTest(config, {
+          screenshotJpeg,
+          ...trade,
+        })
+        sendResponse({ ok: true, ...result, trade })
+      } catch (error) {
+        sendResponse({ ok: false, error: error?.message || "Telegram screenshot test failed" })
       } finally {
         releaseUserSyncHold()
         drainPendingCapture()
