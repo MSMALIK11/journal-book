@@ -15,13 +15,11 @@ emaLen20 = input.int(20, "Slow EMA Length", minval=1, group=strategyGroup)
 rr = input.float(1.5, "Risk-Reward Ratio", minval=0.1, step=0.1, group=strategyGroup)
 
 //────────────────────────────────────────────
-// TP/SL CHART LABELS
+// TP/SL IN LIST OF TRADES
 //────────────────────────────────────────────
-labelGroup = "TP/SL Chart Labels"
+labelGroup = "TP/SL Table"
 
-showTpSlLabels = input.bool(true, "Show TP/SL price labels on chart (open trade only)", group=labelGroup)
-labelExtendBars = input.int(15, "Extend labels to the right (bars)", minval=5, maxval=80, group=labelGroup)
-fullTableSignals = input.bool(false, "Full TP/SL in List of Trades (adds text on chart markers)", group=labelGroup)
+fullTableSignals = input.bool(true, "Full TP/SL in List of Trades", group=labelGroup)
 
 //────────────────────────────────────────────
 // HEIKIN ASHI ENTRY FILTERS
@@ -80,28 +78,9 @@ f_priceLabel(_price) =>
 f_entryTableComment(_side, _tp, _sl) =>
     _side + " | TP: " + f_priceLabel(_tp) + " | SL: " + f_priceLabel(_sl)
 
-// Chart order markers: side only. List of Trades + alerts: full TP/SL string.
+// List of Trades: full TP/SL. Chart markers use the same comment field in TradingView.
 f_entryOrderComment(_side, _tp, _sl) =>
     fullTableSignals ? f_entryTableComment(_side, _tp, _sl) : _side
-
-f_exitTpComment(_tp) =>
-    "TP " + f_priceLabel(_tp)
-
-f_exitSlComment(_sl) =>
-    "SL " + f_priceLabel(_sl)
-
-var line activeTpLine = na
-var line activeSlLine = na
-var label activeTpLabel = na
-var label activeSlLabel = na
-var int activeLabelEndBar = na
-var float tradeTp = na
-var float tradeSl = na
-var int openTradeSerial = 0
-var int drawnTradeSerial = na
-
-tpColor = color.new(#00c853, 0)
-slColor = color.new(#ff5252, 0)
 
 //────────────────────────────────────────────
 // LONG SIGNAL
@@ -196,7 +175,7 @@ getShortSignal(_ema) =>
 //────────────────────────────────────────────
 // LONG AND SHORT STRATEGY
 // Opposite entry automatically reverses position.
-// Entry comment → List of Trades (every trade). Chart labels → open trade only.
+// TP/SL in List of Trades + alerts. No chart TP/SL lines or labels.
 //────────────────────────────────────────────
 if enableLong and longSignal and strategy.position_size <= 0
     longStop = low[1]
@@ -204,19 +183,6 @@ if enableLong and longSignal and strategy.position_size <= 0
 
     if longRisk > syminfo.mintick
         longTarget = close + longRisk * rr
-        openTradeSerial += 1
-        tradeTp := longTarget
-        tradeSl := longStop
-        line.delete(activeTpLine)
-        line.delete(activeSlLine)
-        label.delete(activeTpLabel)
-        label.delete(activeSlLabel)
-        activeTpLine := na
-        activeSlLine := na
-        activeTpLabel := na
-        activeSlLabel := na
-        activeLabelEndBar := na
-        drawnTradeSerial := na
 
         strategy.entry(
              "Long",
@@ -240,19 +206,6 @@ else if enableShort and shortSignal and strategy.position_size >= 0
 
     if shortRisk > syminfo.mintick
         shortTarget = close - shortRisk * rr
-        openTradeSerial += 1
-        tradeTp := shortTarget
-        tradeSl := shortStop
-        line.delete(activeTpLine)
-        line.delete(activeSlLine)
-        label.delete(activeTpLabel)
-        label.delete(activeSlLabel)
-        activeTpLine := na
-        activeSlLine := na
-        activeTpLabel := na
-        activeSlLabel := na
-        activeLabelEndBar := na
-        drawnTradeSerial := na
 
         strategy.entry(
              "Short",
@@ -269,49 +222,6 @@ else if enableShort and shortSignal and strategy.position_size >= 0
              comment_profit="",
              comment_loss="",
              alert_message="SHORT exit | TP: " + f_priceLabel(shortTarget) + " | SL: " + f_priceLabel(shortStop))
-
-// Reset open-trade chart state when position closes (any bar).
-if strategy.position_size == 0 and strategy.position_size[1] != 0
-    tradeTp := na
-    tradeSl := na
-    drawnTradeSerial := na
-    line.delete(activeTpLine)
-    line.delete(activeSlLine)
-    label.delete(activeTpLabel)
-    label.delete(activeSlLabel)
-    activeTpLine := na
-    activeSlLine := na
-    activeTpLabel := na
-    activeSlLabel := na
-    activeLabelEndBar := na
-
-// Chart: only the live open trade — never old/historical trades.
-if barstate.islast and showTpSlLabels
-    if strategy.position_size != 0 and not na(tradeTp) and not na(tradeSl)
-        endBar = bar_index + labelExtendBars
-        needsRedraw = na(activeTpLine) or drawnTradeSerial != openTradeSerial or endBar != activeLabelEndBar
-        if needsRedraw
-            line.delete(activeTpLine)
-            line.delete(activeSlLine)
-            label.delete(activeTpLabel)
-            label.delete(activeSlLabel)
-            activeLabelEndBar := endBar
-            drawnTradeSerial := openTradeSerial
-            activeTpLine := line.new(bar_index, tradeTp, endBar, tradeTp, color=tpColor, width=2, style=line.style_dashed)
-            activeSlLine := line.new(bar_index, tradeSl, endBar, tradeSl, color=slColor, width=2, style=line.style_dashed)
-            activeTpLabel := label.new(endBar, tradeTp, "TP  " + f_priceLabel(tradeTp), style=label.style_label_left, color=tpColor, textcolor=color.white, size=size.normal)
-            activeSlLabel := label.new(endBar, tradeSl, "SL  " + f_priceLabel(tradeSl), style=label.style_label_left, color=slColor, textcolor=color.white, size=size.normal)
-    else if not na(activeTpLine) or not na(activeTpLabel)
-        line.delete(activeTpLine)
-        line.delete(activeSlLine)
-        label.delete(activeTpLabel)
-        label.delete(activeSlLabel)
-        activeTpLine := na
-        activeSlLine := na
-        activeTpLabel := na
-        activeSlLabel := na
-        activeLabelEndBar := na
-        drawnTradeSerial := na
 
 //────────────────────────────────────────────
 // TODAY'S CLOSED-TRADE PERFORMANCE
