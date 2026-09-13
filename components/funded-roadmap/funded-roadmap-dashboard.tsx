@@ -4,8 +4,14 @@ import { useEffect, useMemo, useState } from "react"
 import useSWR from "swr"
 import { format, subDays } from "date-fns"
 import Link from "next/link"
-import { HelpCircle, Map, ShieldAlert } from "lucide-react"
+import { Map, ShieldAlert } from "lucide-react"
 import { FundedRoadmapCharts } from "@/components/funded-roadmap/funded-roadmap-charts"
+import {
+  FundedRoadmapHelpButton,
+  FundedRoadmapHelpProvider,
+  FundedRoadmapTermHelp,
+  type FundedHelpTermId,
+} from "@/components/funded-roadmap/funded-roadmap-help"
 import { FundedRoadmapSkeleton } from "@/components/funded-roadmap/funded-roadmap-skeleton"
 import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import { Badge } from "@/components/ui/badge"
@@ -19,7 +25,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useActiveAccount } from "@/hooks/use-active-account"
 import { authFetch } from "@/lib/client-auth"
 import type { EquityPoint } from "@/lib/trading/analytics"
@@ -130,15 +135,20 @@ function Kpi({
   value,
   hint,
   tone,
+  helpTerm,
 }: {
   title: string
   value: string
   hint?: string
   tone?: "up" | "down" | "neutral"
+  helpTerm?: FundedHelpTermId
 }) {
   return (
     <HudPanel className="p-4">
-      <p className="hud-label">{title}</p>
+      <p className="hud-label flex items-center gap-1">
+        {title}
+        {helpTerm ? <FundedRoadmapTermHelp term={helpTerm} label={`What is ${title}?`} /> : null}
+      </p>
       <p
         className={cn(
           "mt-2 text-xl font-semibold tracking-tight",
@@ -252,6 +262,7 @@ export function FundedRoadmapDashboard() {
 
   if (!data || data.profile.closedTrades === 0) {
     return (
+      <FundedRoadmapHelpProvider>
       <div className="space-y-6">
         <Header />
         <FilterBar
@@ -286,6 +297,7 @@ export function FundedRoadmapDashboard() {
           </Button>
         </HudPanel>
       </div>
+      </FundedRoadmapHelpProvider>
     )
   }
 
@@ -294,6 +306,7 @@ export function FundedRoadmapDashboard() {
   const lowN = data.profile.closedTrades < 100
 
   return (
+    <FundedRoadmapHelpProvider>
     <div className="space-y-6">
       <Header validating={isValidating} />
 
@@ -387,6 +400,7 @@ export function FundedRoadmapDashboard() {
           value={`${data.profile.expectancyR >= 0 ? "+" : ""}${data.profile.expectancyR.toFixed(2)}R`}
           tone={data.profile.expectancyR > 0 ? "up" : "down"}
           hint="From actual R-multiples, not account P&L"
+          helpTerm="expectancy"
         />
         <Kpi title="Avg trades / week" value={data.profile.avgTradesPerWeek.toFixed(1)} hint={`Median ${data.profile.medianTradesPerWeek.toFixed(1)} · ${data.profile.avgTradesPerDay.toFixed(1)} / day`} />
         <Kpi title="Max drawdown" value={`${data.profile.maxDrawdownPct.toFixed(1)}%`} hint={money.format(data.profile.maxDrawdown)} tone="down" />
@@ -506,23 +520,28 @@ export function FundedRoadmapDashboard() {
           <HudPanelHeader
             title="Drawdown safety"
             description="Historical max drawdown is not a guaranteed future maximum."
-            action={
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button type="button" className="text-muted-foreground">
-                    <HelpCircle className="h-4 w-4" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs text-xs">
-                  Historical maximum losing streak is not a guaranteed future maximum. Stress cases use 1.5× and 2× that streak.
-                </TooltipContent>
-              </Tooltip>
-            }
+            action={<FundedRoadmapTermHelp term="stress" label="What is drawdown safety?" />}
           />
           <div className="grid gap-3 p-5 sm:grid-cols-3">
-            <Kpi title="Historical streak" value={`${data.stress.historicalStreak}`} hint={`${data.stress.historicalDdPct.toFixed(1)}% max DD`} />
-            <Kpi title="Stress 1.5×" value={`${data.stress.stress1Streak} losses`} hint={`${data.stages[0]?.oneR ? money.format(data.stress.stress1Streak * data.stages[0].oneR) : ""}`} />
-            <Kpi title="Stress 2×" value={`${data.stress.stress2Streak} losses`} hint={`${data.stages[0] ? `${data.stages[0].stressDdPct.toFixed(1)}% of ${data.stages[0].shortLabel}` : ""}`} tone="down" />
+            <Kpi
+              title="Historical streak"
+              value={`${data.stress.historicalStreak}`}
+              hint={`${data.stress.historicalDdPct.toFixed(1)}% max DD`}
+              helpTerm="historical-streak"
+            />
+            <Kpi
+              title="Stress 1.5×"
+              value={`${data.stress.stress1Streak} losses`}
+              hint={`${data.stages[0]?.oneR ? money.format(data.stress.stress1Streak * data.stages[0].oneR) : ""}`}
+              helpTerm="stress"
+            />
+            <Kpi
+              title="Stress 2×"
+              value={`${data.stress.stress2Streak} losses`}
+              hint={`${data.stages[0] ? `${data.stages[0].stressDdPct.toFixed(1)}% of ${data.stages[0].shortLabel}` : ""}`}
+              tone="down"
+              helpTerm="stress"
+            />
           </div>
           <p className="px-5 pb-5 text-xs text-muted-foreground">
             Internal strategy stability score: {data.confidence.score}/100 · {data.confidence.level}. Projection
@@ -604,12 +623,22 @@ export function FundedRoadmapDashboard() {
         <HudPanelHeader
           title="Target probability"
           description={`${current?.shortLabel ?? "$5K"} challenge · 1,000 simulations of your actual R-multiples`}
+          action={<FundedRoadmapTermHelp term="target-probability" label="What is target probability?" />}
         />
         <div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-4">
-          <Kpi title="Reach target" value={`${current?.monteCarlo.targetHitPct.toFixed(0) ?? 0}%`} tone="up" />
-          <Kpi title="Hit max DD first" value={`${current?.monteCarlo.drawdownFirstPct.toFixed(0) ?? 0}%`} tone="down" />
-          <Kpi title="Median trades" value={current?.monteCarlo.medianTradesToTarget?.toFixed(0) ?? "—"} hint={`Best 10% ${current?.monteCarlo.p10TradesToTarget ?? "—"} · Worst 10% ${current?.monteCarlo.p90TradesToTarget ?? "—"}`} />
-          <Kpi title="P5 / P95 trades" value={`${current?.monteCarlo.p5TradesToTarget ?? "—"} / ${current?.monteCarlo.p95TradesToTarget ?? "—"}`} />
+          <Kpi title="Reach target" value={`${current?.monteCarlo.targetHitPct.toFixed(0) ?? 0}%`} tone="up" helpTerm="reach-target" />
+          <Kpi title="Hit max DD first" value={`${current?.monteCarlo.drawdownFirstPct.toFixed(0) ?? 0}%`} tone="down" helpTerm="hit-dd-first" />
+          <Kpi
+            title="Median trades"
+            value={current?.monteCarlo.medianTradesToTarget?.toFixed(0) ?? "—"}
+            hint={`Best 10% ${current?.monteCarlo.p10TradesToTarget ?? "—"} · Worst 10% ${current?.monteCarlo.p90TradesToTarget ?? "—"}`}
+            helpTerm="median-trades"
+          />
+          <Kpi
+            title="P5 / P95 trades"
+            value={`${current?.monteCarlo.p5TradesToTarget ?? "—"} / ${current?.monteCarlo.p95TradesToTarget ?? "—"}`}
+            helpTerm="p5-p95"
+          />
         </div>
       </HudPanel>
 
@@ -724,6 +753,7 @@ export function FundedRoadmapDashboard() {
 
       <FundedRoadmapCharts model={data} />
     </div>
+    </FundedRoadmapHelpProvider>
   )
 }
 
@@ -737,7 +767,10 @@ function Header({ validating }: { validating?: boolean }) {
           Challenge path from your actual trades — not hardcoded win rate or 1:3 RR.
         </p>
       </div>
-      {validating ? <p className="text-xs text-cyan-300/70">Updating…</p> : null}
+      <div className="flex items-center gap-3">
+        {validating ? <p className="text-xs text-cyan-300/70">Updating…</p> : null}
+        <FundedRoadmapHelpButton />
+      </div>
     </div>
   )
 }

@@ -120,40 +120,57 @@ JBSync.tradeEntryMs = function tradeEntryMs(trade) {
   return Number.isFinite(ms) ? ms : NaN
 }
 
+JBSync.tradeExitMs = function tradeExitMs(trade) {
+  const raw = trade?.exit?.datetime
+  if (!raw || JBSync.isLiteralOpenToken(raw)) return NaN
+  const ms = new Date(JBSync.normalizeTradingViewDatetime(raw)).getTime()
+  return Number.isFinite(ms) ? ms : NaN
+}
+
+JBSync.tradeSideKey = function tradeSideKey(trade) {
+  const symbol = String(trade?.instrument || "")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toUpperCase()
+  return `${symbol}:${trade?.direction || "long"}`
+}
+
 /**
  * Drop ghost "Open" rows that sit in the middle of history.
- * If a later CLOSED trade exists, an earlier Open cannot still be live (API capture leftovers).
+ * If a later CLOSED trade exited after this open's entry, it cannot still be live.
  */
 JBSync.dropSupersededOpenTrades = function dropSupersededOpenTrades(trades) {
   const list = Array.isArray(trades) ? trades : []
   if (list.length < 2) return list
 
-  let maxClosedEntryMs = -Infinity
-  let maxClosedTradeNumber = -Infinity
+  const maxClosedExitBySide = new Map()
+  const maxClosedNumberBySide = new Map()
 
   for (const trade of list) {
     if (JBSync.isOpenTrade(trade)) continue
-    const entryMs = JBSync.tradeEntryMs(trade)
-    if (Number.isFinite(entryMs) && entryMs > maxClosedEntryMs) maxClosedEntryMs = entryMs
-    if (Number.isFinite(trade.tradeNumber) && trade.tradeNumber > maxClosedTradeNumber) {
-      maxClosedTradeNumber = trade.tradeNumber
+    const key = JBSync.tradeSideKey(trade)
+    const closedMs = Number.isFinite(JBSync.tradeExitMs(trade))
+      ? JBSync.tradeExitMs(trade)
+      : JBSync.tradeEntryMs(trade)
+    if (Number.isFinite(closedMs)) {
+      const prev = maxClosedExitBySide.get(key)
+      if (prev == null || closedMs > prev) maxClosedExitBySide.set(key, closedMs)
+    }
+    if (Number.isFinite(trade.tradeNumber)) {
+      const prevNum = maxClosedNumberBySide.get(key)
+      if (prevNum == null || trade.tradeNumber > prevNum) maxClosedNumberBySide.set(key, trade.tradeNumber)
     }
   }
 
-  const afterClosed =
-    !Number.isFinite(maxClosedEntryMs) && !Number.isFinite(maxClosedTradeNumber)
-      ? list
-      : list.filter((trade) => {
+  const afterClosed = list.filter((trade) => {
     if (!JBSync.isOpenTrade(trade)) return true
-
+    const key = JBSync.tradeSideKey(trade)
     const entryMs = JBSync.tradeEntryMs(trade)
-    if (Number.isFinite(trade.tradeNumber) && trade.tradeNumber >= maxClosedTradeNumber) return true
-    if (Number.isFinite(trade.tradeNumber) && trade.tradeNumber < maxClosedTradeNumber) return false
-
-    if (Number.isFinite(entryMs) && Number.isFinite(maxClosedEntryMs) && entryMs < maxClosedEntryMs) {
+    const maxExit = maxClosedExitBySide.get(key)
+    if (Number.isFinite(entryMs) && Number.isFinite(maxExit) && entryMs < maxExit) return false
+    const maxNum = maxClosedNumberBySide.get(key)
+    if (Number.isFinite(trade.tradeNumber) && Number.isFinite(maxNum) && trade.tradeNumber < maxNum) {
       return false
     }
-
     return true
   })
 
@@ -458,7 +475,14 @@ JBSync.readChartSymbolFromTab = async function readChartSymbolFromTab(tab) {
     fromPage = ""
   }
 
+  const titleSymbol =
+    typeof JBSymbol !== "undefined" && JBSymbol.fromTitle
+      ? JBSync.normalizeChartSymbol(JBSymbol.fromTitle(tab.title || ""))
+      : ""
+  // Visible title wins when the URL/widget is still on the previous symbol.
+  if (titleSymbol && fromPage && titleSymbol !== fromPage) return titleSymbol
   if (fromPage) return fromPage
+  if (titleSymbol) return titleSymbol
   return JBSync.symbolFromTabUrl(tab.url)
 }
 
@@ -495,7 +519,8 @@ JBSync.priceMatchesInstrument = function priceMatchesInstrument(price, symbol) {
   if (/ETH/.test(s)) return price >= 50 && price <= 50000
   if (/SOL/.test(s)) return price >= 1 && price <= 5000
   if (/^(USOIL|UKOIL|WTI|CRUDE|OIL|CL)/.test(s)) return price >= 10 && price <= 500
-  if (/^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225)/.test(s)) {
+  if (/NIFTY|SENSEX|BANKNIF|NSEI/.test(s)) return price >= 1000 && price <= 200000
+  if (/^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX)/.test(s)) {
     return price >= 100 && price <= 200000
   }
 
@@ -509,12 +534,15 @@ JBSync.priceMatchesInstrument = function priceMatchesInstrument(price, symbol) {
 
 JBSync.filterTradesForChart = function filterTradesForChart(trades, chartSymbol) {
   const symbol = JBSync.normalizeChartSymbol(chartSymbol)
-  if (!symbol) return []
+  if (!symbol) return trades || []
 
   return (trades || []).filter((trade) => {
     const tradeInst = JBSync.normalizeChartSymbol(trade.instrument)
-    if (tradeInst && tradeInst !== "UNKNOWN" && tradeInst !== symbol) return false
-    return JBSync.priceMatchesInstrument(trade.entry?.price, symbol)
+    if (JBSync.priceMatchesInstrument(trade.entry?.price, symbol)) return true
+    if (tradeInst && tradeInst !== "UNKNOWN") {
+      return JBSync.priceMatchesInstrument(trade.entry?.price, tradeInst)
+    }
+    return false
   })
 }
 
@@ -523,7 +551,9 @@ JBSync.applyChartSymbol = function applyChartSymbol(trades, chartSymbol) {
   if (!normalized) return trades
   const filtered = JBSync.filterTradesForChart(trades, normalized)
   for (const trade of filtered) {
-    trade.instrument = normalized
+    if (JBSync.priceMatchesInstrument(trade.entry?.price, normalized)) {
+      trade.instrument = normalized
+    }
   }
   return filtered
 }
@@ -851,6 +881,7 @@ JBSync.inferAssetType = function inferAssetType(symbol, fallback) {
   const normalized = (symbol || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase()
   if (/^(XAU|XAG|GOLD|SILVER)/.test(normalized)) return "metal"
   if (/^(USOIL|UKOIL|WTI|CRUDE|CRUDEOIL|OIL|CL)/.test(normalized)) return "commodity"
+  if (/NIFTY|SENSEX|BANKNIF|NSEI|US30|US100|US500|NAS100|SPX/.test(normalized)) return "index"
   if (/^(EUR|GBP|USDJPY|USDCHF|AUDUSD|USDCAD|NZDUSD)/.test(normalized)) return "forex"
   return fallback || "crypto"
 }

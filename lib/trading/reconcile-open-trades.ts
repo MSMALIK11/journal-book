@@ -395,11 +395,18 @@ export async function healSignalLevels(userId: string, accountId?: string) {
   return ops.length
 }
 
+export type PurgeSupersededResult = {
+  deleted: number
+  touches: { accountId: string; instrument: string }[]
+}
+
 /**
- * Delete Open rows that are impossible: a later CLOSED trade already exists on the same instrument.
- * Fixes ghost opens (e.g. 09:36 Open while 11:45+ trades are closed) that API capture keeps resurrecting.
+ * Delete Open rows that cannot still be live: a later same-side CLOSE already
+ * exited after this open's entry (API capture often stamps a later bar/MTM price
+ * as a second Open, e.g. 20:30 ghost after a 20:00→21:45 fill).
  */
-export async function purgeSupersededOpenTrades(userId: string, instrument?: string) {
+export async function purgeSupersededOpenTrades(userId: string, instrument?: string): Promise<PurgeSupersededResult> {
+  const empty: PurgeSupersededResult = { deleted: 0, touches: [] }
   const query: Record<string, unknown> = {
     userId,
     source: "tradingview",
@@ -410,33 +417,40 @@ export async function purgeSupersededOpenTrades(userId: string, instrument?: str
   }
 
   const trades = await Trade.find(query)
-    .select("_id instrument entry_date exit_date signal tags")
+    .select("_id accountId instrument trade_type entry_date exit_date")
     .sort({ entry_date: 1 })
     .lean()
 
-  const maxClosedEntryByInstrument = new Map<string, number>()
+  const maxClosedExitBySide = new Map<string, number>()
   for (const trade of trades) {
-    if (isOpenSyncedTrade(trade)) continue
-    const entryMs = trade.entry_date ? new Date(trade.entry_date).getTime() : NaN
-    if (!Number.isFinite(entryMs)) continue
-    const key = String(trade.instrument || "").toUpperCase()
-    const prev = maxClosedEntryByInstrument.get(key) ?? -Infinity
-    if (entryMs > prev) maxClosedEntryByInstrument.set(key, entryMs)
+    if (isOpenSyncedTrade(trade) || !trade.exit_date) continue
+    const exitMs = new Date(trade.exit_date).getTime()
+    if (!Number.isFinite(exitMs)) continue
+    const key = tradeSideKey(trade)
+    const prev = maxClosedExitBySide.get(key) ?? -Infinity
+    if (exitMs > prev) maxClosedExitBySide.set(key, exitMs)
   }
 
-  const staleIds = trades
-    .filter((trade) => isOpenSyncedTrade(trade))
-    .filter((trade) => {
-      const key = String(trade.instrument || "").toUpperCase()
-      const maxClosed = maxClosedEntryByInstrument.get(key)
-      if (maxClosed == null || !Number.isFinite(maxClosed)) return false
-      const entryMs = trade.entry_date ? new Date(trade.entry_date).getTime() : NaN
-      return Number.isFinite(entryMs) && entryMs < maxClosed
+  const stale = trades.filter((trade) => {
+    if (!isOpenSyncedTrade(trade)) return false
+    const entryMs = trade.entry_date ? new Date(trade.entry_date).getTime() : NaN
+    if (!Number.isFinite(entryMs)) return false
+    const maxExit = maxClosedExitBySide.get(tradeSideKey(trade))
+    return maxExit != null && entryMs < maxExit
+  })
+
+  if (!stale.length) return empty
+
+  const result = await Trade.deleteMany({ _id: { $in: stale.map((trade) => trade._id) }, userId })
+  const touches = new Map<string, { accountId: string; instrument: string }>()
+  for (const trade of stale) {
+    const accountId = String(trade.accountId || "")
+    if (!accountId || touches.has(accountId)) continue
+    touches.set(accountId, {
+      accountId,
+      instrument: canonicalInstrumentSymbol(String(trade.instrument || "")) || String(trade.instrument || ""),
     })
-    .map((trade) => trade._id)
+  }
 
-  if (!staleIds.length) return 0
-
-  const result = await Trade.deleteMany({ _id: { $in: staleIds }, userId })
-  return result.deletedCount ?? 0
+  return { deleted: result.deletedCount ?? 0, touches: [...touches.values()] }
 }

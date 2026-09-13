@@ -138,6 +138,23 @@ export async function findExistingSyncedTrade(
   return null
 }
 
+/** Incoming Open that started before a later same-side exit is a capture ghost — do not insert. */
+export async function isOpenCoveredByLaterClose(userId: string, mapped: MappedTrade) {
+  if (mapped.exit_date) return false
+  const entryMs = mapped.entry_date?.getTime?.() ?? NaN
+  if (!Number.isFinite(entryMs)) return false
+
+  const covering = await Trade.findOne({
+    userId,
+    source: "tradingview",
+    instrument: mapped.instrument,
+    trade_type: mapped.trade_type,
+    exit_date: { $gt: mapped.entry_date },
+  }).select("_id")
+
+  return Boolean(covering)
+}
+
 /** A new TV Open must not reuse a different closed row — that counts as update and skips the alarm. */
 function isClosedMismatch(
   existing: { exit_date?: Date | null; external_id?: string | null },

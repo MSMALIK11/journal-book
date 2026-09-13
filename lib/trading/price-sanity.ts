@@ -37,7 +37,8 @@ export function priceMatchesInstrument(price: number | null | undefined, instrum
   if (/ETH/.test(s)) return price >= 50 && price <= 50000
   if (/SOL/.test(s)) return price >= 1 && price <= 5000
   if (/^(USOIL|UKOIL|WTI|CRUDE|OIL|CL)/.test(s)) return price >= 10 && price <= 500
-  if (/^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225)/.test(s)) {
+  if (/NIFTY|SENSEX|BANKNIF|NSEI/.test(s)) return price >= 1000 && price <= 200000
+  if (/^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX)/.test(s)) {
     return price >= 100 && price <= 200000
   }
 
@@ -62,10 +63,11 @@ export function resolveSyncedInstrument(
   chartSymbol: string | null,
   tradeSymbol: string,
 ): string | null {
-  for (const candidate of [chartSymbol, tradeSymbol]) {
-    if (candidate && priceMatchesInstrument(price, candidate)) return candidate
-  }
-  return null
+  const chart = chartSymbol && priceMatchesInstrument(price, chartSymbol) ? chartSymbol : null
+  const trade = tradeSymbol && priceMatchesInstrument(price, tradeSymbol) ? tradeSymbol : null
+  // Prefer the trade's own symbol when the chart URL/widget is stale (BTCUSDT vs NIFTY).
+  if (trade && chart && trade !== chart) return trade
+  return trade || chart || null
 }
 
 function entryMs(trade: TradingViewTradeInput) {
@@ -77,34 +79,48 @@ function entryMs(trade: TradingViewTradeInput) {
   }
 }
 
+function exitMs(trade: TradingViewTradeInput) {
+  const raw = trade.exit?.datetime
+  if (!raw || /^open$/i.test(raw.trim())) return NaN
+  try {
+    const ms = new Date(normalizeTradingViewDatetime(raw)).getTime()
+    return Number.isFinite(ms) ? ms : NaN
+  } catch {
+    return NaN
+  }
+}
+
+function instrumentKey(trade: TradingViewTradeInput) {
+  return `${trade.instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()}:${trade.direction}`
+}
+
 /** Drop mid-history ghost Opens when the same payload already has a later closed trade. */
 export function dropSupersededOpenTradesFromPayload(trades: TradingViewTradeInput[]) {
   if (trades.length < 2) return trades
 
-  const maxClosedEntryByInstrument = new Map<string, number>()
-  const maxClosedNumberByInstrument = new Map<string, number>()
+  const maxClosedExitBySide = new Map<string, number>()
+  const maxClosedNumberBySide = new Map<string, number>()
 
   for (const trade of trades) {
     if (isOpenTvTrade(trade)) continue
-    const symbol = trade.instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
-    const ms = entryMs(trade)
-    if (Number.isFinite(ms)) {
-      const prev = maxClosedEntryByInstrument.get(symbol) ?? -Infinity
-      if (ms > prev) maxClosedEntryByInstrument.set(symbol, ms)
+    const key = instrumentKey(trade)
+    const closedMs = Number.isFinite(exitMs(trade)) ? exitMs(trade) : entryMs(trade)
+    if (Number.isFinite(closedMs)) {
+      const prev = maxClosedExitBySide.get(key) ?? -Infinity
+      if (closedMs > prev) maxClosedExitBySide.set(key, closedMs)
     }
-    const prevNum = maxClosedNumberByInstrument.get(symbol) ?? -Infinity
-    if (trade.tradeNumber > prevNum) maxClosedNumberByInstrument.set(symbol, trade.tradeNumber)
+    const prevNum = maxClosedNumberBySide.get(key) ?? -Infinity
+    if (trade.tradeNumber > prevNum) maxClosedNumberBySide.set(key, trade.tradeNumber)
   }
 
   const afterClosed = trades.filter((trade) => {
     if (!isOpenTvTrade(trade)) return true
-    const symbol = trade.instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
-    const maxNum = maxClosedNumberByInstrument.get(symbol)
-    if (maxNum != null && trade.tradeNumber >= maxNum) return true
-    if (maxNum != null && trade.tradeNumber < maxNum) return false
+    const key = instrumentKey(trade)
     const ms = entryMs(trade)
-    const maxClosed = maxClosedEntryByInstrument.get(symbol)
+    const maxClosed = maxClosedExitBySide.get(key)
     if (maxClosed != null && Number.isFinite(ms) && ms < maxClosed) return false
+    const maxNum = maxClosedNumberBySide.get(key)
+    if (maxNum != null && trade.tradeNumber < maxNum) return false
     return true
   })
 
