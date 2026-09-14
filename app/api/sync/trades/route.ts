@@ -4,10 +4,10 @@ import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { dropSupersededOpenTradesFromPayload, resolveSyncedInstrument } from "@/lib/trading/price-sanity"
-import { closeDuplicateLiveOpens, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { closeDuplicateLiveOpens, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, purgeSupersededOpenTrades, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
-import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
+import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, isOpenCoveredByLaterClose, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
 import { publishAccountsUpdated, publishTradesUpdated } from "@/lib/sync-events"
 import { recordTradeSyncEvent } from "@/lib/sync-last-event"
@@ -23,6 +23,7 @@ import {
 } from "@/lib/trading/live-fill-alerts"
 import { withUserSyncLock } from "@/lib/trading/sync-lock"
 import { tradingViewSyncSchema } from "@/lib/validations/tradingview-sync"
+import { decodeScreenshotJpeg } from "@/lib/telegram/screenshot"
 import { runDeltaAutoTradeForFills } from "@/lib/broker/delta-auto-trade"
 
 function mergeSyncedTrade(
@@ -156,6 +157,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const chartPhoto = decodeScreenshotJpeg(parsed.data.screenshotJpeg)
+
     await connectDB()
 
     return await withUserSyncLock(auth.userId, async () => {
@@ -193,10 +196,15 @@ export async function POST(request: NextRequest) {
           parsed.data.reconcileOpens.opens,
         )
       }
+      const purged = await purgeSupersededOpenTrades(auth.userId)
+      closedStale += purged.deleted
       await healNotionalTvPnls(auth.userId)
       await healSignalLevels(auth.userId)
       const healResult = await healIncompleteTvCloses(auth.userId)
       closedStale += healResult.healed
+      healResult.touches.push(
+        ...purged.touches.map((touch) => ({ ...touch, updated: 1 })),
+      )
       if (closedStale > 0) {
         const refreshTargets = new Map<
           string,
@@ -350,6 +358,11 @@ export async function POST(request: NextRequest) {
       }
 
       if (!existing) {
+        if (!mapped.exit_date && (await isOpenCoveredByLaterClose(auth.userId, mapped))) {
+          skipped += 1
+          byAccount[accountId].skipped += 1
+          continue
+        }
         const created = await Trade.create(mapped)
         imported += 1
         byAccount[accountId].imported += 1
@@ -498,10 +511,21 @@ export async function POST(request: NextRequest) {
         parsed.data.reconcileOpens.opens,
       )
     }
+    const purged = await purgeSupersededOpenTrades(auth.userId)
+    closedStale += purged.deleted
+    updated += purged.deleted
+    for (const touch of purged.touches) {
+      touchedAccounts.add(touch.accountId)
+      if (!byAccount[touch.accountId]) {
+        byAccount[touch.accountId] = { name: "TradingView", imported: 0, updated: 0, skipped: 0 }
+      }
+      byAccount[touch.accountId].updated += 1
+    }
     await healNotionalTvPnls(auth.userId)
     await healSignalLevels(auth.userId)
     const healResult = await healIncompleteTvCloses(auth.userId)
     closedStale += healResult.healed
+    healResult.touches.push(...purged.touches.map((touch) => ({ ...touch, updated: 1 })))
     for (const touch of healResult.touches) {
       touchedAccounts.add(touch.accountId)
     }
@@ -626,7 +650,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    await flushLiveFillAlerts(fillEvents)
+    await flushLiveFillAlerts(fillEvents, chartPhoto)
     void runDeltaAutoTradeForFills(auth.userId, fillEvents).catch((error) => {
       console.error("Delta auto-trade failed:", error)
     })

@@ -15,6 +15,20 @@ try {
 const TELEGRAM_API = "https://api.telegram.org"
 const PREFS_CACHE_TTL_MS = 60_000
 const TELEGRAM_FETCH_ATTEMPTS = 3
+const PHOTO_DEDUPE_MS = 90_000
+const recentPhotoKeys = new Map<string, number>()
+
+function photoDedupeKey(userId: string, event: { kind: string; instrument: string; side: string }) {
+  return `${userId}:${event.kind}:${event.instrument}:${event.side}`.toUpperCase()
+}
+
+function claimTradePhotoSlot(userId: string, event: { kind: string; instrument: string; side: string }) {
+  const key = photoDedupeKey(userId, event)
+  const prev = recentPhotoKeys.get(key) || 0
+  if (Date.now() - prev < PHOTO_DEDUPE_MS) return false
+  recentPhotoKeys.set(key, Date.now())
+  return true
+}
 
 const prefsCache = new Map<string, { prefs: TelegramPreferences; at: number }>()
 let telegramWarmed = false
@@ -122,6 +136,85 @@ export async function getTelegramPrefs(userId: string): Promise<TelegramPreferen
   )
   prefsCache.set(userId, { prefs, at: Date.now() })
   return prefs
+}
+
+const TELEGRAM_CAPTION_MAX = 1024
+
+async function telegramMultipartRequest(
+  path: string,
+  form: FormData,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const token = getBotToken()
+  if (!token) {
+    return { ok: false, error: "Telegram bot token is not configured. Add TELEGRAM_BOT_TOKEN to .env." }
+  }
+
+  try {
+    const response = await fetch(`${TELEGRAM_API}/bot${token}/${path}`, {
+      method: "POST",
+      body: form,
+      cache: "no-store",
+    })
+    const data = (await response.json().catch(() => null)) as
+      | { ok?: boolean; description?: string }
+      | null
+
+    if (!response.ok || !data?.ok) {
+      return {
+        ok: false,
+        error: data?.description || `Telegram request failed (${response.status})`,
+      }
+    }
+    return { ok: true }
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Telegram request failed",
+    }
+  }
+}
+
+export async function sendTelegramPhoto(
+  chatId: string,
+  jpeg: Buffer,
+  caption: string,
+): Promise<TelegramApiResult> {
+  const candidates = telegramChatIdCandidates(chatId)
+  if (!candidates.length) {
+    return { ok: false, error: "Telegram chat ID is missing" }
+  }
+  if (!jpeg?.length) {
+    return { ok: false, error: "Screenshot is empty" }
+  }
+
+  const safeCaption = caption.slice(0, TELEGRAM_CAPTION_MAX)
+  let lastError = "Telegram chat ID is missing"
+  const bytes = new Uint8Array(jpeg)
+  const isPng = bytes[0] === 0x89 && bytes[1] === 0x50
+  const mime = isPng ? "image/png" : "image/jpeg"
+  const filename = isPng ? "chart.png" : "chart.jpg"
+
+  for (const candidate of candidates) {
+    for (let attempt = 0; attempt < TELEGRAM_FETCH_ATTEMPTS; attempt++) {
+      const form = new FormData()
+      form.append("chat_id", candidate)
+      form.append("caption", safeCaption)
+      form.append("photo", new Blob([bytes], { type: mime }), filename)
+
+      const result = await telegramMultipartRequest("sendPhoto", form)
+      if (result.ok) return { ok: true }
+      lastError = result.error || lastError
+      if (/chat not found/i.test(lastError)) break
+      if (attempt < TELEGRAM_FETCH_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)))
+      }
+    }
+    if (!/chat not found/i.test(lastError)) {
+      return { ok: false, error: lastError }
+    }
+  }
+
+  return { ok: false, error: lastError }
 }
 
 export async function sendTelegramMessage(chatId: string, text: string): Promise<TelegramApiResult> {
@@ -246,10 +339,30 @@ export function buildTelegramTradeMessage(event: TelegramTradeEvent) {
   return lines.join("\n")
 }
 
+export async function sendTelegramChartFollowUp(
+  userId: string,
+  photo: Buffer,
+): Promise<TelegramApiResult> {
+  if (!photo?.length) return { ok: false, error: "Screenshot is empty" }
+  if (!isTelegramBotConfigured()) {
+    return { ok: false, error: "Telegram bot token is not configured" }
+  }
+
+  const prefs = await getTelegramPrefs(userId)
+  const chatId = resolveTelegramChatId(prefs.chatId)
+  if (!chatId) return { ok: false, error: "Telegram chat ID is missing" }
+  if (!prefs.enabled) return { ok: false, error: "Telegram alerts are disabled" }
+  if (!claimTradePhotoSlot(userId, { kind: "followup", instrument: "CHART", side: "ANY" })) {
+    return { ok: true }
+  }
+
+  return sendTelegramPhoto(chatId, photo, "")
+}
+
 export async function notifyTelegramTradeEvent(
   userId: string,
   event: TelegramTradeEvent & { caption?: string },
-  options?: { force?: boolean },
+  options?: { force?: boolean; photo?: Buffer | null },
 ): Promise<TelegramApiResult> {
   try {
     if (!isTelegramBotConfigured()) {
@@ -279,11 +392,29 @@ export async function notifyTelegramTradeEvent(
     }
 
     const text = event.caption || buildTelegramTradeMessage(event)
+
+    // Test button: one photo+caption message is fine to wait for.
+    if (options?.force && options.photo?.length) {
+      const photoResult = await sendTelegramPhoto(chatId, options.photo, text)
+      if (photoResult.ok) {
+        console.info(`[telegram] sent photo ${event.kind} ${event.side} ${event.instrument}`)
+        return { ok: true }
+      }
+      console.warn("[telegram] photo failed, sending text:", photoResult.error)
+    }
+
+    // Live signal stays a fast text message. Chart photo follows in the background.
     const result = await sendTelegramMessage(chatId, text)
 
     if (!result.ok) {
       console.error("[telegram] send failed:", result.error)
       return result
+    }
+
+    if (!options?.force && options?.photo?.length && claimTradePhotoSlot(userId, event)) {
+      void sendTelegramPhoto(chatId, options.photo, "").catch((error) => {
+        console.warn("[telegram] follow-up photo failed:", error)
+      })
     }
 
     console.info(`[telegram] sent ${event.kind} ${event.side} ${event.instrument}`)

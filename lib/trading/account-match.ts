@@ -74,6 +74,10 @@ const SYMBOL_ALIASES: Record<string, string[]> = {
   WTI: ["WTI", "USOIL", "CRUDE", "CRUDEOIL", "OIL"],
   CRUDE: ["CRUDE", "USOIL", "WTI", "CRUDEOIL", "OIL"],
   OIL: ["OIL", "USOIL", "WTI", "CRUDE"],
+  NIFTY: ["NIFTY", "NIFTY50", "NSEI"],
+  NIFTY50: ["NIFTY50", "NIFTY", "NSEI"],
+  BANKNIFTY: ["BANKNIFTY", "BANKNIF"],
+  SENSEX: ["SENSEX"],
 }
 
 function expandSymbolAliases(symbols: string[]): string[] {

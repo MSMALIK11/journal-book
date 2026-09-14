@@ -277,6 +277,7 @@ export async function persistNewTradeAlert(
     is_open?: boolean
   },
   accountName?: string,
+  photo?: Buffer | null,
 ) {
   if (trade.is_open === false) return
 
@@ -299,7 +300,7 @@ export async function persistNewTradeAlert(
   let sentAt: string | undefined
   try {
     console.info(`[telegram] sending open ${trade.instrument} ${side} @ ${price}`)
-    const result = await notifyTelegramTradeEvent(userId, event)
+    const result = await notifyTelegramTradeEvent(userId, event, { photo })
     if (result.ok) sentAt = new Date().toISOString()
   } catch (error) {
     console.error("Telegram new-trade alert failed:", error)
@@ -341,6 +342,7 @@ export async function persistClosedTradeAlert(
     return_pct?: number
   },
   accountName?: string,
+  photo?: Buffer | null,
 ) {
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
   const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
@@ -365,7 +367,7 @@ export async function persistClosedTradeAlert(
   let sentAt: string | undefined
   try {
     console.info(`[telegram] sending close ${trade.instrument} ${side} @ ${price}`)
-    const result = await notifyTelegramTradeEvent(userId, closeEvent)
+    const result = await notifyTelegramTradeEvent(userId, closeEvent, { photo })
     if (result.ok) sentAt = new Date().toISOString()
   } catch (error) {
     console.error("Telegram closed-trade alert failed:", error)

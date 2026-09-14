@@ -57,6 +57,9 @@ async function jbMainScrape() {
       if (/gold/i.test(text)) return "XAUUSD"
       if (/silver/i.test(text)) return "XAGUSD"
       if (/oil|crude|wti/i.test(text)) return "USOIL"
+      if (/bank\s*nifty/i.test(text)) return "BANKNIFTY"
+      if (/nifty/i.test(text)) return "NIFTY"
+      if (/sensex/i.test(text)) return "SENSEX"
       const decoded = text.replace(/%3A/gi, ":")
       const pair = decoded.includes(":") ? decoded.split(":").pop() : decoded
       return pair.replace(/[^A-Za-z0-9]/g, "").toUpperCase()

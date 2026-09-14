@@ -41,6 +41,8 @@ export const tradingViewSyncSchema = z
         opens: z.array(reconcileOpenHintSchema).max(500).default([]),
       })
       .optional(),
+    /** Live chart JPEG (data URL or base64). Used for Telegram only — never stored. */
+    screenshotJpeg: z.string().max(1_800_000).optional(),
   })
   .refine(
     (data) => data.trades.length > 0 || Boolean(data.chartSymbol) || Boolean(data.reconcileOpens),

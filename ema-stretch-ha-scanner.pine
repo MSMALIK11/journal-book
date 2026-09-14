@@ -176,13 +176,19 @@ getShortSignal(_ema) =>
 // LONG AND SHORT STRATEGY
 // Opposite entry automatically reverses position.
 // TP/SL in List of Trades + alerts. No chart TP/SL lines or labels.
+// Entries only on a closed candle, once per bar. calc_on_every_tick
+// would otherwise re-fire HA signals after a same-bar SL/TP fill.
 //────────────────────────────────────────────
-if enableLong and longSignal and strategy.position_size <= 0
+var int lastEntryBar = na
+canOpenTrade = barstate.isconfirmed and (na(lastEntryBar) or lastEntryBar != bar_index)
+
+if canOpenTrade and enableLong and longSignal and strategy.position_size <= 0
     longStop = low[1]
     longRisk = close - longStop
 
     if longRisk > syminfo.mintick
         longTarget = close + longRisk * rr
+        lastEntryBar := bar_index
 
         strategy.entry(
              "Long",
@@ -200,12 +206,13 @@ if enableLong and longSignal and strategy.position_size <= 0
              comment_loss="",
              alert_message="LONG exit | TP: " + f_priceLabel(longTarget) + " | SL: " + f_priceLabel(longStop))
 
-else if enableShort and shortSignal and strategy.position_size >= 0
+else if canOpenTrade and enableShort and shortSignal and strategy.position_size >= 0
     shortStop = high[1]
     shortRisk = shortStop - close
 
     if shortRisk > syminfo.mintick
         shortTarget = close - shortRisk * rr
+        lastEntryBar := bar_index
 
         strategy.entry(
              "Short",
@@ -538,7 +545,7 @@ plot(ema5, color=color.green, title="Fast EMA", linewidth=2)
 plot(ema20, color=color.red, title="Slow EMA", linewidth=2)
 
 plotshape(
-     enableLong and longSignal,
+     barstate.isconfirmed and enableLong and longSignal,
      title="Long Signal",
      style=shape.labelup,
      location=location.belowbar,
@@ -548,7 +555,7 @@ plotshape(
      size=size.tiny)
 
 plotshape(
-     enableShort and shortSignal,
+     barstate.isconfirmed and enableShort and shortSignal,
      title="Short Signal",
      style=shape.labeldown,
      location=location.abovebar,
@@ -561,11 +568,11 @@ plotshape(
 // ALERTS
 //────────────────────────────────────────────
 alertcondition(
-     enableLong and longSignal,
+     barstate.isconfirmed and enableLong and longSignal,
      title="Bullish HA EMA Reversal",
      message="LONG Heikin Ashi EMA reversal on {{ticker}} {{interval}}")
 
 alertcondition(
-     enableShort and shortSignal,
+     barstate.isconfirmed and enableShort and shortSignal,
      title="Bearish HA EMA Reversal",
      message="SHORT Heikin Ashi EMA reversal on {{ticker}} {{interval}}")

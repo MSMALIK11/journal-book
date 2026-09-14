@@ -21,6 +21,11 @@ JBSymbol.KNOWN_TICKERS = [
   "AUDUSD",
   "USDCAD",
   "NZDUSD",
+  "NIFTY",
+  "NIFTY50",
+  "BANKNIFTY",
+  "FINNIFTY",
+  "SENSEX",
 ]
 
 JBSymbol.decodeRaw = function decodeRaw(raw) {
@@ -56,6 +61,10 @@ JBSymbol.fromTitle = function fromTitle(title) {
   if (/gold/i.test(first)) return "XAUUSD"
   if (/silver/i.test(first)) return "XAGUSD"
   if (/(\bwt\b|crude|\boil\b)/i.test(first)) return "USOIL"
+  if (/bank\s*nifty/i.test(first)) return "BANKNIFTY"
+  if (/fin(ancial)?\s*nifty/i.test(first)) return "FINNIFTY"
+  if (/nifty/i.test(first)) return "NIFTY"
+  if (/sensex/i.test(first)) return "SENSEX"
   if (/bitcoin|\bbtc\b/i.test(first)) return "BTCUSD"
   if (/ethereum|\beth\b/i.test(first)) return "ETHUSD"
 
@@ -93,6 +102,11 @@ JBSymbol.normalize = function normalize(raw) {
   if (normalized.length > 12) {
     const known = JBSymbol.extractKnownTicker(normalized)
     if (known) return known
+    if (/BANKNIFTY/.test(normalized)) return "BANKNIFTY"
+    if (/FINNIFTY/.test(normalized)) return "FINNIFTY"
+    if (/NIFTY50/.test(normalized)) return "NIFTY50"
+    if (/NIFTY/.test(normalized)) return "NIFTY"
+    if (/SENSEX/.test(normalized)) return "SENSEX"
     return ""
   }
 
