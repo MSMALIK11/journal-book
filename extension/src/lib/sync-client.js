@@ -953,18 +953,13 @@ JBSync.sendTelegramScreenshotTest = async function sendTelegramScreenshotTest(co
   return JBSync.postJson(`${config.apiUrl}/api/sync/telegram-screenshot-test`, config.syncToken, payload)
 }
 
-JBSync.sendFollowUpChartPhoto = function sendFollowUpChartPhoto(config, screenshotPromise, syncResult) {
-  const imported = Number(syncResult?.imported) || 0
-  const updated = Number(syncResult?.updated) || 0
-  const closedStale = Number(syncResult?.closedStale) || 0
-  if (imported <= 0 && updated - closedStale <= 0) return
-
-  void Promise.resolve(screenshotPromise)
-    .then((screenshotJpeg) => {
-      if (!JBSync.isChartScreenshotDataUrl(screenshotJpeg) || !config.syncToken) return null
-      return JBSync.sendTelegramScreenshotTest(config, { screenshotJpeg, followUp: true })
-    })
-    .catch(() => null)
+JBSync.awaitChartScreenshot = async function awaitChartScreenshot(screenshotPromise) {
+  try {
+    const screenshotJpeg = await screenshotPromise
+    return JBSync.isChartScreenshotDataUrl(screenshotJpeg) ? screenshotJpeg : null
+  } catch {
+    return null
+  }
 }
 
 JBSync.formatByAccountMessage = function formatByAccountMessage(byAccount) {
@@ -1357,8 +1352,8 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
   const syncResult = await JBSync.syncTrades(newOrUpdated, config, symbol, {
     reconcileFromTrades: stamped,
     reconcile: true,
+    screenshotJpeg: await JBSync.awaitChartScreenshot(screenshotPromise),
   })
-  JBSync.sendFollowUpChartPhoto(config, screenshotPromise, syncResult)
 
   const closedStale = syncResult.closedStale || 0
   if (syncResult.imported > 0) {
@@ -1504,8 +1499,8 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
     syncResult = await JBSync.syncTrades(newOrUpdated, config, chartSymbol, {
       reconcileFromTrades: result.trades,
       reconcile: scrapedOpens.length > 0,
+      screenshotJpeg: await JBSync.awaitChartScreenshot(screenshotPromise),
     })
-    JBSync.sendFollowUpChartPhoto(config, screenshotPromise, syncResult)
   }
 
   const closedStale = syncResult.closedStale || 0

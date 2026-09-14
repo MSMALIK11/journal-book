@@ -15,6 +15,20 @@ try {
 const TELEGRAM_API = "https://api.telegram.org"
 const PREFS_CACHE_TTL_MS = 60_000
 const TELEGRAM_FETCH_ATTEMPTS = 3
+const PHOTO_DEDUPE_MS = 90_000
+const recentPhotoKeys = new Map<string, number>()
+
+function photoDedupeKey(userId: string, event: { kind: string; instrument: string; side: string }) {
+  return `${userId}:${event.kind}:${event.instrument}:${event.side}`.toUpperCase()
+}
+
+function claimTradePhotoSlot(userId: string, event: { kind: string; instrument: string; side: string }) {
+  const key = photoDedupeKey(userId, event)
+  const prev = recentPhotoKeys.get(key) || 0
+  if (Date.now() - prev < PHOTO_DEDUPE_MS) return false
+  recentPhotoKeys.set(key, Date.now())
+  return true
+}
 
 const prefsCache = new Map<string, { prefs: TelegramPreferences; at: number }>()
 let telegramWarmed = false
@@ -338,6 +352,9 @@ export async function sendTelegramChartFollowUp(
   const chatId = resolveTelegramChatId(prefs.chatId)
   if (!chatId) return { ok: false, error: "Telegram chat ID is missing" }
   if (!prefs.enabled) return { ok: false, error: "Telegram alerts are disabled" }
+  if (!claimTradePhotoSlot(userId, { kind: "followup", instrument: "CHART", side: "ANY" })) {
+    return { ok: true }
+  }
 
   return sendTelegramPhoto(chatId, photo, "")
 }
@@ -394,7 +411,7 @@ export async function notifyTelegramTradeEvent(
       return result
     }
 
-    if (!options?.force && options?.photo?.length) {
+    if (!options?.force && options?.photo?.length && claimTradePhotoSlot(userId, event)) {
       void sendTelegramPhoto(chatId, options.photo, "").catch((error) => {
         console.warn("[telegram] follow-up photo failed:", error)
       })
