@@ -103,18 +103,29 @@ export async function reconcileStaleOpenTrades(
   if (!stale.length) return 0
 
   const keepers = openRows.filter((trade) => !stale.includes(trade))
-  const now = new Date()
   for (const trade of stale) {
     const symbol = canonicalInstrumentSymbol(trade.instrument) || trade.instrument
-    const keeper = keepers
+    const liveKeeper = [...keepers, ...confirmedActive]
       .filter((row) => {
         const rowSymbol = canonicalInstrumentSymbol(row.instrument) || row.instrument
-        return rowSymbol === symbol && row.trade_type === trade.trade_type
+        return rowSymbol === symbol
       })
       .sort((a, b) => (b.entry_date?.getTime?.() ?? 0) - (a.entry_date?.getTime?.() ?? 0))[0]
 
-    const exit_price = keeper?.entry_price ?? trade.entry_price
-    const exit_date = keeper?.entry_date || now
+    const { exit_date, exit_price } = await findReversalExitFill(userId, trade, {
+      entry_date: liveKeeper?.entry_date,
+      entry_price: liveKeeper?.entry_price,
+    })
+
+    if (
+      !exit_date ||
+      exit_price == null ||
+      !Number.isFinite(exit_price) ||
+      exit_price <= 0
+    ) {
+      continue
+    }
+
     const metrics = sanitizeTvClosedEconomics({
       trade_type: trade.trade_type,
       entry_price: trade.entry_price,

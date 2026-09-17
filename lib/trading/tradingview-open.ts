@@ -118,3 +118,39 @@ export function isOpenSyncedTrade(trade: {
   if (trade.exit_date) return false
   return true
 }
+
+export type TvActiveOpenHint = {
+  externalId?: string
+  entryDatetime?: string
+  direction?: "long" | "short"
+  tradeNumber?: number
+}
+
+/** pyramiding=0 — trust the scraped TV table: one live Open row (highest trade #). */
+export function pickTvActiveOpens(
+  trades: {
+    tradeNumber?: number
+    direction?: "long" | "short"
+    entry?: { datetime?: string }
+    exit?: { datetime?: string; signal?: string } | null
+    netPnl?: number
+    returnPct?: number
+  }[],
+): TvActiveOpenHint[] {
+  const opens = trades.filter((trade) => isOpenTvTrade(trade))
+  if (!opens.length) return []
+
+  const live = opens.reduce((best, trade) => {
+    const num = Number(trade.tradeNumber) || 0
+    const bestNum = Number(best.tradeNumber) || 0
+    return num > bestNum ? trade : best
+  }, opens[0])
+
+  return [
+    {
+      entryDatetime: live.entry?.datetime,
+      direction: live.direction,
+      tradeNumber: live.tradeNumber,
+    },
+  ]
+}

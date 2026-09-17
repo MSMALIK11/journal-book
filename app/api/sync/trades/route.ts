@@ -7,7 +7,7 @@ import { sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 import { dropSupersededOpenTradesFromPayload, resolveSyncedInstrument } from "@/lib/trading/price-sanity"
 import { closeDuplicateLiveOpens, enforceOneLiveOpenPerInstrument, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, healWrongReversalCloses, purgeSupersededOpenTrades, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
-import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
+import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades, pickTvActiveOpens, type TvActiveOpenHint } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, isOpenCoveredByLaterClose, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
 import { publishAccountsUpdated, publishTradesUpdated } from "@/lib/sync-events"
@@ -26,6 +26,30 @@ import { withUserSyncLock } from "@/lib/trading/sync-lock"
 import { tradingViewSyncSchema } from "@/lib/validations/tradingview-sync"
 import { decodeScreenshotJpeg } from "@/lib/telegram/screenshot"
 import { runDeltaAutoTradeForFills } from "@/lib/broker/delta-auto-trade"
+
+function mergeActiveOpenHints(
+  scraped: TvActiveOpenHint[],
+  payload?: { opens?: TvActiveOpenHint[] } | null,
+): TvActiveOpenHint[] {
+  const all = [...scraped, ...(payload?.opens || [])]
+  if (!all.length) return []
+  const live = all.reduce((best, hint) => {
+    const num = Number(hint.tradeNumber) || 0
+    const bestNum = Number(best.tradeNumber) || 0
+    return num > bestNum ? hint : best
+  }, all[0])
+  return [live]
+}
+
+function hasNewerTvOpen(
+  incomingTrades: { tradeNumber?: number; entry?: { datetime?: string }; exit?: { datetime?: string; signal?: string } | null; netPnl?: number; returnPct?: number }[],
+  tvTrade: { tradeNumber?: number },
+) {
+  const num = Number(tvTrade.tradeNumber) || 0
+  return incomingTrades.some(
+    (row) => isOpenTvTrade(row) && (Number(row.tradeNumber) || 0) > num,
+  )
+}
 
 function mergeSyncedTrade(
   existing: InstanceType<typeof Trade>,
@@ -435,7 +459,12 @@ export async function POST(request: NextRequest) {
       const dbStillOpen = !existing.exit_date
 
       // Recover a prior glitchy poll that synthetic-closed a still-live TV row.
-      if (tvStillOpen && existing.exit_date && sameEntryPrice(existing.entry_price, mapped.entry_price)) {
+      if (
+        tvStillOpen &&
+        existing.exit_date &&
+        sameEntryPrice(existing.entry_price, mapped.entry_price) &&
+        !hasNewerTvOpen(incomingTrades, tvTrade)
+      ) {
         existing.set("exit_date", null)
         existing.set("exit_price", null)
         existing.set("net_pnl", null)
@@ -588,12 +617,22 @@ export async function POST(request: NextRequest) {
     if (healedReversals) updated += healedReversals
 
     let closedStale = reversedOpens.length + healedReversals
-    if (parsed.data.reconcileOpens) {
-      closedStale = await reconcileStaleOpenTrades(
-        auth.userId,
-        parsed.data.reconcileOpens.instrument,
-        parsed.data.reconcileOpens.opens,
-      )
+    const reconcileInstrument =
+      chartSymbolOverride ||
+      parsed.data.reconcileOpens?.instrument ||
+      canonicalInstrumentSymbol(incomingTrades[0]?.instrument || "")
+    const scrapedOpens = reconcileInstrument
+      ? pickTvActiveOpens(
+          incomingTrades.filter(
+            (row) =>
+              canonicalInstrumentSymbol(row.instrument || "") === reconcileInstrument ||
+              row.instrument === reconcileInstrument,
+          ),
+        )
+      : []
+    const activeOpens = mergeActiveOpenHints(scrapedOpens, parsed.data.reconcileOpens)
+    if (reconcileInstrument && activeOpens.length) {
+      closedStale += await reconcileStaleOpenTrades(auth.userId, reconcileInstrument, activeOpens)
     }
     const purged = await purgeSupersededOpenTrades(auth.userId)
     closedStale += purged.deleted

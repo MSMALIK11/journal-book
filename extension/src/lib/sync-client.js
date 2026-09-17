@@ -1001,18 +1001,32 @@ JBSync.ensureChartAccount = async function ensureChartAccount(config, chartSymbo
   })
 }
 
+/** pyramiding=0 — TV List of trades has at most one live Open row (highest trade #). */
+JBSync.pickLiveOpenHints = function pickLiveOpenHints(trades) {
+  const opens = (trades || []).filter((trade) => JBSync.isOpenTrade(trade))
+  if (!opens.length) return []
+
+  const live = opens.reduce((best, trade) => {
+    const num = Number(trade.tradeNumber) || 0
+    const bestNum = Number(best.tradeNumber) || 0
+    return num > bestNum ? trade : best
+  }, opens[0])
+
+  return [
+    {
+      externalId: JBSync.buildExternalId(live),
+      entryDatetime: live.entry?.datetime || "",
+      direction: live.direction,
+      tradeNumber: live.tradeNumber,
+    },
+  ]
+}
+
 JBSync.buildReconcileOpensPayload = function buildReconcileOpensPayload(trades, chartSymbol) {
   const instrument = JBSync.normalizeChartSymbol(chartSymbol)
   if (!instrument) return null
 
-  const opens = JBSync.keepLatestOpenPerSide(trades || [])
-    .filter((trade) => JBSync.isOpenTrade(trade))
-    .map((trade) => ({
-      externalId: JBSync.buildExternalId(trade),
-      entryDatetime: trade.entry?.datetime || "",
-      direction: trade.direction,
-      tradeNumber: trade.tradeNumber,
-    }))
+  const opens = JBSync.pickLiveOpenHints(trades || [])
 
   return { instrument, opens }
 }
