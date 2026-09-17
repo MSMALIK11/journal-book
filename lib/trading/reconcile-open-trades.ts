@@ -201,6 +201,61 @@ export async function closeDuplicateLiveOpens(userId: string) {
   return closed
 }
 
+function liveOpenInstrumentKey(trade: { accountId?: unknown; instrument?: string }) {
+  const symbol = canonicalInstrumentSymbol(trade.instrument || "") || String(trade.instrument || "")
+  return `${String(trade.accountId || "")}:${symbol}`
+}
+
+/**
+ * pyramiding=0 — only one live position per instrument/account.
+ * Close older opens, including opposite-side legs missed when TV reverses Long→Short.
+ */
+export async function enforceOneLiveOpenPerInstrument(userId: string) {
+  const opens = await Trade.find({
+    userId,
+    source: "tradingview",
+    $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+  }).sort({ entry_date: -1 })
+
+  const keeperByKey = new Map<string, (typeof opens)[number]>()
+  const closed: typeof opens = []
+
+  for (const trade of opens) {
+    const key = liveOpenInstrumentKey(trade)
+    if (!key.endsWith(":") && key !== ":") {
+      const keeper = keeperByKey.get(key)
+      if (!keeper) {
+        keeperByKey.set(key, trade)
+        continue
+      }
+
+      const exit_date = keeper.entry_date || new Date()
+      const exit_price = keeper.entry_price ?? trade.entry_price
+      if (exit_price == null || !Number.isFinite(exit_price) || exit_price <= 0) continue
+
+      const metrics = sanitizeTvClosedEconomics({
+        trade_type: trade.trade_type,
+        entry_price: trade.entry_price,
+        exit_price,
+        quantity: trade.quantity,
+        contract_size: trade.contract_size,
+        instrument: trade.instrument,
+        net_pnl: trade.net_pnl,
+        return_pct: trade.return_pct,
+      })
+
+      trade.exit_date = exit_date
+      trade.exit_price = exit_price
+      trade.net_pnl = metrics.net_pnl
+      trade.return_pct = metrics.return_pct
+      await trade.save()
+      closed.push(trade)
+    }
+  }
+
+  return closed
+}
+
 /**
  * Re-open rows that were synthetic-closed at ~same price as entry when a duplicate open existed.
  * Fixes journal showing a fake ~$0 exit while the position is still live on TV.

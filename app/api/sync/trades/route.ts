@@ -5,7 +5,7 @@ import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/tr
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 import { dropSupersededOpenTradesFromPayload, resolveSyncedInstrument } from "@/lib/trading/price-sanity"
-import { closeDuplicateLiveOpens, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, purgeSupersededOpenTrades, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { closeDuplicateLiveOpens, enforceOneLiveOpenPerInstrument, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, purgeSupersededOpenTrades, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, isOpenCoveredByLaterClose, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
@@ -208,9 +208,10 @@ export async function POST(request: NextRequest) {
     if (parsed.data.trades.length === 0) {
       await healMisclosedSameFillOpens(auth.userId)
       await closeDuplicateLiveOpens(auth.userId)
-      let closedStale = 0
+      const reversedOpens = await enforceOneLiveOpenPerInstrument(auth.userId)
+      let closedStale = reversedOpens.length
       if (parsed.data.reconcileOpens) {
-        closedStale = await reconcileStaleOpenTrades(
+        closedStale += await reconcileStaleOpenTrades(
           auth.userId,
           parsed.data.reconcileOpens.instrument,
           parsed.data.reconcileOpens.opens,
@@ -572,7 +573,18 @@ export async function POST(request: NextRequest) {
       updated += 1
     }
 
-    let closedStale = 0
+    const reversedOpens = await enforceOneLiveOpenPerInstrument(auth.userId)
+    for (const row of reversedOpens) {
+      const accountId = String(row.accountId)
+      touchedAccounts.add(accountId)
+      if (!byAccount[accountId]) {
+        byAccount[accountId] = { name: "TradingView", imported: 0, updated: 0, skipped: 0 }
+      }
+      byAccount[accountId].updated += 1
+      updated += 1
+    }
+
+    let closedStale = reversedOpens.length
     if (parsed.data.reconcileOpens) {
       closedStale = await reconcileStaleOpenTrades(
         auth.userId,
