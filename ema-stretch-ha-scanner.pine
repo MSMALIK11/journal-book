@@ -40,6 +40,7 @@ avoidShortTopWick = input.bool(false, "Avoid Short With Top Wick", group=filterG
 scannerGroup = "Heikin Ashi Multi Pair Scanner"
 
 confirmedOnly = input.bool(false, "Confirmed Closed Candle Only", group=scannerGroup)
+slTpTimeframe = input.timeframe("", "SL/TP Column Timeframe (empty = chart)", group=scannerGroup)
 
 enableGOLD = input.bool(true, "Enable GOLD", group=scannerGroup)
 enableBTC = input.bool(true, "Enable BTC", group=scannerGroup)
@@ -307,6 +308,46 @@ getScannerSignals(_symbol, _timeframe) =>
          ],
          lookahead=barmerge.lookahead_off)
 
+// Same HA stop/target math as strategy entries — per symbol, so GOLD/BTC keep their own prices.
+f_scannerLevels() =>
+    _ema = ta.ema(close, emaLen)
+    longSig = confirmedOnly ? getLongSignal(_ema)[1] : getLongSignal(_ema)
+    shortSig = confirmedOnly ? getShortSignal(_ema)[1] : getShortSignal(_ema)
+    float stop = na
+    float target = na
+
+    if longSig
+        stop := low[1]
+        risk = close - stop
+        target := risk > syminfo.mintick ? close + risk * rr : na
+    else if shortSig
+        stop := high[1]
+        risk = stop - close
+        target := risk > syminfo.mintick ? close - risk * rr : na
+
+    [stop, target, longSig, shortSig]
+
+getScannerLevels(_symbol, _timeframe) =>
+    request.security(
+         ticker.heikinashi(_symbol),
+         _timeframe,
+         f_scannerLevels(),
+         lookahead=barmerge.lookahead_off)
+
+slTpTf = slTpTimeframe == "" ? timeframe.period : slTpTimeframe
+
+f_slTpCellText(_longSignal, _shortSignal, _stop, _target, _pairEnabled) =>
+    scannerEnabled = _pairEnabled and (enableLong or enableShort)
+    validLong = enableLong and _longSignal
+    validShort = enableShort and _shortSignal
+    hasLevels = not na(_stop) and not na(_target)
+
+    not scannerEnabled
+         ? "OFF"
+         : (validLong or validShort) and hasLevels
+             ? f_entryTableComment(validLong ? "LONG" : "SHORT", _target, _stop)
+             : "-"
+
 //────────────────────────────────────────────
 // GOLD
 //────────────────────────────────────────────
@@ -367,6 +408,13 @@ getScannerSignals(_symbol, _timeframe) =>
 [oilM30Long, oilM30Short] = getScannerSignals(oilSymbol, "30")
 [oilH1Long, oilH1Short] = getScannerSignals(oilSymbol, "60")
 
+[goldSl, goldTp, goldSlLong, goldSlShort] = getScannerLevels(goldSymbol, slTpTf)
+[btcSl, btcTp, btcSlLong, btcSlShort] = getScannerLevels(btcSymbol, slTpTf)
+[ethSl, ethTp, ethSlLong, ethSlShort] = getScannerLevels(ethSymbol, slTpTf)
+[solSl, solTp, solSlLong, solSlShort] = getScannerLevels(solSymbol, slTpTf)
+[xagSl, xagTp, xagSlLong, xagSlShort] = getScannerLevels(xagSymbol, slTpTf)
+[oilSl, oilTp, oilSlLong, oilSlShort] = getScannerLevels(oilSymbol, slTpTf)
+
 //────────────────────────────────────────────
 // DASHBOARD COLORS
 //────────────────────────────────────────────
@@ -389,7 +437,7 @@ netBg = todayNet >= 0
 //────────────────────────────────────────────
 var table scannerTable = table.new(
      position.top_right,
-     7,
+     8,
      10,
      bgcolor=pairBg,
      frame_color=color.gray,
@@ -398,13 +446,13 @@ var table scannerTable = table.new(
      border_width=1)
 
 // Merge summary rows once.
-var bool summaryMerged = false
+var bool summaryMergedSlTp = false
 
-if not summaryMerged
-    table.merge_cells(scannerTable, 0, 7, 6, 7)
-    table.merge_cells(scannerTable, 0, 8, 6, 8)
-    table.merge_cells(scannerTable, 0, 9, 6, 9)
-    summaryMerged := true
+if not summaryMergedSlTp
+    table.merge_cells(scannerTable, 0, 7, 7, 7)
+    table.merge_cells(scannerTable, 0, 8, 7, 8)
+    table.merge_cells(scannerTable, 0, 9, 7, 9)
+    summaryMergedSlTp := true
 
 drawCell(_column, _row, _longSignal, _shortSignal, _pairEnabled) =>
     scannerEnabled = _pairEnabled and (enableLong or enableShort)
@@ -437,6 +485,29 @@ drawCell(_column, _row, _longSignal, _shortSignal, _pairEnabled) =>
          text_halign=text.align_center,
          text_size=size.tiny)
 
+drawSlTpCell(_row, _longSignal, _shortSignal, _stop, _target, _pairEnabled) =>
+    scannerEnabled = _pairEnabled and (enableLong or enableShort)
+    validLong = enableLong and _longSignal
+    validShort = enableShort and _shortSignal
+    slTpText = f_slTpCellText(_longSignal, _shortSignal, _stop, _target, _pairEnabled)
+    slTpBackground = not scannerEnabled
+         ? disabledBg
+         : validLong
+             ? longBg
+             : validShort
+                 ? shortBg
+                 : waitBg
+
+    table.cell(
+         scannerTable,
+         7,
+         _row,
+         slTpText,
+         text_color=whiteText,
+         bgcolor=slTpBackground,
+         text_halign=text.align_center,
+         text_size=size.tiny)
+
 drawRow(
      _row,
      _name,
@@ -452,7 +523,11 @@ drawRow(
      _m30Long,
      _m30Short,
      _h1Long,
-     _h1Short) =>
+     _h1Short,
+     _slLong,
+     _slShort,
+     _stop,
+     _target) =>
 
     rowEnabled = _enabled and (enableLong or enableShort)
 
@@ -472,6 +547,7 @@ drawRow(
     drawCell(4, _row, _m15Long, _m15Short, _enabled)
     drawCell(5, _row, _m30Long, _m30Short, _enabled)
     drawCell(6, _row, _h1Long, _h1Short, _enabled)
+    drawSlTpCell(_row, _slLong, _slShort, _stop, _target, _enabled)
 
 drawSummaryRow(_row, _label, _value, _background) =>
     table.cell(
@@ -495,6 +571,7 @@ if barstate.islast
     table.cell(scannerTable, 4, 0, "M15", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
     table.cell(scannerTable, 5, 0, "M30", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
     table.cell(scannerTable, 6, 0, "H1", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
+    table.cell(scannerTable, 7, 0, "SL/TP", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
 
     drawRow(
          1, "GOLD", enableGOLD,
@@ -503,7 +580,8 @@ if barstate.islast
          goldM5Long, goldM5Short,
          goldM15Long, goldM15Short,
          goldM30Long, goldM30Short,
-         goldH1Long, goldH1Short)
+         goldH1Long, goldH1Short,
+         goldSlLong, goldSlShort, goldSl, goldTp)
 
     drawRow(
          2, "BTC", enableBTC,
@@ -512,7 +590,8 @@ if barstate.islast
          btcM5Long, btcM5Short,
          btcM15Long, btcM15Short,
          btcM30Long, btcM30Short,
-         btcH1Long, btcH1Short)
+         btcH1Long, btcH1Short,
+         btcSlLong, btcSlShort, btcSl, btcTp)
 
     drawRow(
          3, "ETH", enableETH,
@@ -521,7 +600,8 @@ if barstate.islast
          ethM5Long, ethM5Short,
          ethM15Long, ethM15Short,
          ethM30Long, ethM30Short,
-         ethH1Long, ethH1Short)
+         ethH1Long, ethH1Short,
+         ethSlLong, ethSlShort, ethSl, ethTp)
 
     drawRow(
          4, "SOLUSD", enableSOL,
@@ -530,7 +610,8 @@ if barstate.islast
          solM5Long, solM5Short,
          solM15Long, solM15Short,
          solM30Long, solM30Short,
-         solH1Long, solH1Short)
+         solH1Long, solH1Short,
+         solSlLong, solSlShort, solSl, solTp)
 
     drawRow(
          5, "XAGUSD", enableXAG,
@@ -539,7 +620,8 @@ if barstate.islast
          xagM5Long, xagM5Short,
          xagM15Long, xagM15Short,
          xagM30Long, xagM30Short,
-         xagH1Long, xagH1Short)
+         xagH1Long, xagH1Short,
+         xagSlLong, xagSlShort, xagSl, xagTp)
 
     drawRow(
          6, "USOIL", enableOIL,
@@ -548,7 +630,8 @@ if barstate.islast
          oilM5Long, oilM5Short,
          oilM15Long, oilM15Short,
          oilM30Long, oilM30Short,
-         oilH1Long, oilH1Short)
+         oilH1Long, oilH1Short,
+         oilSlLong, oilSlShort, oilSl, oilTp)
 
     drawSummaryRow(
          7,
