@@ -90,6 +90,8 @@ export type StageProjection = {
   historicalDdPct: number
   stressDdPct: number
   stressDdUsd: number
+  payoutUsd: number
+  dailyLossCap: number
   monteCarlo: MonteCarloResult
 }
 
@@ -132,6 +134,7 @@ export type FundedRoadmapModel = {
   drawdownHist: { label: string; count: number }[]
   projectedEquity: { trade: number; equity: number }[]
   scalingCurve: { label: string; size: number; days: number | null }[]
+  realizedPnl: number
 }
 
 const SESSION_GROUPS: Record<Exclude<SessionFilter, "all">, TradingSession[]> = {
@@ -348,6 +351,7 @@ export function buildStageProjection(
   const optimisticTrades = mc.p10TradesToTarget ?? (naive != null ? naive * 0.7 : null)
   const baseTrades = mc.medianTradesToTarget ?? naive
   const conservativeTrades = mc.p90TradesToTarget ?? (naive != null ? naive * 1.6 : null)
+  const conservativeDaysRaw = tradesToDays(conservativeTrades, profile.avgTradesPerDay)
 
   return {
     id: level.id,
@@ -368,11 +372,15 @@ export function buildStageProjection(
     expectedDays: tradesToDays(naive, profile.avgTradesPerDay),
     optimisticDays: tradesToDays(optimisticTrades, profile.avgTradesPerDay),
     baseDays: tradesToDays(baseTrades, profile.avgTradesPerDay),
-    conservativeDays: tradesToDays(conservativeTrades, profile.avgTradesPerDay),
-    safetyBufferDays: tradesToDays(conservativeTrades, profile.avgTradesPerDay),
+    conservativeDays:
+      conservativeDaysRaw == null ? null : Math.max(conservativeDaysRaw, rules.minTradingDays),
+    safetyBufferDays:
+      conservativeDaysRaw == null ? null : Math.max(conservativeDaysRaw, rules.minTradingDays),
     historicalDdPct: profile.maxDrawdownPct,
     stressDdPct,
     stressDdUsd,
+    payoutUsd: profitTarget * (rules.profitSplitPct / 100),
+    dailyLossCap: level.size * (rules.dailyDrawdownPct / 100),
     monteCarlo: compactMonteCarlo(mc),
   }
 }
@@ -515,6 +523,7 @@ export function buildFundedRoadmap(input: {
       size: stage.size,
       days: stage.optimisticDays,
     })),
+    realizedPnl: input.analytics.overview.netPnl,
   }
 }
 

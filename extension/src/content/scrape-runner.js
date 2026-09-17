@@ -36,8 +36,19 @@ async function jbScrapeTrades() {
 
   function parseSize(value) {
     if (!value) return 1
-    const match = String(value).match(/^([\d.,]+)/)
-    return match ? parseNumber(match[1]) || 1 : 1
+    const withoutNotional = String(value).replace(/[\d.,]+\s*[KkMm]\b[\s\S]*/g, " ").trim()
+    const num = parseNumber(withoutNotional.match(/(\d+(?:[.,]\d+)?)/)?.[1])
+    return Number.isFinite(num) && num > 0 ? num : 1
+  }
+
+  function clampScrapedPnl(direction, entryPrice, exitPrice, size, netPnl) {
+    if (typeof netPnl !== "number" || entryPrice == null || exitPrice == null) return netPnl
+    const signed = direction === "long" ? exitPrice - entryPrice : entryPrice - exitPrice
+    const qty = size > 20 ? 10 : size > 0 ? size : 1
+    const fill = Math.round(signed * qty * 100) / 100
+    const slack = Math.max(2, Math.abs(fill) * 0.35)
+    if (Math.abs(netPnl - fill) <= slack) return netPnl
+    return fill
   }
 
   function getStrategyName() {
@@ -133,7 +144,14 @@ async function jbScrapeTrades() {
         existing.direction = direction
       } else {
         existing.exit = { datetime, price, signal }
-        existing.netPnl = parseSignedNumber(cells[typeIdx + 5])
+        const rawPnl = parseSignedNumber(cells[typeIdx + 5])
+        existing.netPnl = clampScrapedPnl(
+          existing.direction || direction,
+          existing.entry?.price,
+          price,
+          existing.entry?.size,
+          rawPnl,
+        )
         existing.returnPct = parsePercent(cells[typeIdx + 6])
         existing.commission = parseNumber(cells[typeIdx + 7])
       }
@@ -172,7 +190,13 @@ async function jbScrapeTrades() {
           if (!datetime || !price) break
           const existing = trades.get(tradeNumber) || { tradeNumber, direction, instrument, strategy, entry: null, exit: null }
           existing.exit = { datetime, price, signal }
-          existing.netPnl = parseSignedNumber(lines[j + 5])
+          existing.netPnl = clampScrapedPnl(
+            existing.direction || direction,
+            existing.entry?.price,
+            price,
+            existing.entry?.size,
+            parseSignedNumber(lines[j + 5]),
+          )
           trades.set(tradeNumber, existing)
           break
         }

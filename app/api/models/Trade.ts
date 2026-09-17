@@ -1,4 +1,5 @@
 import mongoose from "mongoose"
+import { clampTvCryptoQuantity, sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 
 export interface ITrade {
   _id?: string
@@ -217,5 +218,36 @@ TradeSchema.index({ userId: 1, accountId: 1 })
 // The extension's sync snapshot queries by userId + source and sorts by entry_date. Without this
 // the newest-slice lookup scans the user's whole history and sorts in memory.
 TradeSchema.index({ userId: 1, source: 1, entry_date: -1 })
+
+TradeSchema.pre("validate", function () {
+  if (this.source !== "tradingview") return
+
+  this.quantity = clampTvCryptoQuantity({
+    instrument: this.instrument,
+    entry_price: this.entry_price,
+    contract_size: this.contract_size,
+    quantity: this.quantity,
+  })
+
+  if (this.exit_date && this.exit_price != null && this.entry_price > 0) {
+    const nextFields = sanitizeTvClosedEconomics({
+      trade_type: this.trade_type,
+      entry_price: this.entry_price,
+      exit_price: this.exit_price,
+      quantity: this.quantity,
+      contract_size: this.contract_size,
+      instrument: this.instrument,
+      net_pnl: this.net_pnl,
+      return_pct: this.return_pct,
+    })
+    this.net_pnl = nextFields.net_pnl
+    this.return_pct = nextFields.return_pct
+    this.quantity = nextFields.quantity
+  }
+})
+
+if (process.env.NODE_ENV !== "production" && mongoose.models.Trade) {
+  mongoose.deleteModel("Trade")
+}
 
 export default mongoose.models.Trade || mongoose.model<ITrade>("Trade", TradeSchema)

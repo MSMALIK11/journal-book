@@ -1,5 +1,5 @@
 import { persistClosedTradeAlert, persistNewTradeAlert } from "@/lib/trading/alerts-server"
-import { isTpSlSignal } from "@/lib/trading/tradingview-open"
+import { isOpenTvTrade, isTpSlSignal } from "@/lib/trading/tradingview-open"
 
 export const RECENT_SCALP_MS = 3 * 60_000
 
@@ -35,18 +35,29 @@ export function isRecentScalp(exitDate?: Date | null) {
   return Number.isFinite(ms) && Date.now() - ms <= RECENT_SCALP_MS
 }
 
+type LiveCloseTvTrade = {
+  entry?: { datetime?: string; price?: number; signal?: string }
+  exit?: { datetime?: string; price?: number; signal?: string } | null
+  netPnl?: number
+  returnPct?: number
+}
+
 /** Mapper already treated this as closed. Extra check: real exit fill, not a painted ghost. */
-export function isRealLiveClose(mapped: {
-  exit_date?: Date | null
-  exit_price?: number
-  signal?: string | null
-  stop_loss?: number
-  target?: number
-  net_pnl?: number
-  return_pct?: number
-}) {
+export function isRealLiveClose(
+  mapped: {
+    exit_date?: Date | null
+    exit_price?: number
+    signal?: string | null
+    stop_loss?: number
+    target?: number
+    net_pnl?: number
+    return_pct?: number
+  },
+  tvTrade?: LiveCloseTvTrade,
+) {
   if (!mapped.exit_date) return false
   if (!Number.isFinite(mapped.exit_price) || (mapped.exit_price ?? 0) <= 0) return false
+  if (tvTrade && isOpenTvTrade(tvTrade)) return false
   if (isTpSlSignal(mapped.signal)) return true
   if (typeof mapped.stop_loss === "number" || typeof mapped.target === "number") return true
   if (typeof mapped.net_pnl === "number" && Number.isFinite(mapped.net_pnl)) {

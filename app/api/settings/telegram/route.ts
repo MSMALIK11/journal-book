@@ -5,10 +5,12 @@ import User from "@/app/api/models/User"
 import { getSession } from "@/lib/session"
 import {
   DEFAULT_TELEGRAM_PREFERENCES,
+  isValidDailySummaryTime,
   normalizeChatId,
   normalizeTelegramPreferences,
   type TelegramPreferences,
 } from "@/lib/telegram/settings"
+import { sendDailyTelegramSummary } from "@/lib/telegram/daily-summary"
 import {
   DEMO_TELEGRAM_TRADE,
   detectTelegramChatIdFromStart,
@@ -27,10 +29,15 @@ const telegramSchema = z.object({
   chatId: z.string().max(32).optional(),
   notifyOpen: z.boolean().optional(),
   notifyClose: z.boolean().optional(),
+  dailySummaryEnabled: z.boolean().optional(),
+  dailySummaryTime: z
+    .string()
+    .optional()
+    .refine((value) => value == null || isValidDailySummaryTime(value), "Invalid time (use HH:mm)"),
 })
 
 const telegramActionSchema = z.object({
-  action: z.enum(["test", "detect", "demo"]),
+  action: z.enum(["test", "detect", "demo", "summary"]),
   accountId: z.string().max(40).optional(),
 })
 
@@ -58,9 +65,10 @@ export async function GET(request: NextRequest) {
 
     warmTelegramConnection()
 
-    return NextResponse.json(
-      publicPreferences(user.telegramPreferences as Partial<TelegramPreferences> | undefined),
-    )
+    return NextResponse.json({
+      ...publicPreferences(user.telegramPreferences as Partial<TelegramPreferences> | undefined),
+      timezone: user.timezone || "Asia/Kolkata",
+    })
   } catch (error) {
     console.error("Failed to load Telegram preferences:", error)
     return NextResponse.json({ error: "Unable to load Telegram preferences" }, { status: 500 })
@@ -93,17 +101,22 @@ export async function PATCH(request: NextRequest) {
     const user = await loadUser(session.sub)
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 })
 
+    const existing = normalizeTelegramPreferences(
+      user.telegramPreferences as Partial<TelegramPreferences> | undefined,
+    )
     user.telegramPreferences = normalizeTelegramPreferences({
       ...DEFAULT_TELEGRAM_PREFERENCES,
-      ...(user.telegramPreferences || {}),
+      ...existing,
       ...parsed.data,
+      lastDailySummaryDayKey: existing.lastDailySummaryDayKey,
     })
     await user.save()
     invalidateTelegramPrefsCache(session.sub)
 
-    return NextResponse.json(
-      publicPreferences(user.telegramPreferences as TelegramPreferences),
-    )
+    return NextResponse.json({
+      ...publicPreferences(user.telegramPreferences as TelegramPreferences),
+      timezone: user.timezone || "Asia/Kolkata",
+    })
   } catch (error) {
     console.error("Failed to update Telegram preferences:", error)
     return NextResponse.json({ error: "Unable to update Telegram preferences" }, { status: 500 })
@@ -153,6 +166,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         ...publicPreferences(user.telegramPreferences as TelegramPreferences),
         message: "Telegram chat connected.",
+      })
+    }
+
+    if (parsed.data.action === "summary") {
+      const result = await sendDailyTelegramSummary(session.sub, { force: true })
+      if (!result.ok) {
+        return NextResponse.json({ error: result.error || "Failed to send summary" }, { status: 400 })
+      }
+      const prefs = await getTelegramPrefs(session.sub)
+      return NextResponse.json({
+        ...publicPreferences(prefs),
+        message: result.message || "Daily summary sent. Check Telegram.",
+        dayKey: result.dayKey,
+        closedCount: result.closedCount,
+        totalPnl: result.totalPnl,
       })
     }
 

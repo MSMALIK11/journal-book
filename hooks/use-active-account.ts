@@ -57,7 +57,8 @@ function revalidateAccountScopedData() {
         (path.startsWith("/api/trades") ||
           path.startsWith("/api/analytics") ||
           path.startsWith("/api/accounts") ||
-          path.startsWith("/api/alerts"))
+          path.startsWith("/api/alerts") ||
+          path.startsWith("/api/funded-roadmap"))
       )
     },
     undefined,
@@ -77,34 +78,40 @@ export function ActiveAccountProvider({ children }: { children: ReactNode }) {
   const switchAccount = useCallback(
     async (accountId: string) => {
       if (!accountId || accountId.startsWith("closed:")) return null
+      if (data?.activeAccountId === accountId) return null
 
-      const known = data?.accounts.some((account) => account.id === accountId)
-      if (data?.accounts.length && !known) {
-        const latest = await mutate()
-        if (!latest?.accounts.some((account) => account.id === accountId)) {
+      try {
+        const known = data?.accounts.some((account) => account.id === accountId)
+        if (data?.accounts.length && !known) {
+          const latest = await mutate()
+          if (!latest?.accounts.some((account) => account.id === accountId)) {
+            return null
+          }
+        }
+
+        const response = await authFetch("/api/accounts/switch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accountId }),
+        })
+        const result = await response.json().catch(() => ({}))
+        if (response.status === 404) {
+          await mutate()
           return null
         }
-      }
+        if (!response.ok) throw new Error(result.error || "Unable to switch account")
 
-      const response = await authFetch("/api/accounts/switch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId }),
-      })
-      const result = await response.json()
-      if (response.status === 404) {
         await mutate()
+        setSwitchVersion((value) => value + 1)
+        await revalidateAccountScopedData()
+
+        return result
+      } catch (error) {
+        console.error("Unable to switch account:", error)
         return null
       }
-      if (!response.ok) throw new Error(result.error || "Unable to switch account")
-
-      await mutate()
-      setSwitchVersion((value) => value + 1)
-      await revalidateAccountScopedData()
-
-      return result
     },
-    [data?.accounts, mutate],
+    [data?.accounts, data?.activeAccountId, mutate],
   )
 
   const revalidateSyncedData = useCallback(async () => {

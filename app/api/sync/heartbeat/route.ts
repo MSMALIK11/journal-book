@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import connectDB from "@/app/api/db/mongoose"
 import User from "@/app/api/models/User"
 import { connectedThresholdMs, touchSyncHeartbeat } from "@/lib/sync-heartbeat"
+import { maybeSendDueDailyTelegramSummary } from "@/lib/telegram/daily-summary"
 import { getSession } from "@/lib/session"
 import { withSyncCors } from "@/lib/sync-cors"
 import { getSyncAuth } from "@/lib/sync-auth"
@@ -26,6 +27,7 @@ export async function POST(request: NextRequest) {
     const extensionId = typeof body.extensionId === "string" ? body.extensionId.trim() : ""
 
     await touchSyncHeartbeat(auth.userId, pollIntervalSeconds, extensionId)
+    void maybeSendDueDailyTelegramSummary(auth.userId)
 
     return withSyncCors(
       request,

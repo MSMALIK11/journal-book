@@ -7,7 +7,7 @@ import { resolveInstrumentForUser } from "@/lib/instruments-server"
 import { getAccountContext } from "@/lib/active-account"
 import { getSession } from "@/lib/session"
 import { calculateProfit } from "@/lib/trading/calculator"
-import { healSignalLevels } from "@/lib/trading/reconcile-open-trades"
+import { healNotionalTvPnls, healSignalLevels } from "@/lib/trading/reconcile-open-trades"
 import { buildTradeListSummary } from "@/lib/trading/trade-list-summary"
 import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
 import { tradeSchema } from "@/lib/validations/trade"
@@ -79,6 +79,7 @@ export async function GET(request: NextRequest) {
 
     if (source === "tradingview" && page === 1) {
       await healSignalLevels(session.sub, accountId)
+      await healNotionalTvPnls(session.sub, accountId)
     }
 
     const [trades, total, summary] = await Promise.all([

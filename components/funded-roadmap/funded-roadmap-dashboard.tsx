@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import useSWR from "swr"
 import { format, subDays } from "date-fns"
 import Link from "next/link"
@@ -42,14 +42,21 @@ import {
   type DataSourceLabel,
   type DirectionFilter,
   type FundedRoadmapModel,
+  type RiskRecommendation,
   type ScenarioKey,
   type SessionFilter,
+  type StageProjection,
   type StageStatus,
+  type StrategyProfile,
   type WeekdayFilter,
 } from "@/lib/trading/funded-roadmap"
 import { cn } from "@/lib/utils"
 
-const SETTINGS_KEY = "jb-funded-roadmap-v1"
+const SETTINGS_PREFIX = "jb-funded-roadmap-v1"
+
+function settingsStorageKey(accountId?: string) {
+  return accountId ? `${SETTINGS_PREFIX}:${accountId}` : SETTINGS_PREFIX
+}
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -84,6 +91,7 @@ type PersistedSettings = {
   preset: string
   rules: FundedChallengeRules
   scenario: ScenarioKey
+  currentStageIndex: number
 }
 
 const fetcher = async (url: string) => {
@@ -102,8 +110,8 @@ function rangeToDates(preset: RangePreset) {
   }
 }
 
-function readSettings(): PersistedSettings {
-  const fallback: PersistedSettings = {
+function defaultSettings(): PersistedSettings {
+  return {
     riskMode: "percent",
     riskPercent: 1,
     customRisk: "",
@@ -111,10 +119,16 @@ function readSettings(): PersistedSettings {
     preset: "generic",
     rules: DEFAULT_FUNDED_RULES,
     scenario: "optimistic",
+    currentStageIndex: 0,
   }
+}
+
+function readSettings(accountId?: string): PersistedSettings {
+  const fallback = defaultSettings()
   if (typeof window === "undefined") return fallback
   try {
-    const raw = window.localStorage.getItem(SETTINGS_KEY)
+    const namespaced = accountId ? window.localStorage.getItem(settingsStorageKey(accountId)) : null
+    const raw = namespaced ?? window.localStorage.getItem(SETTINGS_PREFIX)
     if (!raw) return fallback
     return { ...fallback, ...JSON.parse(raw) }
   } catch {
@@ -165,9 +179,9 @@ function Kpi({
 }
 
 export function FundedRoadmapDashboard() {
-  const { activeAccountId, switchVersion } = useActiveAccount()
+  const { activeAccountId, activeAccount, switchVersion } = useActiveAccount()
   const saved = useMemo(() => readSettings(), [])
-  const [source, setSource] = useState<SourceFilter>("tradingview")
+  const [source, setSource] = useState<SourceFilter>("all")
   const [range, setRange] = useState<RangePreset>("all")
   const [strategy, setStrategy] = useState("all")
   const [instrument, setInstrument] = useState("all")
@@ -181,16 +195,58 @@ export function FundedRoadmapDashboard() {
   const [preset, setPreset] = useState(saved.preset)
   const [rules, setRules] = useState<FundedChallengeRules>(saved.rules)
   const [scenario, setScenario] = useState<ScenarioKey>(saved.scenario)
+  const [currentStageIndex, setCurrentStageIndex] = useState(saved.currentStageIndex)
   const [compareOn, setCompareOn] = useState(false)
   const [compareStrategy, setCompareStrategy] = useState("all")
   const [compareSession, setCompareSession] = useState<SessionFilter>("all")
+  const hydratedAccount = useRef<string | undefined>(undefined)
+  const skipNextPersist = useRef(true)
 
   useEffect(() => {
+    if (!activeAccountId) return
+    skipNextPersist.current = true
+    const next = readSettings(activeAccountId)
+    setRiskMode(next.riskMode)
+    setRiskPercent(next.riskPercent)
+    setCustomRisk(next.customRisk)
+    setFixedRisk(next.fixedRisk)
+    setPreset(next.preset)
+    setRules(next.rules)
+    setScenario(next.scenario)
+    setCurrentStageIndex(next.currentStageIndex)
+    if (hydratedAccount.current && hydratedAccount.current !== activeAccountId) {
+      setSource("all")
+      setRange("all")
+      setStrategy("all")
+      setInstrument("all")
+      setDirection("all")
+      setSession("all")
+      setWeekday("all")
+      setCompareOn(false)
+    }
+    hydratedAccount.current = activeAccountId
+  }, [activeAccountId])
+
+  useEffect(() => {
+    if (!activeAccountId) return
+    if (skipNextPersist.current) {
+      skipNextPersist.current = false
+      return
+    }
     window.localStorage.setItem(
-      SETTINGS_KEY,
-      JSON.stringify({ riskMode, riskPercent, customRisk, fixedRisk, preset, rules, scenario }),
+      settingsStorageKey(activeAccountId),
+      JSON.stringify({
+        riskMode,
+        riskPercent,
+        customRisk,
+        fixedRisk,
+        preset,
+        rules,
+        scenario,
+        currentStageIndex,
+      }),
     )
-  }, [riskMode, riskPercent, customRisk, fixedRisk, preset, rules, scenario])
+  }, [activeAccountId, riskMode, riskPercent, customRisk, fixedRisk, preset, rules, scenario, currentStageIndex])
 
   const effectiveRisk = customRisk.trim() ? Number(customRisk) : riskPercent
   const query = useMemo(() => {
@@ -208,6 +264,7 @@ export function FundedRoadmapDashboard() {
       dailyDrawdownPct: String(rules.dailyDrawdownPct),
       minTradingDays: String(rules.minTradingDays),
       profitSplitPct: String(rules.profitSplitPct),
+      currentStageIndex: String(currentStageIndex),
     })
     if (strategy !== "all") params.set("strategy", strategy)
     if (instrument !== "all") params.set("instrument", instrument)
@@ -228,6 +285,7 @@ export function FundedRoadmapDashboard() {
     strategy,
     instrument,
     range,
+    currentStageIndex,
   ])
 
   const compareQuery = useMemo(() => {
@@ -289,7 +347,8 @@ export function FundedRoadmapDashboard() {
           <div>
             <p className="font-medium">Not enough data to generate a reliable roadmap.</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Minimum recommended: 100 closed trades. Import from Live Sync or widen the filter.
+              Import closed trades on {activeAccount?.name ?? "this account"} first, or switch source to All.
+              Minimum recommended: 100 closed trades.
             </p>
           </div>
           <Button asChild variant="outline" className="border-cyan-400/30 text-cyan-200">
@@ -301,9 +360,15 @@ export function FundedRoadmapDashboard() {
     )
   }
 
-  const current = data.stages[0]
+  const current = data.stages[currentStageIndex] ?? data.stages[0]
   const pf = data.profile.profitFactor === Infinity ? "∞" : data.profile.profitFactor.toFixed(2)
   const lowN = data.profile.closedTrades < 100
+  const realizedPnl = data.realizedPnl ?? 0
+  const progressPct =
+    current && current.profitTarget > 0
+      ? Math.min(100, Math.max(0, (realizedPnl / current.profitTarget) * 100))
+      : 0
+  const nextStage = data.stages[currentStageIndex + 1]
 
   return (
     <FundedRoadmapHelpProvider>
@@ -330,6 +395,17 @@ export function FundedRoadmapDashboard() {
         timezone={data.timezone}
       />
 
+      {current ? (
+        <PlaybookCard
+          accountName={activeAccount?.name ?? "This account"}
+          stage={current}
+          nextStageLabel={nextStage?.label}
+          recommendation={data.recommendation}
+          profile={data.profile}
+          rules={data.rules}
+        />
+      ) : null}
+
       <HudPanel glow="green" className="p-5">
         <div className="flex flex-wrap items-center gap-2">
           <p className="hud-label">Funded roadmap</p>
@@ -353,7 +429,8 @@ export function FundedRoadmapDashboard() {
           <div>
             <p className="text-xs text-muted-foreground">Strategy edge</p>
             <p className="mt-1 text-lg font-semibold text-cyan-100">
-              {data.profile.winRate.toFixed(1)}% WR · {formatRr(data.profile.avgRrRatio)} · +
+              {data.profile.winRate.toFixed(1)}% WR · {formatRr(data.profile.avgRrRatio)} ·{" "}
+              {data.profile.expectancyR >= 0 ? "+" : ""}
               {data.profile.expectancyR.toFixed(2)}R · PF {pf}
             </p>
           </div>
@@ -492,6 +569,7 @@ export function FundedRoadmapDashboard() {
                   ["profitTargetPct", "Profit target %"],
                   ["maxDrawdownPct", "Max drawdown %"],
                   ["dailyDrawdownPct", "Daily drawdown %"],
+                  ["minTradingDays", "Min trading days"],
                   ["profitSplitPct", "Profit split %"],
                 ] as const
               ).map(([key, label]) => (
@@ -558,14 +636,18 @@ export function FundedRoadmapDashboard() {
           />
           <div className="space-y-3 p-5">
             <div className="flex justify-between text-xs text-muted-foreground">
-              <span>$0</span>
+              <span>{money.format(Math.min(realizedPnl, 0))}</span>
               <span>{currency.format(current.profitTarget)}</span>
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-white/10">
-              <div className="h-full w-[8%] rounded-full bg-cyan-400/80" />
+              <div
+                className="h-full rounded-full bg-cyan-400/80"
+                style={{ width: `${progressPct}%` }}
+              />
             </div>
             <p className="text-sm text-cyan-100">
-              Progress: projection only · Target {currency.format(current.profitTarget)} · 1R{" "}
+              {money.format(realizedPnl)} of {currency.format(current.profitTarget)} (
+              {progressPct.toFixed(0)}%) · journal P&amp;L on this filter, not a live funded account · 1R{" "}
               {money.format(current.oneR)}
             </p>
           </div>
@@ -594,8 +676,19 @@ export function FundedRoadmapDashboard() {
       </HudPanel>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {data.stages.map((stage) => (
-          <HudPanel key={stage.id} className="p-4">
+        {data.stages.map((stage, index) => (
+          <button
+            key={stage.id}
+            type="button"
+            onClick={() => setCurrentStageIndex(index)}
+            className="text-left"
+          >
+          <HudPanel
+            className={cn(
+              "h-full p-4 transition-colors",
+              index === currentStageIndex && "ring-1 ring-cyan-400/50",
+            )}
+          >
             <div className="flex items-center justify-between gap-2">
               <p className="font-semibold text-cyan-100">{stage.label} funded</p>
               <Badge variant="outline" className={statusClass(stage.status)}>
@@ -605,6 +698,7 @@ export function FundedRoadmapDashboard() {
             <dl className="mt-3 space-y-1 text-xs text-muted-foreground">
               <Row label="Risk / trade" value={money.format(stage.riskPerTrade)} />
               <Row label="Profit target" value={currency.format(stage.profitTarget)} />
+              <Row label="Your cut" value={`${currency.format(stage.payoutUsd)} (${data.rules.profitSplitPct}%)`} />
               <Row label="Target" value={`${stage.targetR.toFixed(1)}R`} />
               <Row label="Expected trades" value={stage.expectedTrades?.toFixed(0) ?? "—"} />
               <Row label="Happy flow" value={`${stage.optimisticTrades?.toFixed(0) ?? "—"} · ${formatDays(stage.optimisticDays)}`} />
@@ -616,6 +710,7 @@ export function FundedRoadmapDashboard() {
               <Row label="Hit max DD first" value={`${stage.monteCarlo.drawdownFirstPct.toFixed(0)}%`} />
             </dl>
           </HudPanel>
+          </button>
         ))}
       </div>
 
@@ -625,9 +720,15 @@ export function FundedRoadmapDashboard() {
           description={`${current?.shortLabel ?? "$5K"} challenge · 1,000 simulations of your actual R-multiples`}
           action={<FundedRoadmapTermHelp term="target-probability" label="What is target probability?" />}
         />
-        <div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           <Kpi title="Reach target" value={`${current?.monteCarlo.targetHitPct.toFixed(0) ?? 0}%`} tone="up" helpTerm="reach-target" />
           <Kpi title="Hit max DD first" value={`${current?.monteCarlo.drawdownFirstPct.toFixed(0) ?? 0}%`} tone="down" helpTerm="hit-dd-first" />
+          <Kpi
+            title="Timed out"
+            value={`${current?.monteCarlo.timeoutPct.toFixed(0) ?? 0}%`}
+            hint="Sims that hit neither target nor max DD"
+            helpTerm="timeout"
+          />
           <Kpi
             title="Median trades"
             value={current?.monteCarlo.medianTradesToTarget?.toFixed(0) ?? "—"}
@@ -720,6 +821,7 @@ export function FundedRoadmapDashboard() {
                 <th className="pb-2">Target</th>
                 <th className="pb-2">Risk / trade</th>
                 <th className="pb-2">Expected profit</th>
+                <th className="pb-2">Your cut</th>
                 <th className="pb-2">Drawdown buffer</th>
                 <th className="pb-2">Time</th>
               </tr>
@@ -738,6 +840,7 @@ export function FundedRoadmapDashboard() {
                     <td>{currency.format(stage.profitTarget)}</td>
                     <td>{money.format(stage.riskPerTrade)}</td>
                     <td>{currency.format(stage.profitTarget)}</td>
+                    <td>{currency.format(stage.payoutUsd)}</td>
                     <td>{currency.format(stage.drawdownLimit)}</td>
                     <td>{formatDays(days)}</td>
                   </tr>
@@ -754,6 +857,74 @@ export function FundedRoadmapDashboard() {
       <FundedRoadmapCharts model={data} />
     </div>
     </FundedRoadmapHelpProvider>
+  )
+}
+
+function PlaybookCard({
+  accountName,
+  stage,
+  nextStageLabel,
+  recommendation,
+  profile,
+  rules,
+}: {
+  accountName: string
+  stage: StageProjection
+  nextStageLabel?: string
+  recommendation: RiskRecommendation
+  profile: StrategyProfile
+  rules: FundedChallengeRules
+}) {
+  const avoidHighRisk = stage.status === "At Risk" || stage.stressDdPct >= rules.maxDrawdownPct
+  return (
+    <HudPanel glow="green" className="p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="hud-label">Next action</p>
+          <h2 className="mt-1 text-lg font-semibold text-cyan-50">
+            {accountName} · {stage.label} challenge
+          </h2>
+        </div>
+        <Badge variant="outline" className={statusClass(stage.status)}>
+          {stage.status}
+        </Badge>
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div>
+          <p className="text-xs text-muted-foreground">Do this</p>
+          <p className="mt-1 text-sm font-medium text-cyan-100">
+            Risk {money.format(stage.oneR)} (1R) · target {currency.format(stage.profitTarget)} · max DD{" "}
+            {currency.format(stage.drawdownLimit)}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Daily stop</p>
+          <p className="mt-1 text-sm font-medium text-cyan-100">
+            Stop after {money.format(stage.dailyLossCap)} ({rules.dailyDrawdownPct}% of {stage.shortLabel})
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Avoid</p>
+          <p className="mt-1 text-sm font-medium text-rose-200">
+            {avoidHighRisk
+              ? `Do not use ${recommendation.aggressive.toFixed(2)}% risk — stress DD breaks the cap.`
+              : `Stay near ${recommendation.recommended.toFixed(2)}% · conservative ${recommendation.conservative.toFixed(2)}%.`}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">After you pass</p>
+          <p className="mt-1 text-sm font-medium text-emerald-200">
+            Your cut ~{currency.format(stage.payoutUsd)} at {rules.profitSplitPct}% split
+            {nextStageLabel ? ` · then unlock ${nextStageLabel}` : " · ladder complete"}
+          </p>
+        </div>
+      </div>
+      <p className="mt-4 text-xs text-muted-foreground">
+        Why: {profile.winRate.toFixed(1)}% WR · {profile.expectancyR >= 0 ? "+" : ""}
+        {profile.expectancyR.toFixed(2)}R expectancy on {profile.closedTrades} closed trades. Conservative
+        timeline is at least {rules.minTradingDays} trading days. {recommendation.note}
+      </p>
+    </HudPanel>
   )
 }
 

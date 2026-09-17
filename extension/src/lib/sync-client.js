@@ -90,13 +90,34 @@ JBSync.isPaintedMtmOpen = function isPaintedMtmOpen(trade) {
   return Math.abs(exitMs - entryMs) <= 90_000 && Math.abs(exitPrice - entryPrice) / entryPrice <= 0.0002
 }
 
+JBSync.isMtmUnrealizedOpen = function isMtmUnrealizedOpen(trade) {
+  const entry = trade?.entry
+  const exit = trade?.exit
+  if (!entry || !exit) return false
+  if (JBSync.isLiteralOpenToken(exit.datetime) || JBSync.isLiteralOpenToken(exit.signal)) return true
+  if (JBSync.isTpSlSignal(exit.signal)) return false
+  const entryMs = new Date(JBSync.normalizeTradingViewDatetime(entry.datetime || "")).getTime()
+  const exitMs = new Date(JBSync.normalizeTradingViewDatetime(exit.datetime || "")).getTime()
+  if (!Number.isFinite(entryMs) || !Number.isFinite(exitMs) || exitMs <= entryMs) return false
+  if (trade.netPnl == null && trade.returnPct == null) return false
+  const entryPrice = Number(entry.price)
+  const exitPrice = Number(exit.price)
+  if (!Number.isFinite(entryPrice) || !Number.isFinite(exitPrice) || entryPrice <= 0) return false
+  return Math.abs(exitPrice - entryPrice) / entryPrice > 0.0002
+}
+
 JBSync.isOpenTrade = function isOpenTrade(trade) {
   if (!trade?.exit) return true
   if (JBSync.isLiteralOpenToken(trade.exit.datetime)) return true
-  const leftoverOpen = JBSync.isLiteralOpenToken(trade.exit.signal) || JBSync.isLiteralOpenToken(trade.entry?.signal)
+  const leftoverOpen =
+    JBSync.isLiteralOpenToken(trade.exit.signal) ||
+    JBSync.isLiteralOpenToken(trade.entry?.signal) ||
+    /\bopen\b/i.test(String(trade.exit.datetime || "")) ||
+    /\bopen\b/i.test(String(trade.exit.signal || ""))
   const confirmedTpSl = JBSync.isTpSlSignal(trade.exit.signal) && !JBSync.isLiteralOpenToken(trade.exit.signal)
   if (leftoverOpen && !confirmedTpSl) return true
   if (!confirmedTpSl && JBSync.isPaintedMtmOpen(trade)) return true
+  if (!confirmedTpSl && JBSync.isMtmUnrealizedOpen(trade)) return true
   return false
 }
 

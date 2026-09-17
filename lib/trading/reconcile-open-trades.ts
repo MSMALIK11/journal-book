@@ -2,7 +2,7 @@ import "server-only"
 
 import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
-import { estimateClosedTradeMetrics, resolveClosedTradeMetrics } from "@/lib/trading/close-pnl"
+import { sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 import { extractTradeLevelFields } from "@/lib/trading/signal-levels"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
@@ -115,12 +115,15 @@ export async function reconcileStaleOpenTrades(
 
     const exit_price = keeper?.entry_price ?? trade.entry_price
     const exit_date = keeper?.entry_date || now
-    const metrics = estimateClosedTradeMetrics({
+    const metrics = sanitizeTvClosedEconomics({
       trade_type: trade.trade_type,
       entry_price: trade.entry_price,
       exit_price,
       quantity: trade.quantity,
       contract_size: trade.contract_size,
+      instrument: trade.instrument,
+      net_pnl: trade.net_pnl,
+      return_pct: trade.return_pct,
     })
     await Trade.updateOne(
       { _id: trade._id, userId },
@@ -174,12 +177,15 @@ export async function closeDuplicateLiveOpens(userId: string) {
     trade.exit_date = keeper.entry_date || new Date()
     if (keeper.entry_price != null) trade.exit_price = keeper.entry_price
     if (trade.exit_price != null && typeof trade.net_pnl !== "number") {
-      const metrics = estimateClosedTradeMetrics({
+      const metrics = sanitizeTvClosedEconomics({
         trade_type: trade.trade_type,
         entry_price: trade.entry_price,
         exit_price: trade.exit_price,
         quantity: trade.quantity,
         contract_size: trade.contract_size,
+        instrument: trade.instrument,
+        net_pnl: trade.net_pnl,
+        return_pct: trade.return_pct,
       })
       trade.net_pnl = metrics.net_pnl
       trade.return_pct = metrics.return_pct
@@ -284,12 +290,15 @@ export async function healIncompleteTvCloses(userId: string) {
     const exit_price = trade.exit_price ?? keeper?.entry_price
     if (exit_price == null || !Number.isFinite(exit_price) || exit_price <= 0) continue
 
-    const metrics = estimateClosedTradeMetrics({
+    const metrics = sanitizeTvClosedEconomics({
       trade_type: trade.trade_type,
       entry_price: trade.entry_price,
       exit_price,
       quantity: trade.quantity,
       contract_size: trade.contract_size,
+      instrument: trade.instrument,
+      net_pnl: trade.net_pnl,
+      return_pct: trade.return_pct,
     })
 
     const patch: Record<string, unknown> = {}
@@ -313,21 +322,27 @@ export async function healIncompleteTvCloses(userId: string) {
 }
 
 /** Rewrite TV closes whose stored $ P&L is position notional, not the fill move. */
-export async function healNotionalTvPnls(userId: string) {
-  const closed = await Trade.find({
+export async function healNotionalTvPnls(userId: string, accountId?: string) {
+  const query: Record<string, unknown> = {
     userId,
     source: "tradingview",
     exit_date: { $exists: true, $ne: null },
     exit_price: { $exists: true, $ne: null },
     net_pnl: { $exists: true, $ne: null },
-  }).select(
+  }
+  if (accountId) query.accountId = accountId
+
+  const closed = await Trade.find(query).select(
     "_id accountId instrument trade_type entry_price exit_price quantity contract_size net_pnl return_pct",
   )
 
-  let healed = 0
+  const ops: Array<{
+    updateOne: { filter: { _id: unknown; userId: string }; update: { $set: Record<string, unknown> } }
+  }> = []
+
   for (const trade of closed) {
     if (trade.exit_price == null || typeof trade.net_pnl !== "number") continue
-    const metrics = resolveClosedTradeMetrics({
+    const metrics = sanitizeTvClosedEconomics({
       trade_type: trade.trade_type,
       entry_price: trade.entry_price,
       exit_price: trade.exit_price,
@@ -337,14 +352,26 @@ export async function healNotionalTvPnls(userId: string) {
       net_pnl: trade.net_pnl,
       return_pct: trade.return_pct,
     })
-    if (Math.abs(metrics.net_pnl - trade.net_pnl) < 0.02) continue
-    await Trade.updateOne(
-      { _id: trade._id, userId },
-      { $set: { net_pnl: metrics.net_pnl, return_pct: metrics.return_pct } },
-    )
-    healed += 1
+    const pnlChanged = Math.abs(metrics.net_pnl - trade.net_pnl) >= 0.02
+    const qtyChanged = metrics.quantity !== trade.quantity
+    const pctChanged = Math.abs((metrics.return_pct ?? 0) - (trade.return_pct ?? 0)) >= 0.01
+    if (!pnlChanged && !qtyChanged && !pctChanged) continue
+    ops.push({
+      updateOne: {
+        filter: { _id: trade._id, userId },
+        update: {
+          $set: {
+            net_pnl: metrics.net_pnl,
+            return_pct: metrics.return_pct,
+            quantity: metrics.quantity,
+          },
+        },
+      },
+    })
   }
-  return healed
+
+  if (ops.length) await Trade.bulkWrite(ops)
+  return ops.length
 }
 
 /** Extract TP/SL from signal/tags and persist them on the trade documents. */

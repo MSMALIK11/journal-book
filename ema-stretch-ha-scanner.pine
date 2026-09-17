@@ -1,6 +1,6 @@
 //@version=5
 // @strategy_alert_message {{strategy.order.alert_message}}
-strategy("EMA Stretch Long + Short Reversal and HA Scanner", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, calc_on_every_tick=true, pyramiding=0)
+strategy("EMA Stretch Long + Short Reversal and HA Scanner", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, calc_on_every_tick=false, process_orders_on_close=true, pyramiding=0)
 
 //────────────────────────────────────────────
 // STRATEGY SETTINGS
@@ -82,6 +82,9 @@ f_entryTableComment(_side, _tp, _sl) =>
 f_entryOrderComment(_side, _tp, _sl) =>
     fullTableSignals ? f_entryTableComment(_side, _tp, _sl) : _side
 
+// Delayed EMA wait expires after this many bars (refresh/replay otherwise re-fires).
+emaWaitBars = 8
+
 //────────────────────────────────────────────
 // LONG SIGNAL
 //────────────────────────────────────────────
@@ -92,6 +95,7 @@ getLongSignal(_ema) =>
     // Current HA candle breaks previous high.
     bullishBreak = high > high[1] and close > high[1]
     rawLongSignal = candleANoTouch and bullishBreak
+    rawShortSignal = low[1] > _ema[1] and low < low[1] and close < low[1]
 
     bodyValid = isBodyValid()
 
@@ -104,20 +108,30 @@ getLongSignal(_ema) =>
     hasBottomWick = bottomWick > syminfo.mintick
     wickValid = not avoidLongBottomWick or not hasBottomWick
 
-    // Wait after raw reversal when EMA confirmation is missing.
     var bool waitingForLongEma = false
+    var int waitingLongFrom = na
     bool finalLongSignal = false
+
+    waitExpired = waitingForLongEma and not na(waitingLongFrom) and (bar_index - waitingLongFrom) > emaWaitBars
+    waitInvalid = waitingForLongEma and high < _ema
+
+    if rawShortSignal or waitExpired or waitInvalid
+        waitingForLongEma := false
+        waitingLongFrom := na
 
     if rawLongSignal
         if emaValid
             finalLongSignal := bodyValid and wickValid
             waitingForLongEma := false
+            waitingLongFrom := na
         else
             waitingForLongEma := true
-    else if waitingForLongEma and emaValid
+            waitingLongFrom := bar_index
+    else if waitingForLongEma and emaValid and close > open and close > _ema
         if bodyValid and wickValid
             finalLongSignal := true
             waitingForLongEma := false
+            waitingLongFrom := na
 
     finalLongSignal
 
@@ -131,6 +145,7 @@ getShortSignal(_ema) =>
     // Current HA candle breaks previous low.
     bearishBreak = low < low[1] and close < low[1]
     rawShortSignal = candleANoTouch and bearishBreak
+    rawLongSignal = high[1] < _ema[1] and high > high[1] and close > high[1]
 
     bodyValid = isBodyValid()
 
@@ -143,32 +158,45 @@ getShortSignal(_ema) =>
     hasTopWick = topWick > syminfo.mintick
     wickValid = not avoidShortTopWick or not hasTopWick
 
-    // Wait after raw reversal when EMA confirmation is missing.
     var bool waitingForShortEma = false
+    var int waitingShortFrom = na
     bool finalShortSignal = false
+
+    waitExpired = waitingForShortEma and not na(waitingShortFrom) and (bar_index - waitingShortFrom) > emaWaitBars
+    waitInvalid = waitingForShortEma and low > _ema
+
+    if rawLongSignal or waitExpired or waitInvalid
+        waitingForShortEma := false
+        waitingShortFrom := na
 
     if rawShortSignal
         if emaValid
             finalShortSignal := bodyValid and wickValid
             waitingForShortEma := false
+            waitingShortFrom := na
         else
             waitingForShortEma := true
-    else if waitingForShortEma and emaValid
+            waitingShortFrom := bar_index
+    else if waitingForShortEma and emaValid and close < open and close < _ema
         if bodyValid and wickValid
             finalShortSignal := true
             waitingForShortEma := false
+            waitingShortFrom := na
 
     finalShortSignal
 
 //────────────────────────────────────────────
-// CURRENT CHART HA SIGNALS
+// CURRENT CHART HA SIGNALS + HA LEVELS FOR SL/TP
 //────────────────────────────────────────────
-[longSignal, shortSignal] = request.security(
+[longSignal, shortSignal, haClose, haHighPrev, haLowPrev] = request.security(
      ticker.heikinashi(syminfo.tickerid),
      timeframe.period,
      [
          getLongSignal(ta.ema(close, emaLen)),
-         getShortSignal(ta.ema(close, emaLen))
+         getShortSignal(ta.ema(close, emaLen)),
+         close,
+         high[1],
+         low[1]
      ],
      lookahead=barmerge.lookahead_off)
 
@@ -180,14 +208,16 @@ getShortSignal(_ema) =>
 // would otherwise re-fire HA signals after a same-bar SL/TP fill.
 //────────────────────────────────────────────
 var int lastEntryBar = na
+longTrigger = longSignal and not nz(longSignal[1], false)
+shortTrigger = shortSignal and not nz(shortSignal[1], false)
 canOpenTrade = barstate.isconfirmed and (na(lastEntryBar) or lastEntryBar != bar_index)
 
-if canOpenTrade and enableLong and longSignal and strategy.position_size <= 0
-    longStop = low[1]
-    longRisk = close - longStop
+if canOpenTrade and enableLong and longTrigger and strategy.position_size <= 0
+    longStop = haLowPrev
+    longRisk = haClose - longStop
 
     if longRisk > syminfo.mintick
-        longTarget = close + longRisk * rr
+        longTarget = haClose + longRisk * rr
         lastEntryBar := bar_index
 
         strategy.entry(
@@ -206,12 +236,12 @@ if canOpenTrade and enableLong and longSignal and strategy.position_size <= 0
              comment_loss="",
              alert_message="LONG exit | TP: " + f_priceLabel(longTarget) + " | SL: " + f_priceLabel(longStop))
 
-else if canOpenTrade and enableShort and shortSignal and strategy.position_size >= 0
-    shortStop = high[1]
-    shortRisk = shortStop - close
+else if canOpenTrade and enableShort and shortTrigger and strategy.position_size >= 0
+    shortStop = haHighPrev
+    shortRisk = shortStop - haClose
 
     if shortRisk > syminfo.mintick
-        shortTarget = close - shortRisk * rr
+        shortTarget = haClose - shortRisk * rr
         lastEntryBar := bar_index
 
         strategy.entry(
@@ -545,7 +575,7 @@ plot(ema5, color=color.green, title="Fast EMA", linewidth=2)
 plot(ema20, color=color.red, title="Slow EMA", linewidth=2)
 
 plotshape(
-     barstate.isconfirmed and enableLong and longSignal,
+     barstate.isconfirmed and enableLong and longTrigger,
      title="Long Signal",
      style=shape.labelup,
      location=location.belowbar,
@@ -555,7 +585,7 @@ plotshape(
      size=size.tiny)
 
 plotshape(
-     barstate.isconfirmed and enableShort and shortSignal,
+     barstate.isconfirmed and enableShort and shortTrigger,
      title="Short Signal",
      style=shape.labeldown,
      location=location.abovebar,
@@ -568,11 +598,11 @@ plotshape(
 // ALERTS
 //────────────────────────────────────────────
 alertcondition(
-     barstate.isconfirmed and enableLong and longSignal,
+     barstate.isconfirmed and enableLong and longTrigger,
      title="Bullish HA EMA Reversal",
      message="LONG Heikin Ashi EMA reversal on {{ticker}} {{interval}}")
 
 alertcondition(
-     barstate.isconfirmed and enableShort and shortSignal,
+     barstate.isconfirmed and enableShort and shortTrigger,
      title="Bearish HA EMA Reversal",
      message="SHORT Heikin Ashi EMA reversal on {{ticker}} {{interval}}")

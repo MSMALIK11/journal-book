@@ -3,6 +3,7 @@ import connectDB from "@/app/api/db/mongoose"
 import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
+import { sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 import { dropSupersededOpenTradesFromPayload, resolveSyncedInstrument } from "@/lib/trading/price-sanity"
 import { closeDuplicateLiveOpens, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, purgeSupersededOpenTrades, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
@@ -54,8 +55,25 @@ function mergeSyncedTrade(
     existing.set("exit_price", null)
   }
 
-  if (typeof mapped.net_pnl === "number") existing.net_pnl = mapped.net_pnl
-  if (typeof mapped.return_pct === "number") existing.return_pct = mapped.return_pct
+  if (typeof mapped.quantity === "number") existing.quantity = mapped.quantity
+  if (mapped.exit_date && mapped.exit_price != null && mapped.entry_price > 0) {
+    const sanitized = sanitizeTvClosedEconomics({
+      trade_type: mapped.trade_type,
+      entry_price: mapped.entry_price,
+      exit_price: mapped.exit_price,
+      quantity: mapped.quantity,
+      contract_size: mapped.contract_size,
+      instrument: mapped.instrument,
+      net_pnl: mapped.net_pnl,
+      return_pct: mapped.return_pct,
+    })
+    existing.quantity = sanitized.quantity
+    existing.net_pnl = sanitized.net_pnl
+    existing.return_pct = sanitized.return_pct
+  } else {
+    if (typeof mapped.net_pnl === "number") existing.net_pnl = mapped.net_pnl
+    if (typeof mapped.return_pct === "number") existing.return_pct = mapped.return_pct
+  }
   if (typeof mapped.commission === "number") existing.commission = mapped.commission
   persistExtractedLevels(existing, mapped)
   if (mapped.tags?.length) existing.tags = mapped.tags
@@ -91,6 +109,7 @@ function syncedTradeChanged(
   if (stillOpen) {
     if (typeof mapped.stop_loss === "number" && existing.stop_loss !== mapped.stop_loss) return true
     if (typeof mapped.target === "number" && existing.target !== mapped.target) return true
+    if (typeof mapped.quantity === "number" && existing.quantity !== mapped.quantity) return true
     return false
   }
 
@@ -103,6 +122,7 @@ function syncedTradeChanged(
   if (mapped.exit_price != null && existing.exit_price !== mapped.exit_price) return true
   if (!mapped.exit_date && existing.exit_price != null) return true
 
+  if (typeof mapped.quantity === "number" && existing.quantity !== mapped.quantity) return true
   if (typeof mapped.net_pnl === "number" && existing.net_pnl !== mapped.net_pnl) return true
   if (typeof mapped.return_pct === "number" && existing.return_pct !== mapped.return_pct) return true
   if (typeof mapped.commission === "number" && existing.commission !== mapped.commission) return true
@@ -410,7 +430,44 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      const stillOpen = !mapped.exit_date && !existing.exit_date
+      const tvStillOpen = isOpenTvTrade(tvTrade)
+      const dbStillOpen = !existing.exit_date
+
+      // Recover a prior glitchy poll that synthetic-closed a still-live TV row.
+      if (tvStillOpen && existing.exit_date && sameEntryPrice(existing.entry_price, mapped.entry_price)) {
+        existing.set("exit_date", null)
+        existing.set("exit_price", null)
+        existing.set("net_pnl", null)
+        existing.set("return_pct", null)
+        persistExtractedLevels(existing, mapped)
+        await existing.save()
+        updated += 1
+        byAccount[accountId].updated += 1
+        touchedAccounts.add(accountId)
+        continue
+      }
+
+      // TV still says Open — never accept a close from a glitchy scrape.
+      if (tvStillOpen && dbStillOpen) {
+        if (persistExtractedLevels(existing, mapped)) {
+          await existing.save()
+          updated += 1
+          byAccount[accountId].updated += 1
+          touchedAccounts.add(accountId)
+        } else if (existing.accountId !== accountId) {
+          existing.accountId = accountId
+          await existing.save()
+          updated += 1
+          byAccount[accountId].updated += 1
+          touchedAccounts.add(accountId)
+        } else {
+          skipped += 1
+          byAccount[accountId].skipped += 1
+        }
+        continue
+      }
+
+      const stillOpen = !mapped.exit_date && dbStillOpen
       if (stillOpen) {
         if (persistExtractedLevels(existing, mapped)) {
           await existing.save()
@@ -431,7 +488,19 @@ export async function POST(request: NextRequest) {
       }
 
       if (syncedTradeChanged(existing, mapped)) {
-        const wasOpen = !existing.exit_date
+        const wasOpen = dbStillOpen
+        if (wasOpen && mapped.exit_date && tvStillOpen) {
+          if (persistExtractedLevels(existing, mapped)) {
+            await existing.save()
+            updated += 1
+            byAccount[accountId].updated += 1
+            touchedAccounts.add(accountId)
+          } else {
+            skipped += 1
+            byAccount[accountId].skipped += 1
+          }
+          continue
+        }
         mergeSyncedTrade(existing, mapped, accountId)
         await existing.save()
         updated += 1
@@ -468,7 +537,7 @@ export async function POST(request: NextRequest) {
               trade: snapshot,
             })
           }
-        } else if (wasOpen && mapped.exit_date && isRealLiveClose(mapped)) {
+        } else if (wasOpen && mapped.exit_date && isRealLiveClose(mapped, tvTrade)) {
           fillEvents.push({
             kind: "close",
             reason: "live_close",

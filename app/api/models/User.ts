@@ -63,6 +63,9 @@ export interface IUser {
     chatId?: string;
     notifyOpen?: boolean;
     notifyClose?: boolean;
+    dailySummaryEnabled?: boolean;
+    dailySummaryTime?: string;
+    lastDailySummaryDayKey?: string;
   };
   autoExportPreferences?: {
     enabled?: boolean;

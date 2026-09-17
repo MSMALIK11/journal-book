@@ -25,8 +25,10 @@ function parsePercent(value) {
 
 function parseSize(value) {
   if (!value) return 1
-  const match = String(value).match(/^([\d.,]+)/)
-  return match ? parseNumber(match[1]) || 1 : 1
+  const withoutNotional = String(value).replace(/[\d.,]+\s*[KkMm]\b[\s\S]*/g, " ").trim()
+  const cleaned = withoutNotional.replace(/[^\d.,+\-eE]/g, "").replace(/,/g, "")
+  const num = Number.parseFloat(cleaned)
+  return Number.isFinite(num) && num > 0 ? num : 1
 }
 
 function getStrategyName() {

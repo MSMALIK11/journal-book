@@ -31,7 +31,25 @@ async function jbMainScrape() {
 
   function parseSize(value) {
     if (!value) return 1
-    return parseNumber(String(value).match(/^([\d.,]+)/)?.[1]) || 1
+    const withoutNotional = String(value).replace(/[\d.,]+\s*[KkMm]\b[\s\S]*/g, " ").trim()
+    const num = parseNumber(withoutNotional.match(/(\d+(?:[.,]\d+)?)/)?.[1])
+    return Number.isFinite(num) && num > 0 ? num : 1
+  }
+
+  function trustedFillPnl(direction, entryPrice, exitPrice, size) {
+    if (entryPrice == null || exitPrice == null) return undefined
+    const signed = direction === "long" ? exitPrice - entryPrice : entryPrice - exitPrice
+    const qty = size > 20 ? 10 : size > 0 ? size : 1
+    return Math.round(signed * qty * 100) / 100
+  }
+
+  function clampScrapedPnl(direction, entryPrice, exitPrice, size, netPnl) {
+    if (typeof netPnl !== "number") return netPnl
+    const fill = trustedFillPnl(direction, entryPrice, exitPrice, size)
+    if (typeof fill !== "number") return netPnl
+    const slack = Math.max(2, Math.abs(fill) * 0.35)
+    if (Math.abs(netPnl - fill) <= slack) return netPnl
+    return fill
   }
 
   function getBacktestingRoot() {
@@ -214,6 +232,22 @@ async function jbMainScrape() {
     return Math.abs(exitMs - entryMs) <= 90_000 && Math.abs(exitPrice - entryPrice) / entryPrice <= 0.0002
   }
 
+  function cellMentionsOpen(value) {
+    return /\bopen\b/i.test(String(value || "").trim())
+  }
+
+  /** Live quote + unrealized P&L on exit half — not a reversal close at the same fill. */
+  function isMtmUnrealizedOpen(entryDt, exitDt, entryPrice, exitPrice, exitSignal, netPnl, returnPct) {
+    if (isLiteralOpenToken(exitDt) || isLiteralOpenToken(exitSignal)) return true
+    if (isTpSlSignal(exitSignal)) return false
+    const entryMs = datetimeMs(entryDt)
+    const exitMs = datetimeMs(exitDt)
+    if (!Number.isFinite(entryMs) || !Number.isFinite(exitMs) || exitMs <= entryMs) return false
+    if (netPnl == null && returnPct == null) return false
+    if (entryPrice == null || exitPrice == null || entryPrice <= 0) return false
+    return Math.abs(exitPrice - entryPrice) / entryPrice > 0.0002
+  }
+
   function getDatetimePair(td) {
     if (!td) return ["", ""]
 
@@ -264,10 +298,13 @@ async function jbMainScrape() {
         const tradeNumber = Number.parseInt(match[1], 10)
         const direction = (match[2] || tradeText).toLowerCase().includes("short") ? "short" : "long"
 
-        const [entryDt, exitDtRaw] = getDatetimePair(getColumn(row, "column-datetime"))
+        const datetimeTd = getColumn(row, "column-datetime")
+        const [entryDt, exitDtRaw] = getDatetimePair(datetimeTd)
+        const datetimeRaw = datetimeTd?.textContent?.replace(/\s+/g, " ").trim() || ""
         let entryDtFinal = entryDt
         let exitDt = exitDtRaw
         const signalTd = getColumn(row, "column-signal")
+        const signalRaw = signalTd?.textContent?.replace(/\s+/g, " ").trim() || ""
         const typeTd =
           getColumn(row, "column-type") ||
           getColumn(row, "column-trade-type") ||
@@ -277,15 +314,43 @@ async function jbMainScrape() {
         let [entryPriceText, exitPriceText] = getCellParts(getColumn(row, "column-price"))
         const entryPricePreview = parseNumber(entryPriceText)
         const exitPricePreview = parseNumber(exitPriceText)
-        const leftoverOpen = isLiteralOpenToken(entrySignal) || isLiteralOpenToken(exitSignal)
+        const leftoverOpen =
+          isLiteralOpenToken(entrySignal) ||
+          isLiteralOpenToken(exitSignal) ||
+          cellMentionsOpen(datetimeRaw) ||
+          cellMentionsOpen(signalRaw)
         const confirmedTpSl = isTpSlSignal(exitSignal) && !isLiteralOpenToken(exitSignal)
         const paintedMtm = isPaintedMtmOpen(entryDt, exitDtRaw, entryPricePreview, exitPricePreview)
+        const profitTdPreview =
+          getColumn(row, "column-profit") ||
+          getColumn(row, "column-net-pnl") ||
+          getColumn(row, "column-pnl")
+        const [entryProfitPreview, exitProfitPreview] = getCellParts(profitTdPreview)
+        const profitTextPreview = getExitText(entryProfitPreview, exitProfitPreview, profitTdPreview)
+        const { money: netPnlPreview, pct: returnFromProfitPreview } = parseMoneyAndPercent(profitTextPreview)
+        const pctTdPreview =
+          getColumn(row, "column-profit-percent") ||
+          getColumn(row, "column-return") ||
+          getColumn(row, "column-run-up")
+        const [entryPctPreview, exitPctPreview] = getCellParts(pctTdPreview)
+        const returnPctPreview =
+          parsePercent(getExitText(entryPctPreview, exitPctPreview, pctTdPreview)) ?? returnFromProfitPreview
+        const mtmUnrealized = isMtmUnrealizedOpen(
+          entryDtFinal,
+          exitDtRaw,
+          entryPricePreview,
+          exitPricePreview,
+          exitSignal,
+          netPnlPreview,
+          returnPctPreview,
+        )
         const looksOpen =
           isLiteralOpenToken(typeText) ||
           isLiteralOpenToken(entryDt) ||
           isLiteralOpenToken(exitDtRaw) ||
           paintedMtm ||
-          (leftoverOpen && !confirmedTpSl)
+          (leftoverOpen && !confirmedTpSl) ||
+          (mtmUnrealized && !confirmedTpSl)
 
         // Exit half is the "Open" token (often painted on top). Other half is the fill.
         if (looksOpen && isLiteralOpenToken(entryDtFinal) && exitDt && !isLiteralOpenToken(exitDt)) {
@@ -354,7 +419,15 @@ async function jbMainScrape() {
           }
         } else if (exitDt && !isLiteralOpenToken(exitDt) && exitPrice != null) {
           trade.exit = { datetime: exitDt, price: exitPrice, signal: exitSignal || "" }
-          if (netPnl != null) trade.netPnl = netPnl
+          if (netPnl != null) {
+            trade.netPnl = clampScrapedPnl(
+              direction,
+              entryPrice,
+              exitPrice,
+              trade.entry.size,
+              netPnl,
+            )
+          }
           if (returnPct != null) trade.returnPct = returnPct
           if (commission != null) trade.commission = commission
         }

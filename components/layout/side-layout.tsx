@@ -2,6 +2,7 @@ import { ReactNode } from "react"
 import { ActiveAccountProvider } from "@/hooks/use-active-account"
 import { SyncAccountAutoSwitch } from "@/components/sync/sync-account-auto-switch"
 import { AutoExportScheduler } from "@/components/export/auto-export-scheduler"
+import { TelegramDailySummaryScheduler } from "@/components/telegram/telegram-daily-summary-scheduler"
 import { NewTradeAlarmProvider } from "@/components/notifications/new-trade-alarm-provider"
 import { TradingAlertsSync } from "@/components/notifications/trading-alerts-sync"
 import { TradeSyncProvider } from "@/hooks/use-trade-sync-event"
@@ -20,6 +21,7 @@ export default function SideLayout({ children }: SiteLayoutProps) {
           <TradingAlertsSync />
           <SyncAccountAutoSwitch />
           <AutoExportScheduler />
+          <TelegramDailySummaryScheduler />
           <div className="flex min-h-screen w-full bg-background hud-grid">
             <div className="hidden w-64 shrink-0 lg:block" aria-hidden />
             <Sidebar />

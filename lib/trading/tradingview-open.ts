@@ -41,6 +41,38 @@ export function isPaintedMtmOpen(trade: {
   return sameBar && samePrice
 }
 
+/** TV cells sometimes still contain "Open" even when the parsed half is a live quote. */
+function cellMentionsOpen(...parts: (string | undefined | null)[]) {
+  return parts.some((part) => /\bopen\b/i.test(String(part || "").trim()))
+}
+
+/**
+ * Glitchy scrapes paint unrealized P&L on the exit half with a live quote/time.
+ * Reversal closes at the same fill price are excluded.
+ */
+export function isMtmUnrealizedOpen(trade: {
+  entry?: { datetime?: string; price?: number; signal?: string }
+  exit?: { datetime?: string; price?: number; signal?: string } | null
+  netPnl?: number
+  returnPct?: number
+}) {
+  if (!trade.entry || !trade.exit) return false
+  if (isOpenTvSignal(trade.exit.datetime) || isOpenTvSignal(trade.exit.signal)) return true
+  if (isTpSlSignal(trade.exit.signal)) return false
+
+  const entryMs = datetimeMs(trade.entry.datetime)
+  const exitMs = datetimeMs(trade.exit.datetime)
+  if (!Number.isFinite(entryMs) || !Number.isFinite(exitMs) || exitMs <= entryMs) return false
+  if (trade.netPnl == null && trade.returnPct == null) return false
+
+  const entryPrice = Number(trade.entry.price)
+  const exitPrice = Number(trade.exit.price)
+  if (!Number.isFinite(entryPrice) || !Number.isFinite(exitPrice) || entryPrice <= 0) return false
+  if (Math.abs(exitPrice - entryPrice) / entryPrice <= 0.0002) return false
+
+  return true
+}
+
 export function isOpenTvTrade(trade: {
   entry?: { datetime?: string; price?: number; signal?: string }
   exit?: { datetime?: string; price?: number; signal?: string } | null
@@ -51,12 +83,18 @@ export function isOpenTvTrade(trade: {
   // Date/time cell is the word "Open" — still live, even if Type is Long/Short.
   if (isOpenTvSignal(trade.exit.datetime)) return true
 
-  const leftoverOpen = isOpenTvSignal(trade.exit.signal) || isOpenTvSignal(trade.entry?.signal)
+  const leftoverOpen =
+    isOpenTvSignal(trade.exit.signal) ||
+    isOpenTvSignal(trade.entry?.signal) ||
+    cellMentionsOpen(trade.exit.datetime, trade.exit.signal, trade.entry?.signal)
   const confirmedTpSl = isTpSlSignal(trade.exit.signal) && !isOpenTvSignal(trade.exit.signal)
   if (leftoverOpen && !confirmedTpSl) return true
 
   // Same stamp + same price and no TP/SL = just-opened MTM paint, not a close.
   if (!confirmedTpSl && isPaintedMtmOpen(trade)) return true
+
+  // Live quote + unrealized P&L on exit half — not a TP/SL fill.
+  if (!confirmedTpSl && isMtmUnrealizedOpen(trade)) return true
 
   return false
 }
