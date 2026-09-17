@@ -293,23 +293,9 @@ formatMoney(_value) =>
 
 //────────────────────────────────────────────
 // HA SCANNER FUNCTION
+// One security call per symbol/TF — signals + SL/TP together (40-call TV limit).
 //────────────────────────────────────────────
-getScannerSignals(_symbol, _timeframe) =>
-    request.security(
-         ticker.heikinashi(_symbol),
-         _timeframe,
-         [
-             confirmedOnly
-                 ? getLongSignal(ta.ema(close, emaLen))[1]
-                 : getLongSignal(ta.ema(close, emaLen)),
-             confirmedOnly
-                 ? getShortSignal(ta.ema(close, emaLen))[1]
-                 : getShortSignal(ta.ema(close, emaLen))
-         ],
-         lookahead=barmerge.lookahead_off)
-
-// Same HA stop/target math as strategy entries — per symbol, so GOLD/BTC keep their own prices.
-f_scannerLevels() =>
+f_scannerRow() =>
     _ema = ta.ema(close, emaLen)
     longSig = confirmedOnly ? getLongSignal(_ema)[1] : getLongSignal(_ema)
     shortSig = confirmedOnly ? getShortSignal(_ema)[1] : getShortSignal(_ema)
@@ -325,16 +311,25 @@ f_scannerLevels() =>
         risk = stop - close
         target := risk > syminfo.mintick ? close - risk * rr : na
 
-    [stop, target, longSig, shortSig]
+    [longSig, shortSig, stop, target]
 
-getScannerLevels(_symbol, _timeframe) =>
+getScannerRow(_symbol, _timeframe) =>
     request.security(
          ticker.heikinashi(_symbol),
          _timeframe,
-         f_scannerLevels(),
+         f_scannerRow(),
          lookahead=barmerge.lookahead_off)
 
 slTpTf = slTpTimeframe == "" ? timeframe.period : slTpTimeframe
+
+f_pickSlTpSlot(_tf, _m1, _m3, _m5, _m15, _m30, _h1) =>
+    _tf == "1" ? _m1 :
+         _tf == "3" ? _m3 :
+         _tf == "5" ? _m5 :
+         _tf == "15" ? _m15 :
+         _tf == "30" ? _m30 :
+         _tf == "60" ? _h1 :
+         _m15
 
 f_slTpCellText(_longSignal, _shortSignal, _stop, _target, _pairEnabled) =>
     scannerEnabled = _pairEnabled and (enableLong or enableShort)
@@ -351,69 +346,62 @@ f_slTpCellText(_longSignal, _shortSignal, _stop, _target, _pairEnabled) =>
 //────────────────────────────────────────────
 // GOLD
 //────────────────────────────────────────────
-[goldM1Long, goldM1Short] = getScannerSignals(goldSymbol, "1")
-[goldM3Long, goldM3Short] = getScannerSignals(goldSymbol, "3")
-[goldM5Long, goldM5Short] = getScannerSignals(goldSymbol, "5")
-[goldM15Long, goldM15Short] = getScannerSignals(goldSymbol, "15")
-[goldM30Long, goldM30Short] = getScannerSignals(goldSymbol, "30")
-[goldH1Long, goldH1Short] = getScannerSignals(goldSymbol, "60")
+[goldM1Long, goldM1Short, goldM1Sl, goldM1Tp] = getScannerRow(goldSymbol, "1")
+[goldM3Long, goldM3Short, goldM3Sl, goldM3Tp] = getScannerRow(goldSymbol, "3")
+[goldM5Long, goldM5Short, goldM5Sl, goldM5Tp] = getScannerRow(goldSymbol, "5")
+[goldM15Long, goldM15Short, goldM15Sl, goldM15Tp] = getScannerRow(goldSymbol, "15")
+[goldM30Long, goldM30Short, goldM30Sl, goldM30Tp] = getScannerRow(goldSymbol, "30")
+[goldH1Long, goldH1Short, goldH1Sl, goldH1Tp] = getScannerRow(goldSymbol, "60")
 
 //────────────────────────────────────────────
 // BTC
 //────────────────────────────────────────────
-[btcM1Long, btcM1Short] = getScannerSignals(btcSymbol, "1")
-[btcM3Long, btcM3Short] = getScannerSignals(btcSymbol, "3")
-[btcM5Long, btcM5Short] = getScannerSignals(btcSymbol, "5")
-[btcM15Long, btcM15Short] = getScannerSignals(btcSymbol, "15")
-[btcM30Long, btcM30Short] = getScannerSignals(btcSymbol, "30")
-[btcH1Long, btcH1Short] = getScannerSignals(btcSymbol, "60")
+[btcM1Long, btcM1Short, btcM1Sl, btcM1Tp] = getScannerRow(btcSymbol, "1")
+[btcM3Long, btcM3Short, btcM3Sl, btcM3Tp] = getScannerRow(btcSymbol, "3")
+[btcM5Long, btcM5Short, btcM5Sl, btcM5Tp] = getScannerRow(btcSymbol, "5")
+[btcM15Long, btcM15Short, btcM15Sl, btcM15Tp] = getScannerRow(btcSymbol, "15")
+[btcM30Long, btcM30Short, btcM30Sl, btcM30Tp] = getScannerRow(btcSymbol, "30")
+[btcH1Long, btcH1Short, btcH1Sl, btcH1Tp] = getScannerRow(btcSymbol, "60")
 
 //────────────────────────────────────────────
 // ETH
 //────────────────────────────────────────────
-[ethM1Long, ethM1Short] = getScannerSignals(ethSymbol, "1")
-[ethM3Long, ethM3Short] = getScannerSignals(ethSymbol, "3")
-[ethM5Long, ethM5Short] = getScannerSignals(ethSymbol, "5")
-[ethM15Long, ethM15Short] = getScannerSignals(ethSymbol, "15")
-[ethM30Long, ethM30Short] = getScannerSignals(ethSymbol, "30")
-[ethH1Long, ethH1Short] = getScannerSignals(ethSymbol, "60")
+[ethM1Long, ethM1Short, ethM1Sl, ethM1Tp] = getScannerRow(ethSymbol, "1")
+[ethM3Long, ethM3Short, ethM3Sl, ethM3Tp] = getScannerRow(ethSymbol, "3")
+[ethM5Long, ethM5Short, ethM5Sl, ethM5Tp] = getScannerRow(ethSymbol, "5")
+[ethM15Long, ethM15Short, ethM15Sl, ethM15Tp] = getScannerRow(ethSymbol, "15")
+[ethM30Long, ethM30Short, ethM30Sl, ethM30Tp] = getScannerRow(ethSymbol, "30")
+[ethH1Long, ethH1Short, ethH1Sl, ethH1Tp] = getScannerRow(ethSymbol, "60")
 
 //────────────────────────────────────────────
 // SOLUSD
 //────────────────────────────────────────────
-[solM1Long, solM1Short] = getScannerSignals(solSymbol, "1")
-[solM3Long, solM3Short] = getScannerSignals(solSymbol, "3")
-[solM5Long, solM5Short] = getScannerSignals(solSymbol, "5")
-[solM15Long, solM15Short] = getScannerSignals(solSymbol, "15")
-[solM30Long, solM30Short] = getScannerSignals(solSymbol, "30")
-[solH1Long, solH1Short] = getScannerSignals(solSymbol, "60")
+[solM1Long, solM1Short, solM1Sl, solM1Tp] = getScannerRow(solSymbol, "1")
+[solM3Long, solM3Short, solM3Sl, solM3Tp] = getScannerRow(solSymbol, "3")
+[solM5Long, solM5Short, solM5Sl, solM5Tp] = getScannerRow(solSymbol, "5")
+[solM15Long, solM15Short, solM15Sl, solM15Tp] = getScannerRow(solSymbol, "15")
+[solM30Long, solM30Short, solM30Sl, solM30Tp] = getScannerRow(solSymbol, "30")
+[solH1Long, solH1Short, solH1Sl, solH1Tp] = getScannerRow(solSymbol, "60")
 
 //────────────────────────────────────────────
 // XAGUSD
 //────────────────────────────────────────────
-[xagM1Long, xagM1Short] = getScannerSignals(xagSymbol, "1")
-[xagM3Long, xagM3Short] = getScannerSignals(xagSymbol, "3")
-[xagM5Long, xagM5Short] = getScannerSignals(xagSymbol, "5")
-[xagM15Long, xagM15Short] = getScannerSignals(xagSymbol, "15")
-[xagM30Long, xagM30Short] = getScannerSignals(xagSymbol, "30")
-[xagH1Long, xagH1Short] = getScannerSignals(xagSymbol, "60")
+[xagM1Long, xagM1Short, xagM1Sl, xagM1Tp] = getScannerRow(xagSymbol, "1")
+[xagM3Long, xagM3Short, xagM3Sl, xagM3Tp] = getScannerRow(xagSymbol, "3")
+[xagM5Long, xagM5Short, xagM5Sl, xagM5Tp] = getScannerRow(xagSymbol, "5")
+[xagM15Long, xagM15Short, xagM15Sl, xagM15Tp] = getScannerRow(xagSymbol, "15")
+[xagM30Long, xagM30Short, xagM30Sl, xagM30Tp] = getScannerRow(xagSymbol, "30")
+[xagH1Long, xagH1Short, xagH1Sl, xagH1Tp] = getScannerRow(xagSymbol, "60")
 
 //────────────────────────────────────────────
 // USOIL
 //────────────────────────────────────────────
-[oilM1Long, oilM1Short] = getScannerSignals(oilSymbol, "1")
-[oilM3Long, oilM3Short] = getScannerSignals(oilSymbol, "3")
-[oilM5Long, oilM5Short] = getScannerSignals(oilSymbol, "5")
-[oilM15Long, oilM15Short] = getScannerSignals(oilSymbol, "15")
-[oilM30Long, oilM30Short] = getScannerSignals(oilSymbol, "30")
-[oilH1Long, oilH1Short] = getScannerSignals(oilSymbol, "60")
-
-[goldSl, goldTp, goldSlLong, goldSlShort] = getScannerLevels(goldSymbol, slTpTf)
-[btcSl, btcTp, btcSlLong, btcSlShort] = getScannerLevels(btcSymbol, slTpTf)
-[ethSl, ethTp, ethSlLong, ethSlShort] = getScannerLevels(ethSymbol, slTpTf)
-[solSl, solTp, solSlLong, solSlShort] = getScannerLevels(solSymbol, slTpTf)
-[xagSl, xagTp, xagSlLong, xagSlShort] = getScannerLevels(xagSymbol, slTpTf)
-[oilSl, oilTp, oilSlLong, oilSlShort] = getScannerLevels(oilSymbol, slTpTf)
+[oilM1Long, oilM1Short, oilM1Sl, oilM1Tp] = getScannerRow(oilSymbol, "1")
+[oilM3Long, oilM3Short, oilM3Sl, oilM3Tp] = getScannerRow(oilSymbol, "3")
+[oilM5Long, oilM5Short, oilM5Sl, oilM5Tp] = getScannerRow(oilSymbol, "5")
+[oilM15Long, oilM15Short, oilM15Sl, oilM15Tp] = getScannerRow(oilSymbol, "15")
+[oilM30Long, oilM30Short, oilM30Sl, oilM30Tp] = getScannerRow(oilSymbol, "30")
+[oilH1Long, oilH1Short, oilH1Sl, oilH1Tp] = getScannerRow(oilSymbol, "60")
 
 //────────────────────────────────────────────
 // DASHBOARD COLORS
@@ -581,7 +569,10 @@ if barstate.islast
          goldM15Long, goldM15Short,
          goldM30Long, goldM30Short,
          goldH1Long, goldH1Short,
-         goldSlLong, goldSlShort, goldSl, goldTp)
+         f_pickSlTpSlot(slTpTf, goldM1Long, goldM3Long, goldM5Long, goldM15Long, goldM30Long, goldH1Long),
+         f_pickSlTpSlot(slTpTf, goldM1Short, goldM3Short, goldM5Short, goldM15Short, goldM30Short, goldH1Short),
+         f_pickSlTpSlot(slTpTf, goldM1Sl, goldM3Sl, goldM5Sl, goldM15Sl, goldM30Sl, goldH1Sl),
+         f_pickSlTpSlot(slTpTf, goldM1Tp, goldM3Tp, goldM5Tp, goldM15Tp, goldM30Tp, goldH1Tp))
 
     drawRow(
          2, "BTC", enableBTC,
@@ -591,7 +582,10 @@ if barstate.islast
          btcM15Long, btcM15Short,
          btcM30Long, btcM30Short,
          btcH1Long, btcH1Short,
-         btcSlLong, btcSlShort, btcSl, btcTp)
+         f_pickSlTpSlot(slTpTf, btcM1Long, btcM3Long, btcM5Long, btcM15Long, btcM30Long, btcH1Long),
+         f_pickSlTpSlot(slTpTf, btcM1Short, btcM3Short, btcM5Short, btcM15Short, btcM30Short, btcH1Short),
+         f_pickSlTpSlot(slTpTf, btcM1Sl, btcM3Sl, btcM5Sl, btcM15Sl, btcM30Sl, btcH1Sl),
+         f_pickSlTpSlot(slTpTf, btcM1Tp, btcM3Tp, btcM5Tp, btcM15Tp, btcM30Tp, btcH1Tp))
 
     drawRow(
          3, "ETH", enableETH,
@@ -601,7 +595,10 @@ if barstate.islast
          ethM15Long, ethM15Short,
          ethM30Long, ethM30Short,
          ethH1Long, ethH1Short,
-         ethSlLong, ethSlShort, ethSl, ethTp)
+         f_pickSlTpSlot(slTpTf, ethM1Long, ethM3Long, ethM5Long, ethM15Long, ethM30Long, ethH1Long),
+         f_pickSlTpSlot(slTpTf, ethM1Short, ethM3Short, ethM5Short, ethM15Short, ethM30Short, ethH1Short),
+         f_pickSlTpSlot(slTpTf, ethM1Sl, ethM3Sl, ethM5Sl, ethM15Sl, ethM30Sl, ethH1Sl),
+         f_pickSlTpSlot(slTpTf, ethM1Tp, ethM3Tp, ethM5Tp, ethM15Tp, ethM30Tp, ethH1Tp))
 
     drawRow(
          4, "SOLUSD", enableSOL,
@@ -611,7 +608,10 @@ if barstate.islast
          solM15Long, solM15Short,
          solM30Long, solM30Short,
          solH1Long, solH1Short,
-         solSlLong, solSlShort, solSl, solTp)
+         f_pickSlTpSlot(slTpTf, solM1Long, solM3Long, solM5Long, solM15Long, solM30Long, solH1Long),
+         f_pickSlTpSlot(slTpTf, solM1Short, solM3Short, solM5Short, solM15Short, solM30Short, solH1Short),
+         f_pickSlTpSlot(slTpTf, solM1Sl, solM3Sl, solM5Sl, solM15Sl, solM30Sl, solH1Sl),
+         f_pickSlTpSlot(slTpTf, solM1Tp, solM3Tp, solM5Tp, solM15Tp, solM30Tp, solH1Tp))
 
     drawRow(
          5, "XAGUSD", enableXAG,
@@ -621,7 +621,10 @@ if barstate.islast
          xagM15Long, xagM15Short,
          xagM30Long, xagM30Short,
          xagH1Long, xagH1Short,
-         xagSlLong, xagSlShort, xagSl, xagTp)
+         f_pickSlTpSlot(slTpTf, xagM1Long, xagM3Long, xagM5Long, xagM15Long, xagM30Long, xagH1Long),
+         f_pickSlTpSlot(slTpTf, xagM1Short, xagM3Short, xagM5Short, xagM15Short, xagM30Short, xagH1Short),
+         f_pickSlTpSlot(slTpTf, xagM1Sl, xagM3Sl, xagM5Sl, xagM15Sl, xagM30Sl, xagH1Sl),
+         f_pickSlTpSlot(slTpTf, xagM1Tp, xagM3Tp, xagM5Tp, xagM15Tp, xagM30Tp, xagH1Tp))
 
     drawRow(
          6, "USOIL", enableOIL,
@@ -631,7 +634,10 @@ if barstate.islast
          oilM15Long, oilM15Short,
          oilM30Long, oilM30Short,
          oilH1Long, oilH1Short,
-         oilSlLong, oilSlShort, oilSl, oilTp)
+         f_pickSlTpSlot(slTpTf, oilM1Long, oilM3Long, oilM5Long, oilM15Long, oilM30Long, oilH1Long),
+         f_pickSlTpSlot(slTpTf, oilM1Short, oilM3Short, oilM5Short, oilM15Short, oilM30Short, oilH1Short),
+         f_pickSlTpSlot(slTpTf, oilM1Sl, oilM3Sl, oilM5Sl, oilM15Sl, oilM30Sl, oilH1Sl),
+         f_pickSlTpSlot(slTpTf, oilM1Tp, oilM3Tp, oilM5Tp, oilM15Tp, oilM30Tp, oilH1Tp))
 
     drawSummaryRow(
          7,
