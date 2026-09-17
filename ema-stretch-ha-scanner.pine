@@ -70,6 +70,16 @@ f_priceLabel(_price) =>
 f_slTpTableText(_side, _tp, _sl) =>
     _side + " | TP: " + f_priceLabel(_tp) + " | SL: " + f_priceLabel(_sl)
 
+f_pairKey(_ticker) =>
+    t = str.upper(_ticker)
+    str.contains(t, "XAU") or str.contains(t, "GOLD") ? "GOLD" :
+         str.contains(t, "BTC") ? "BTC" :
+         str.contains(t, "ETH") ? "ETH" :
+         str.contains(t, "SOL") ? "SOLUSD" :
+         str.contains(t, "XAG") or str.contains(t, "SILVER") ? "XAGUSD" :
+         str.contains(t, "OIL") or str.contains(t, "WTI") or str.contains(t, "USOIL") ? "USOIL" :
+         ""
+
 //────────────────────────────────────────────
 // LONG SIGNAL
 //────────────────────────────────────────────
@@ -163,18 +173,24 @@ getShortSignal(_ema) =>
 //────────────────────────────────────────────
 // LONG AND SHORT STRATEGY
 // Opposite entry automatically reverses position.
+// Entry comment carries TP/SL — journal extension reads List of Trades Signal column.
 //────────────────────────────────────────────
+var float chartTradeStop = na
+var float chartTradeTarget = na
+
 if enableLong and longSignal and strategy.position_size <= 0
     longStop = low[1]
     longRisk = close - longStop
 
     if longRisk > syminfo.mintick
         longTarget = close + longRisk * rr
+        chartTradeStop := longStop
+        chartTradeTarget := longTarget
 
         strategy.entry(
              "Long",
              strategy.long,
-             comment="LONG")
+             comment=f_slTpTableText("LONG", longTarget, longStop))
 
         strategy.exit(
              "Long TP/SL",
@@ -188,17 +204,23 @@ else if enableShort and shortSignal and strategy.position_size >= 0
 
     if shortRisk > syminfo.mintick
         shortTarget = close - shortRisk * rr
+        chartTradeStop := shortStop
+        chartTradeTarget := shortTarget
 
         strategy.entry(
              "Short",
              strategy.short,
-             comment="SHORT")
+             comment=f_slTpTableText("SHORT", shortTarget, shortStop))
 
         strategy.exit(
              "Short TP/SL",
              from_entry="Short",
              stop=shortStop,
              limit=shortTarget)
+
+if strategy.position_size == 0 and not longSignal and not shortSignal
+    chartTradeStop := na
+    chartTradeTarget := na
 
 //────────────────────────────────────────────
 // TODAY'S CLOSED-TRADE PERFORMANCE
@@ -268,6 +290,14 @@ f_pickSlTpSlot(_tf, _m1, _m3, _m5, _m15, _m30, _h1) =>
          _tf == "30" ? _m30 :
          _tf == "60" ? _h1 :
          _m15
+
+f_rowSlTp(_rowKey, _sigLong, _sigShort, _sigStop, _sigTarget) =>
+    useOpen = f_pairKey(syminfo.ticker) == _rowKey and strategy.position_size != 0 and not na(chartTradeStop) and not na(chartTradeTarget)
+    showLong = useOpen ? strategy.position_size > 0 : _sigLong
+    showShort = useOpen ? strategy.position_size < 0 : _sigShort
+    stop = useOpen ? chartTradeStop : _sigStop
+    target = useOpen ? chartTradeTarget : _sigTarget
+    [showLong, showShort, stop, target]
 
 f_slTpCellText(_longSignal, _shortSignal, _stop, _target, _pairEnabled) =>
     scannerEnabled = _pairEnabled and (enableLong or enableShort)
@@ -436,6 +466,7 @@ drawSlTpCell(_row, _longSignal, _shortSignal, _stop, _target, _pairEnabled) =>
 
 drawRow(
      _row,
+     _rowKey,
      _name,
      _enabled,
      _m1Long,
@@ -456,6 +487,7 @@ drawRow(
      _target) =>
 
     rowEnabled = _enabled and (enableLong or enableShort)
+    [slLong, slShort, stop, target] = f_rowSlTp(_rowKey, _slLong, _slShort, _stop, _target)
 
     table.cell(
          scannerTable,
@@ -473,7 +505,7 @@ drawRow(
     drawCell(4, _row, _m15Long, _m15Short, _enabled)
     drawCell(5, _row, _m30Long, _m30Short, _enabled)
     drawCell(6, _row, _h1Long, _h1Short, _enabled)
-    drawSlTpCell(_row, _slLong, _slShort, _stop, _target, _enabled)
+    drawSlTpCell(_row, slLong, slShort, stop, target, _enabled)
 
 drawSummaryRow(_row, _label, _value, _background) =>
     table.cell(
@@ -500,7 +532,7 @@ if barstate.islast
     table.cell(scannerTable, 7, 0, "SL/TP", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
 
     drawRow(
-         1, "GOLD", enableGOLD,
+         1, "GOLD", "GOLD", enableGOLD,
          goldM1Long, goldM1Short,
          goldM3Long, goldM3Short,
          goldM5Long, goldM5Short,
@@ -513,7 +545,7 @@ if barstate.islast
          f_pickSlTpSlot(slTpTf, goldM1Tp, goldM3Tp, goldM5Tp, goldM15Tp, goldM30Tp, goldH1Tp))
 
     drawRow(
-         2, "BTC", enableBTC,
+         2, "BTC", "BTC", enableBTC,
          btcM1Long, btcM1Short,
          btcM3Long, btcM3Short,
          btcM5Long, btcM5Short,
@@ -526,7 +558,7 @@ if barstate.islast
          f_pickSlTpSlot(slTpTf, btcM1Tp, btcM3Tp, btcM5Tp, btcM15Tp, btcM30Tp, btcH1Tp))
 
     drawRow(
-         3, "ETH", enableETH,
+         3, "ETH", "ETH", enableETH,
          ethM1Long, ethM1Short,
          ethM3Long, ethM3Short,
          ethM5Long, ethM5Short,
@@ -539,7 +571,7 @@ if barstate.islast
          f_pickSlTpSlot(slTpTf, ethM1Tp, ethM3Tp, ethM5Tp, ethM15Tp, ethM30Tp, ethH1Tp))
 
     drawRow(
-         4, "SOLUSD", enableSOL,
+         4, "SOLUSD", "SOLUSD", enableSOL,
          solM1Long, solM1Short,
          solM3Long, solM3Short,
          solM5Long, solM5Short,
@@ -552,7 +584,7 @@ if barstate.islast
          f_pickSlTpSlot(slTpTf, solM1Tp, solM3Tp, solM5Tp, solM15Tp, solM30Tp, solH1Tp))
 
     drawRow(
-         5, "XAGUSD", enableXAG,
+         5, "XAGUSD", "XAGUSD", enableXAG,
          xagM1Long, xagM1Short,
          xagM3Long, xagM3Short,
          xagM5Long, xagM5Short,
@@ -565,7 +597,7 @@ if barstate.islast
          f_pickSlTpSlot(slTpTf, xagM1Tp, xagM3Tp, xagM5Tp, xagM15Tp, xagM30Tp, xagH1Tp))
 
     drawRow(
-         6, "USOIL", enableOIL,
+         6, "USOIL", "USOIL", enableOIL,
          oilM1Long, oilM1Short,
          oilM3Long, oilM3Short,
          oilM5Long, oilM5Short,
