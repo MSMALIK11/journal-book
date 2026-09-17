@@ -325,7 +325,7 @@ export function LiveSyncDashboard() {
     const closed = trades.filter((trade) => !isLiveOpen(trade))
     const wins = closed.filter((trade) => (trade.net_pnl ?? 0) > 0)
     const losses = closed.filter((trade) => (trade.net_pnl ?? 0) < 0)
-    const todayTrades = trades.filter((trade) => {
+    const todayClosed = closed.filter((trade) => {
       try {
         return isToday(parseISO(trade.entry_date))
       } catch {
@@ -342,7 +342,7 @@ export function LiveSyncDashboard() {
       wins: summary?.wins ?? wins.length,
       losses: summary?.losses ?? losses.length,
       winRate: summary?.winRate ?? (closed.length ? (wins.length / closed.length) * 100 : 0),
-      todayPnl: summary?.todayPnl ?? todayTrades.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0),
+      todayPnl: summary?.todayPnl ?? todayClosed.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0),
       totalPnl: summary?.totalPnl ?? closed.reduce((total, trade) => total + (trade.net_pnl ?? 0), 0),
       bestTrade: summary?.bestTrade ?? (wins.length ? Math.max(...wins.map((trade) => trade.net_pnl ?? 0)) : 0),
       worstTrade: summary?.worstTrade ?? (losses.length ? Math.min(...losses.map((trade) => trade.net_pnl ?? 0)) : 0),

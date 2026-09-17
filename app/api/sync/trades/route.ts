@@ -5,7 +5,7 @@ import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/tr
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 import { dropSupersededOpenTradesFromPayload, resolveSyncedInstrument } from "@/lib/trading/price-sanity"
-import { closeDuplicateLiveOpens, enforceOneLiveOpenPerInstrument, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, purgeSupersededOpenTrades, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { closeDuplicateLiveOpens, enforceOneLiveOpenPerInstrument, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, healWrongReversalCloses, purgeSupersededOpenTrades, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, isOpenCoveredByLaterClose, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
@@ -209,7 +209,7 @@ export async function POST(request: NextRequest) {
       await healMisclosedSameFillOpens(auth.userId)
       await closeDuplicateLiveOpens(auth.userId)
       const reversedOpens = await enforceOneLiveOpenPerInstrument(auth.userId)
-      let closedStale = reversedOpens.length
+      let closedStale = reversedOpens.length + (await healWrongReversalCloses(auth.userId))
       if (parsed.data.reconcileOpens) {
         closedStale += await reconcileStaleOpenTrades(
           auth.userId,
@@ -584,7 +584,10 @@ export async function POST(request: NextRequest) {
       updated += 1
     }
 
-    let closedStale = reversedOpens.length
+    const healedReversals = await healWrongReversalCloses(auth.userId)
+    if (healedReversals) updated += healedReversals
+
+    let closedStale = reversedOpens.length + healedReversals
     if (parsed.data.reconcileOpens) {
       closedStale = await reconcileStaleOpenTrades(
         auth.userId,

@@ -206,9 +206,82 @@ function liveOpenInstrumentKey(trade: { accountId?: unknown; instrument?: string
   return `${String(trade.accountId || "")}:${symbol}`
 }
 
+async function findReversalExitFill(
+  userId: string,
+  staleOpen: {
+    accountId?: unknown
+    instrument?: string
+    trade_type?: string
+    entry_date?: Date
+    entry_price?: number
+  },
+  fallback: { entry_date?: Date | null; entry_price?: number | null },
+) {
+  const opposite = staleOpen.trade_type === "Sell" ? "Buy" : "Sell"
+  const symbols = instrumentMatchList(String(staleOpen.instrument || ""))
+  const query: Record<string, unknown> = {
+    userId,
+    source: "tradingview",
+    accountId: String(staleOpen.accountId || ""),
+    trade_type: opposite,
+    entry_date: { $gt: staleOpen.entry_date },
+  }
+  if (symbols.length) query.instrument = { $in: symbols }
+
+  const reversal = await Trade.findOne(query)
+    .select("entry_date entry_price")
+    .sort({ entry_date: 1 })
+
+  if (
+    reversal?.entry_date &&
+    reversal.entry_price != null &&
+    Number.isFinite(reversal.entry_price) &&
+    reversal.entry_price > 0
+  ) {
+    return { exit_date: reversal.entry_date, exit_price: reversal.entry_price }
+  }
+
+  const exit_date = fallback.entry_date || new Date()
+  const exit_price = fallback.entry_price ?? staleOpen.entry_price
+  return { exit_date, exit_price }
+}
+
+function applySyntheticClose(
+  trade: {
+    trade_type?: string
+    entry_price?: number
+    quantity?: number
+    contract_size?: number
+    instrument?: string
+    net_pnl?: number | null
+    return_pct?: number | null
+    exit_date?: Date | null
+    exit_price?: number | null
+    save: () => Promise<unknown>
+  },
+  exit_date: Date,
+  exit_price: number,
+) {
+  const metrics = sanitizeTvClosedEconomics({
+    trade_type: trade.trade_type,
+    entry_price: trade.entry_price,
+    exit_price,
+    quantity: trade.quantity,
+    contract_size: trade.contract_size,
+    instrument: trade.instrument,
+    net_pnl: trade.net_pnl,
+    return_pct: trade.return_pct,
+  })
+
+  trade.exit_date = exit_date
+  trade.exit_price = exit_price
+  trade.net_pnl = metrics.net_pnl
+  trade.return_pct = metrics.return_pct
+}
+
 /**
  * pyramiding=0 — only one live position per instrument/account.
- * Close older opens, including opposite-side legs missed when TV reverses Long→Short.
+ * Close older opens at the first opposite reversal fill, not the newest open row.
  */
 export async function enforceOneLiveOpenPerInstrument(userId: string) {
   const opens = await Trade.find({
@@ -222,38 +295,78 @@ export async function enforceOneLiveOpenPerInstrument(userId: string) {
 
   for (const trade of opens) {
     const key = liveOpenInstrumentKey(trade)
-    if (!key.endsWith(":") && key !== ":") {
-      const keeper = keeperByKey.get(key)
-      if (!keeper) {
-        keeperByKey.set(key, trade)
-        continue
-      }
+    if (!key || key.endsWith(":")) continue
 
-      const exit_date = keeper.entry_date || new Date()
-      const exit_price = keeper.entry_price ?? trade.entry_price
-      if (exit_price == null || !Number.isFinite(exit_price) || exit_price <= 0) continue
-
-      const metrics = sanitizeTvClosedEconomics({
-        trade_type: trade.trade_type,
-        entry_price: trade.entry_price,
-        exit_price,
-        quantity: trade.quantity,
-        contract_size: trade.contract_size,
-        instrument: trade.instrument,
-        net_pnl: trade.net_pnl,
-        return_pct: trade.return_pct,
-      })
-
-      trade.exit_date = exit_date
-      trade.exit_price = exit_price
-      trade.net_pnl = metrics.net_pnl
-      trade.return_pct = metrics.return_pct
-      await trade.save()
-      closed.push(trade)
+    const keeper = keeperByKey.get(key)
+    if (!keeper) {
+      keeperByKey.set(key, trade)
+      continue
     }
+
+    const { exit_date, exit_price } = await findReversalExitFill(userId, trade, keeper)
+    if (
+      !exit_date ||
+      exit_price == null ||
+      !Number.isFinite(exit_price) ||
+      exit_price <= 0
+    ) {
+      continue
+    }
+
+    applySyntheticClose(trade, exit_date, exit_price)
+    await trade.save()
+    closed.push(trade)
   }
 
   return closed
+}
+
+/** Fix rows synthetic-closed at a later open instead of the actual reversal fill. */
+export async function healWrongReversalCloses(userId: string) {
+  const recent = await Trade.find({
+    userId,
+    source: "tradingview",
+    exit_date: { $exists: true, $ne: null },
+    entry_date: { $exists: true, $ne: null },
+  })
+    .select(
+      "_id accountId instrument trade_type entry_date entry_price exit_date exit_price quantity contract_size net_pnl return_pct",
+    )
+    .sort({ exit_date: -1 })
+    .limit(300)
+
+  let healed = 0
+  for (const trade of recent) {
+    const { exit_date, exit_price } = await findReversalExitFill(userId, trade, {
+      entry_date: trade.exit_date,
+      entry_price: trade.exit_price,
+    })
+
+    if (
+      !exit_date ||
+      exit_price == null ||
+      !Number.isFinite(exit_price) ||
+      exit_price <= 0 ||
+      !trade.exit_date
+    ) {
+      continue
+    }
+
+    const currentExitMs = trade.exit_date.getTime()
+    const correctExitMs = exit_date.getTime()
+    if (Math.abs(currentExitMs - correctExitMs) <= 60_000 && sameEntryPrice(trade.exit_price, exit_price)) {
+      continue
+    }
+
+    // Only heal when the stored exit is clearly later than the first reversal fill.
+    if (correctExitMs >= currentExitMs) continue
+
+    applySyntheticClose(trade, exit_date, exit_price)
+    await trade.save()
+    healed += 1
+  }
+
+  return healed
 }
 
 /**
