@@ -97,5 +97,12 @@
     "tailwindcss": "^4.1.9",
     "tw-animate-css": "1.3.3",
     "typescript": "^5"
+  },
+  "allowScripts": {
+    "@mongodb-js/zstd@2.0.1": true,
+    "@tailwindcss/oxide@4.1.11": true,
+    "kerberos@2.2.2": true,
+    "mongodb-client-encryption@6.4.0": true,
+    "sharp@0.34.5": true
   }
 }
