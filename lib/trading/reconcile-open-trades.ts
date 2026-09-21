@@ -2,7 +2,7 @@ import "server-only"
 
 import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
-import { sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
+import { sanitizeTvClosedEconomics, shouldTrustTvScrapedProfit } from "@/lib/trading/close-pnl"
 import { extractTradeLevelFields } from "@/lib/trading/signal-levels"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isOpenSyncedTrade } from "@/lib/trading/tradingview-open"
@@ -126,16 +126,19 @@ export async function reconcileStaleOpenTrades(
       continue
     }
 
-    const metrics = sanitizeTvClosedEconomics({
-      trade_type: trade.trade_type,
-      entry_price: trade.entry_price,
-      exit_price,
-      quantity: trade.quantity,
-      contract_size: trade.contract_size,
-      instrument: trade.instrument,
-      net_pnl: trade.net_pnl,
-      return_pct: trade.return_pct,
-    })
+    const metrics = sanitizeTvClosedEconomics(
+      {
+        trade_type: trade.trade_type,
+        entry_price: trade.entry_price,
+        exit_price,
+        quantity: trade.quantity,
+        contract_size: trade.contract_size,
+        instrument: trade.instrument,
+        net_pnl: trade.net_pnl,
+        return_pct: trade.return_pct,
+      },
+      { fillOnly: true },
+    )
     await Trade.updateOne(
       { _id: trade._id, userId },
       {
@@ -144,6 +147,7 @@ export async function reconcileStaleOpenTrades(
           exit_price,
           net_pnl: metrics.net_pnl,
           return_pct: metrics.return_pct,
+          quantity: metrics.quantity,
         },
       },
     )
@@ -187,19 +191,23 @@ export async function closeDuplicateLiveOpens(userId: string) {
     // Real re-entry on a different fill — close the older leg.
     trade.exit_date = keeper.entry_date || new Date()
     if (keeper.entry_price != null) trade.exit_price = keeper.entry_price
-    if (trade.exit_price != null && typeof trade.net_pnl !== "number") {
-      const metrics = sanitizeTvClosedEconomics({
-        trade_type: trade.trade_type,
-        entry_price: trade.entry_price,
-        exit_price: trade.exit_price,
-        quantity: trade.quantity,
-        contract_size: trade.contract_size,
-        instrument: trade.instrument,
-        net_pnl: trade.net_pnl,
-        return_pct: trade.return_pct,
-      })
+    if (trade.exit_price != null) {
+      const metrics = sanitizeTvClosedEconomics(
+        {
+          trade_type: trade.trade_type,
+          entry_price: trade.entry_price,
+          exit_price: trade.exit_price,
+          quantity: trade.quantity,
+          contract_size: trade.contract_size,
+          instrument: trade.instrument,
+          net_pnl: trade.net_pnl,
+          return_pct: trade.return_pct,
+        },
+        { fillOnly: true },
+      )
       trade.net_pnl = metrics.net_pnl
       trade.return_pct = metrics.return_pct
+      trade.quantity = metrics.quantity
     }
     await trade.save()
     closed.push(trade)
@@ -273,16 +281,19 @@ function applySyntheticClose(
   exit_date: Date,
   exit_price: number,
 ) {
-  const metrics = sanitizeTvClosedEconomics({
-    trade_type: trade.trade_type,
-    entry_price: trade.entry_price,
-    exit_price,
-    quantity: trade.quantity,
-    contract_size: trade.contract_size,
-    instrument: trade.instrument,
-    net_pnl: trade.net_pnl,
-    return_pct: trade.return_pct,
-  })
+  const metrics = sanitizeTvClosedEconomics(
+    {
+      trade_type: trade.trade_type,
+      entry_price: trade.entry_price,
+      exit_price,
+      quantity: trade.quantity,
+      contract_size: trade.contract_size,
+      instrument: trade.instrument,
+      net_pnl: trade.net_pnl,
+      return_pct: trade.return_pct,
+    },
+    { fillOnly: true },
+  )
 
   trade.exit_date = exit_date
   trade.exit_price = exit_price
@@ -403,7 +414,6 @@ export async function healMisclosedSameFillOpens(userId: string) {
     const pnl = typeof trade.net_pnl === "number" ? trade.net_pnl : NaN
     if (Number.isFinite(pnl) && Math.abs(pnl) > 0.01) continue
 
-    const key = tradeSideKey(trade)
     const stillOpen = await Trade.findOne({
       userId,
       source: "tradingview",
@@ -413,8 +423,32 @@ export async function healMisclosedSameFillOpens(userId: string) {
       entry_date: { $gte: trade.entry_date },
     }).sort({ entry_date: -1 })
 
-    if (!stillOpen) continue
-    if (!sameEntryPrice(stillOpen.entry_price, trade.entry_price)) continue
+    let shouldReopen = Boolean(
+      stillOpen && sameEntryPrice(stillOpen.entry_price, trade.entry_price),
+    )
+
+    if (!shouldReopen) {
+      const newerClosed = await Trade.findOne({
+        userId,
+        source: "tradingview",
+        instrument: trade.instrument,
+        trade_type: trade.trade_type,
+        exit_date: { $exists: true, $ne: null },
+        entry_date: { $gt: trade.entry_date },
+      }).select("_id")
+
+      const newerOpen = await Trade.findOne({
+        userId,
+        source: "tradingview",
+        instrument: trade.instrument,
+        $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+        entry_date: { $gt: trade.entry_date },
+      }).select("_id")
+
+      shouldReopen = !newerClosed && !newerOpen
+    }
+
+    if (!shouldReopen) continue
 
     await Trade.updateOne(
       { _id: trade._id, userId },
@@ -469,21 +503,25 @@ export async function healIncompleteTvCloses(userId: string) {
     const exit_price = trade.exit_price ?? keeper?.entry_price
     if (exit_price == null || !Number.isFinite(exit_price) || exit_price <= 0) continue
 
-    const metrics = sanitizeTvClosedEconomics({
-      trade_type: trade.trade_type,
-      entry_price: trade.entry_price,
-      exit_price,
-      quantity: trade.quantity,
-      contract_size: trade.contract_size,
-      instrument: trade.instrument,
-      net_pnl: trade.net_pnl,
-      return_pct: trade.return_pct,
-    })
+    const metrics = sanitizeTvClosedEconomics(
+      {
+        trade_type: trade.trade_type,
+        entry_price: trade.entry_price,
+        exit_price,
+        quantity: trade.quantity,
+        contract_size: trade.contract_size,
+        instrument: trade.instrument,
+        net_pnl: trade.net_pnl,
+        return_pct: trade.return_pct,
+      },
+      { fillOnly: true },
+    )
 
     const patch: Record<string, unknown> = {}
     if (trade.exit_price == null) patch.exit_price = exit_price
-    if (typeof trade.net_pnl !== "number") patch.net_pnl = metrics.net_pnl
-    if (typeof trade.return_pct !== "number") patch.return_pct = metrics.return_pct
+    patch.net_pnl = metrics.net_pnl
+    patch.return_pct = metrics.return_pct
+    patch.quantity = metrics.quantity
     if (!Object.keys(patch).length) continue
 
     await Trade.updateOne({ _id: trade._id, userId }, { $set: patch })
@@ -520,18 +558,58 @@ export async function healNotionalTvPnls(userId: string, accountId?: string) {
   }> = []
 
   for (const trade of closed) {
-    if (trade.exit_price == null || typeof trade.net_pnl !== "number") continue
-    const metrics = sanitizeTvClosedEconomics({
-      trade_type: trade.trade_type,
-      entry_price: trade.entry_price,
-      exit_price: trade.exit_price,
-      quantity: trade.quantity,
-      contract_size: trade.contract_size,
-      instrument: trade.instrument,
-      net_pnl: trade.net_pnl,
-      return_pct: trade.return_pct,
-    })
-    const pnlChanged = Math.abs(metrics.net_pnl - trade.net_pnl) >= 0.02
+    if (trade.exit_price == null) continue
+
+    const fromFill = sanitizeTvClosedEconomics(
+      {
+        trade_type: trade.trade_type,
+        entry_price: trade.entry_price,
+        exit_price: trade.exit_price,
+        quantity: trade.quantity,
+        contract_size: trade.contract_size,
+        instrument: trade.instrument,
+        net_pnl: trade.net_pnl,
+        return_pct: trade.return_pct,
+      },
+      { fillOnly: true },
+    )
+
+    const hybrid =
+      typeof trade.net_pnl === "number"
+        ? sanitizeTvClosedEconomics({
+            trade_type: trade.trade_type,
+            entry_price: trade.entry_price,
+            exit_price: trade.exit_price,
+            quantity: trade.quantity,
+            contract_size: trade.contract_size,
+            instrument: trade.instrument,
+            net_pnl: trade.net_pnl,
+            return_pct: trade.return_pct,
+            tv_scraped_profit: trade.net_pnl,
+            tv_scraped_return_pct: trade.return_pct,
+          })
+        : fromFill
+
+    const metrics =
+      typeof trade.net_pnl === "number" &&
+      shouldTrustTvScrapedProfit(
+        {
+          trade_type: trade.trade_type,
+          entry_price: trade.entry_price,
+          exit_price: trade.exit_price,
+          quantity: trade.quantity,
+          contract_size: trade.contract_size,
+          instrument: trade.instrument,
+          net_pnl: trade.net_pnl,
+          return_pct: trade.return_pct,
+        },
+        trade.net_pnl,
+        fromFill.net_pnl,
+      )
+        ? hybrid
+        : fromFill
+
+    const pnlChanged = Math.abs(metrics.net_pnl - (trade.net_pnl ?? 0)) >= 0.02
     const qtyChanged = metrics.quantity !== trade.quantity
     const pctChanged = Math.abs((metrics.return_pct ?? 0) - (trade.return_pct ?? 0)) >= 0.01
     if (!pnlChanged && !qtyChanged && !pctChanged) continue

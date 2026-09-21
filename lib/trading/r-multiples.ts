@@ -3,7 +3,7 @@ import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
 import type { AnalyticsTrade } from "@/lib/trading/analytics"
 import { calculateRisk, calculateRR } from "@/lib/trading/calculator"
 
-export type RMethod = "stop_loss" | "median_loss"
+export type RMethod = "challenge_r" | "stop_loss" | "median_loss"
 
 export type FundedTrade = AnalyticsTrade & {
   entry_price?: number | null
@@ -88,6 +88,54 @@ function buildDistribution(rMultiples: number[]) {
       return value >= def.min && value < def.max
     }).length,
   }))
+}
+
+/** Map closed-trade P&L to R using the funded challenge's planned 1R (risk $). */
+export function computeChallengeRStats(trades: FundedTrade[], oneR: number): RMultipleStats {
+  if (!(oneR > 0)) {
+    return {
+      method: "challenge_r",
+      sampleSize: 0,
+      stopLossSampleSize: 0,
+      rMultiples: [],
+      avgWinR: 0,
+      avgLossR: 0,
+      expectancyR: 0,
+      avgRrRatio: null,
+      winRate: 0,
+      lossRate: 0,
+      distribution: buildDistribution([]),
+    }
+  }
+
+  const rMultiples = trades
+    .filter((trade): trade is FundedTrade & { net_pnl: number } => typeof trade.net_pnl === "number")
+    .map((trade) => trade.net_pnl / oneR)
+    .filter((value) => Number.isFinite(value))
+
+  const wins = rMultiples.filter((value) => value > 0)
+  const losing = rMultiples.filter((value) => value < 0)
+  const n = rMultiples.length
+  const winRate = n ? wins.length / n : 0
+  const lossRate = n ? losing.length / n : 0
+  const avgWinR = mean(wins)
+  const avgLossR = mean(losing)
+  const expectancyR = n ? winRate * avgWinR + lossRate * avgLossR : 0
+  const avgRrRatio = avgLossR < 0 ? Math.abs(avgWinR / avgLossR) : null
+
+  return {
+    method: "challenge_r",
+    sampleSize: n,
+    stopLossSampleSize: 0,
+    rMultiples,
+    avgWinR,
+    avgLossR,
+    expectancyR,
+    avgRrRatio,
+    winRate,
+    lossRate,
+    distribution: buildDistribution(rMultiples),
+  }
 }
 
 export function computeRMultipleStats(trades: FundedTrade[]): RMultipleStats {

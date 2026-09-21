@@ -26,9 +26,11 @@ import {
   fetchClosedTrades,
   RESEARCH_TRADE_SELECT,
 } from "@/lib/trading/trade-query"
+import { sendTradePushToUser } from "@/lib/push/web-push"
 import { notifyTelegramTradeEvent } from "@/lib/telegram/send-trade-alert"
 import { buildTelegramCoachCaption } from "@/lib/telegram/coach-caption"
 import { buildTradeMomentAdvice } from "@/lib/trading/trade-moment-advice"
+import { FRESH_FILL_MS } from "@/lib/trading/live-fill-alerts"
 
 export const ALERT_RETENTION_DAYS = 2
 
@@ -265,6 +267,12 @@ function telegramAlreadySent(doc: { context?: Record<string, unknown> | null } |
   return typeof value === "string" || value instanceof Date
 }
 
+function isFreshTradeAlertTime(iso?: string | null) {
+  if (!iso) return false
+  const ms = new Date(iso).getTime()
+  return Number.isFinite(ms) && Date.now() - ms <= FRESH_FILL_MS
+}
+
 export async function persistNewTradeAlert(
   userId: string,
   accountId: string,
@@ -280,6 +288,10 @@ export async function persistNewTradeAlert(
   photo?: Buffer | null,
 ) {
   if (trade.is_open === false) return
+  if (!isFreshTradeAlertTime(trade.entry_date)) {
+    console.info(`[alerts] skip stale open ${trade.instrument} entry=${trade.entry_date}`)
+    return
+  }
 
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
   const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
@@ -305,6 +317,12 @@ export async function persistNewTradeAlert(
   } catch (error) {
     console.error("Telegram new-trade alert failed:", error)
   }
+  void sendTradePushToUser(userId, {
+    title: `New ${side} · ${trade.instrument}`,
+    body: `${side} opened @ ${price}${accountName ? ` · ${accountName}` : ""}`,
+    url: "/live-sync",
+    tag: `open:${trade.id}`,
+  }).catch((error) => console.error("Web push open alert failed:", error))
   try {
     await persistAlerts(userId, accountId, [
       {
@@ -344,6 +362,11 @@ export async function persistClosedTradeAlert(
   accountName?: string,
   photo?: Buffer | null,
 ) {
+  if (!isFreshTradeAlertTime(trade.exit_date ?? trade.entry_date)) {
+    console.info(`[alerts] skip stale close ${trade.instrument} exit=${trade.exit_date ?? trade.entry_date}`)
+    return
+  }
+
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
   const price = Number.isFinite(trade.entry_price) ? trade.entry_price : 0
   const alertKey = `trade-closed:${trade.id}`
@@ -372,6 +395,16 @@ export async function persistClosedTradeAlert(
   } catch (error) {
     console.error("Telegram closed-trade alert failed:", error)
   }
+  const pnl =
+    typeof trade.net_pnl === "number" && Number.isFinite(trade.net_pnl)
+      ? `${trade.net_pnl >= 0 ? "+" : ""}${trade.net_pnl.toFixed(2)}`
+      : null
+  void sendTradePushToUser(userId, {
+    title: `${side} closed · ${trade.instrument}`,
+    body: pnl ? `P&L ${pnl}${accountName ? ` · ${accountName}` : ""}` : `Closed @ ${price}`,
+    url: "/live-sync",
+    tag: `close:${trade.id}`,
+  }).catch((error) => console.error("Web push close alert failed:", error))
   try {
     await persistAlerts(userId, accountId, [
       {

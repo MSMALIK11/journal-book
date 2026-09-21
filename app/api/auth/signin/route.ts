@@ -1,7 +1,13 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { authenticateUser } from "@/lib/auth-server"
 import { checkRateLimit, clearRateLimit, getRateLimitKey } from "@/lib/rate-limit"
-import { createSessionToken, SESSION_COOKIE, sessionCookieOptions } from "@/lib/session"
+import {
+  createSessionToken,
+  SESSION_COOKIE,
+  SESSION_MAX_AGE,
+  SESSION_SHORT_AGE,
+  sessionCookieOptions,
+} from "@/lib/session"
 import { signInSchema } from "@/lib/validations/auth"
 
 export async function POST(request: NextRequest) {
@@ -38,12 +44,14 @@ export async function POST(request: NextRequest) {
     }
 
     clearRateLimit(rateLimitKey)
-    const token = await createSessionToken(user.id, user.email)
+    const remember = parsed.data.rememberMe !== false
+    const maxAge = remember ? SESSION_MAX_AGE : SESSION_SHORT_AGE
+    const token = await createSessionToken(user.id, user.email, maxAge)
     const response = NextResponse.json(
       { user },
       { headers: { "Cache-Control": "no-store" } },
     )
-    response.cookies.set(SESSION_COOKIE, token, sessionCookieOptions)
+    response.cookies.set(SESSION_COOKIE, token, sessionCookieOptions(maxAge))
     return response
   } catch (error) {
     console.error("Sign-in failed:", error)

@@ -797,6 +797,28 @@ export function DeltaOrderTicket({
             </p>
           ) : null}
 
+          <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-2.5 py-2">
+            <div>
+              <p className="text-xs font-medium">TV distance SL/TP</p>
+              <p className="text-[11px] text-muted-foreground">
+                Apply TV point offset from Delta fill price
+              </p>
+            </div>
+            <Switch
+              checked={autoTrade.attachTvBrackets}
+              disabled={autoTrade.loading || autoTrade.saving}
+              onCheckedChange={(checked) => {
+                void autoTrade.toggleAttachTvBrackets(checked).catch((error) => {
+                  toast({
+                    title: "Could not update SL/TP setting",
+                    description: error instanceof Error ? error.message : "Unknown error",
+                    variant: "destructive",
+                  })
+                })
+              }}
+            />
+          </div>
+
           <p className="text-[11px] text-muted-foreground">
             Tick the products to auto-trade. A blank Lot box sizes from {selectedPct ?? 25}% margin.
           </p>

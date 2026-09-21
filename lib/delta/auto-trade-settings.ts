@@ -21,6 +21,7 @@ export type DeltaAutoTradeConfig = {
   marginPct: DeltaAutoTradeMarginPct
   leverageBySymbol?: DeltaLeverageBySymbol
   lotSizeBySymbol?: DeltaLotSizeBySymbol
+  attachTvBrackets?: boolean
 }
 
 export type DeltaAutoTradePreferences = {
@@ -36,6 +37,7 @@ export const DEFAULT_DELTA_AUTO_TRADE_CONFIG: DeltaAutoTradeConfig = {
   symbol: "BTCUSD",
   symbols: ["BTCUSD"],
   marginPct: 25,
+  attachTvBrackets: true,
 }
 
 export function isDeltaAutoTradeSymbol(value: string): value is DeltaAutoTradeSymbol {
@@ -139,6 +141,7 @@ export function normalizeDeltaAutoTradeConfig(
     marginPct: normalizeMarginPct(input?.marginPct),
     leverageBySymbol: normalizeLeverageBySymbol(input?.leverageBySymbol),
     lotSizeBySymbol: normalizeLotSizeBySymbol(input?.lotSizeBySymbol),
+    attachTvBrackets: input?.attachTvBrackets !== false,
   }
 }
 

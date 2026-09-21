@@ -34,6 +34,8 @@ export type FundedHelpTermId =
   | "profit-split"
   | "stage-badges"
   | "target-probability"
+  | "pass-verdict"
+  | "challenge-r"
 
 type HelpContextValue = {
   openHelp: (term?: FundedHelpTermId) => void
@@ -48,10 +50,12 @@ function useFundedRoadmapHelp() {
 }
 
 const HOW_TO_USE = [
-  "Pick an account in the sidebar. Every number on this page comes from that account’s closed trades.",
-  "Set risk % (or fixed $) and firm rules. The $5K → $1M ladder recalculates from those settings.",
-  "Reach target % is not a guarantee. It is how many of 1,000 simulated futures hit the profit target first, using your past R-multiples.",
-  "Do not risk more than 1R per trade. Breaking daily or max drawdown fails the challenge.",
+  "Start with Can you pass? — green means your history + Monte Carlo support attempting the challenge at planned 1R; red means fix edge, sample size, or risk first.",
+  "Pick an account in the sidebar. Every number comes from that account’s closed trades on the active filter.",
+  "Set risk % (or fixed $) and firm rules. R and timelines use your planned 1R (e.g. $50 on $5K @ 1%), not chart stop distance.",
+  "Plan around Conservative trades/days — not Happy flow. Happy flow is the lucky 10% of simulations.",
+  "Reach target % = how many of 1,000 simulated futures hit profit target before max DD. Hit max DD first % = fail rate in those sims.",
+  "Do not risk more than 1R per trade. Stop for the day when daily DD is hit.",
 ]
 
 const GLOSSARY: { id: FundedHelpTermId; term: string; meaning: string }[] = [
@@ -174,6 +178,18 @@ const GLOSSARY: { id: FundedHelpTermId; term: string; meaning: string }[] = [
     meaning:
       "The card that groups Reach target %, Hit max DD first, median trades, and P5 / P95 from the 1,000 simulations.",
   },
+  {
+    id: "pass-verdict",
+    term: "Can you pass?",
+    meaning:
+      "Seven checks: positive expectancy, enough trades, reach target %, fail-before-target %, stress streak vs max DD, historical DD, and sim timeouts. Likely pass = most green; unlikely = fix before funding.",
+  },
+  {
+    id: "challenge-r",
+    term: "Challenge 1R",
+    meaning:
+      "Your planned risk per trade on this challenge (e.g. 1% of $5K = $50). Every historical trade is converted to R as P&L ÷ that 1R so timelines match how you will actually trade the eval.",
+  },
 ]
 
 export function FundedRoadmapHelpProvider({ children }: { children: ReactNode }) {
@@ -248,10 +264,11 @@ export function FundedRoadmapHelpProvider({ children }: { children: ReactNode })
             <section className="mt-6 space-y-2 pb-2">
               <h3 className="text-xs font-semibold tracking-wide text-cyan-200 uppercase">What to watch</h3>
               <ul className="list-disc space-y-2 pl-5 text-sm text-muted-foreground">
-                <li>Keep risk at 1R. If Stress 2× breaks max DD, lower the risk %.</li>
-                <li>Plan time-to-target around P95, not the happy-flow or P5 number.</li>
-                <li>Low confidence or fewer than 100 trades: treat every % as a sketch, not a plan.</li>
-                <li>Hit max DD first % is the fail rate in the sims — that is the number to respect.</li>
+                <li>Can you pass? red → do not fund yet. Yellow → only with strict rules. Green → still not a guarantee.</li>
+                <li>Keep risk at recommended 1R. If Stress 2× breaks max DD, lower the risk %.</li>
+                <li>Plan time-to-target around Conservative / P90, not Happy flow or P10.</li>
+                <li>Fewer than 100 trades: every % is low confidence — collect more data first.</li>
+                <li>Hit max DD first % is the simulated fail rate — respect it over Reach target %.</li>
               </ul>
             </section>
           </div>

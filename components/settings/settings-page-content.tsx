@@ -5,6 +5,7 @@ import { AccountsSettings } from "@/components/settings/accounts-settings"
 import { AlertSettings } from "@/components/settings/alert-settings"
 import { LiveSyncSettings } from "@/components/settings/live-sync-settings"
 import { AutoExportSettings } from "@/components/settings/auto-export-settings"
+import { PwaAlertsSettings } from "@/components/settings/pwa-alerts-settings"
 import { TradeAlarmSettings } from "@/components/settings/trade-alarm-settings"
 import { TelegramSettings } from "@/components/settings/telegram-settings"
 import { HudPanel } from "@/components/dashboard/hud-panel"
@@ -30,6 +31,7 @@ export function SettingsPageContent() {
       <div className="space-y-3">
         <AccountsSettings />
         <TradeAlarmSettings />
+        <PwaAlertsSettings />
         <TelegramSettings />
         <AlertSettings />
         <LiveSyncSettings />

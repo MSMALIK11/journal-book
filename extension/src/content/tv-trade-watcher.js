@@ -5,9 +5,9 @@
 
   let lastFingerprint = ""
   let debounceTimer = null
-  const DEBOUNCE_MS = 200
+  const DEBOUNCE_MS = 80
   // Fingerprint poll only — actual table scrape is light (top rows), not full scan.
-  const POLL_MS = 2_000
+  const POLL_MS = 900
 
   function tableFingerprint() {
     const root =

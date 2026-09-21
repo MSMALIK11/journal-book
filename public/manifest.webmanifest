@@ -1,0 +1,38 @@
+{
+  "name": "Trading Journal",
+  "short_name": "Journal",
+  "description": "Live sync, trade alerts, and journal for TradingView fills",
+  "start_url": "/live-sync",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#05070a",
+  "theme_color": "#05070a",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Live Sync",
+      "url": "/live-sync",
+      "description": "Watch live TradingView fills"
+    },
+    {
+      "name": "Settings",
+      "url": "/settings",
+      "description": "Alerts and Telegram"
+    }
+  ]
+}

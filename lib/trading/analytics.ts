@@ -36,6 +36,14 @@ export type WeeklyBucket = BucketStats & {
   grossLoss: number
 }
 
+export type MonthlyBucket = BucketStats & {
+  grossProfit: number
+  grossLoss: number
+  /** Compounded return % from TV per-trade return_pct in this month. */
+  returnPct: number | null
+  returnTrades: number
+}
+
 export type AvoidInsight = {
   key: string
   label: string
@@ -124,13 +132,16 @@ export type AnalyticsResult = {
     holdTimeTrades: number
     tradingDays: number
     avgTradesPerDay: number
+    medianTradesPerDay: number
     minTradesPerDay: number
     maxTradesPerDay: number
+    calendarWeeks: number
+    avgTradesPerWeek: number
   }
   equityCurve: EquityPoint[]
   byHour: BucketStats[]
   byWeekday: BucketStats[]
-  byMonth: BucketStats[]
+  byMonth: MonthlyBucket[]
   byWeek: WeeklyBucket[]
   bySession: BucketStats[]
   avoid: {
@@ -208,14 +219,41 @@ function formatDayLabel(dateKey: string, timezone: string): string {
   }).format(parsed)
 }
 
-/** Monday yyyy-MM-dd for a calendar day (already in user timezone). */
-function mondayKeyFromDay(day: string): string {
+function median(values: number[]) {
+  if (!values.length) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+function getTradeCloseAnchor(trade: AnalyticsTrade): Date | null {
+  return toDate(trade.exit_date) ?? toDate(trade.entry_date)
+}
+
+/** Monday yyyy-MM-dd for a calendar day key (already in user timezone). */
+function mondayKeyFromDay(day: string, timezone: string): string {
+  const anchor = new Date(`${day}T12:00:00.000Z`)
+  if (Number.isNaN(anchor.getTime())) return day
+  const weekday = normalizeWeekday(getZonedParts(anchor, timezone).weekday)
+  const dayOffset = WEEKDAY_ORDER.indexOf(weekday as (typeof WEEKDAY_ORDER)[number])
+  if (dayOffset < 0) return day
+
   const [y, m, d] = day.split("-").map(Number)
-  const date = new Date(y, m - 1, d)
-  const dow = date.getDay()
-  const diff = dow === 0 ? -6 : 1 - dow
-  date.setDate(date.getDate() + diff)
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+  const mondayUtc = Date.UTC(y, m - 1, d) - dayOffset * 86_400_000
+  const monday = new Date(mondayUtc)
+  return `${monday.getUTCFullYear()}-${String(monday.getUTCMonth() + 1).padStart(2, "0")}-${String(monday.getUTCDate()).padStart(2, "0")}`
+}
+
+function calendarWeeksSpan(dayKeys: string[]): number {
+  if (!dayKeys.length) return 0
+  const sorted = [...dayKeys].sort()
+  const [y1, m1, d1] = sorted[0].split("-").map(Number)
+  const [y2, m2, d2] = sorted[sorted.length - 1].split("-").map(Number)
+  const spanDays = Math.max(
+    1,
+    Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86_400_000) + 1,
+  )
+  return Math.max(1, spanDays / 7)
 }
 
 function formatWeekLabel(mondayKey: string): string {
@@ -224,6 +262,34 @@ function formatWeekLabel(mondayKey: string): string {
   const end = new Date(y, m - 1, d + 6)
   const fmt = (dt: Date) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" })
   return `${fmt(start)} – ${fmt(end)}, ${end.getFullYear()}`
+}
+
+function formatMonthLabel(monthKey: string): string {
+  const [y, m] = monthKey.split("-").map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return monthKey
+  return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric" }).format(
+    new Date(y, m - 1, 1),
+  )
+}
+
+function compoundReturnPct(values: number[]): number | null {
+  if (!values.length) return null
+  const product = values.reduce((acc, r) => acc * (1 + r / 100), 1)
+  return Math.round((product - 1) * 10000) / 100
+}
+
+function buildMonthlyBucket(
+  key: string,
+  label: string,
+  pnls: number[],
+  returns: number[],
+): MonthlyBucket {
+  const base = buildWeeklyBucket(key, label, pnls)
+  return {
+    ...base,
+    returnPct: compoundReturnPct(returns),
+    returnTrades: returns.length,
+  }
 }
 
 function buildWeeklyBucket(key: string, label: string, pnls: number[]): WeeklyBucket {
@@ -399,6 +465,7 @@ export function computeAnalytics(
   const hourMap = new Map<number, number[]>()
   const weekdayMap = new Map<string, number[]>()
   const monthMap = new Map<string, number[]>()
+  const monthReturnMap = new Map<string, number[]>()
   const sessionMap = new Map<string, number[]>()
   const dayMap = new Map<string, number[]>()
   const weekMap = new Map<string, number[]>()
@@ -412,24 +479,32 @@ export function computeAnalytics(
   let shortPnl = 0
 
   for (const trade of closed) {
-    const entry = toDate(trade.entry_date)
-    if (!entry) continue
+    const closeAnchor = getTradeCloseAnchor(trade)
+    if (!closeAnchor) continue
 
-    const { hour, minute, weekday, month, day } = getZonedParts(entry, timezone)
-    const session = classifySession(hour, minute)
-    const wd = normalizeWeekday(weekday)
+    const entry = toDate(trade.entry_date)
+    const closeParts = getZonedParts(closeAnchor, timezone)
 
     const push = (map: Map<string | number, number[]>, key: string | number, pnl: number) => {
       if (!map.has(key)) map.set(key, [])
       map.get(key)!.push(pnl)
     }
 
-    push(hourMap, hour, trade.net_pnl)
-    push(weekdayMap, wd, trade.net_pnl)
-    push(monthMap, month, trade.net_pnl)
-    push(sessionMap, session, trade.net_pnl)
-    push(dayMap, day, trade.net_pnl)
-    push(weekMap, mondayKeyFromDay(day), trade.net_pnl)
+    if (entry) {
+      const { hour, minute, weekday } = getZonedParts(entry, timezone)
+      const session = classifySession(hour, minute)
+      const wd = normalizeWeekday(weekday)
+      push(hourMap, hour, trade.net_pnl)
+      push(weekdayMap, wd, trade.net_pnl)
+      push(sessionMap, session, trade.net_pnl)
+    }
+
+    push(dayMap, closeParts.day, trade.net_pnl)
+    push(weekMap, mondayKeyFromDay(closeParts.day, timezone), trade.net_pnl)
+    push(monthMap, closeParts.month, trade.net_pnl)
+    if (typeof trade.return_pct === "number" && Number.isFinite(trade.return_pct)) {
+      push(monthReturnMap, closeParts.month, trade.return_pct)
+    }
 
     const strategy = trade.strategy?.trim() || "Unknown"
     const signal = trade.signal?.trim() || "—"
@@ -455,7 +530,9 @@ export function computeAnalytics(
 
   const byMonth = [...monthMap.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([month, pnls]) => buildBucket(month, month, pnls))
+    .map(([month, pnls]) =>
+      buildMonthlyBucket(month, formatMonthLabel(month), pnls, monthReturnMap.get(month) ?? []),
+    )
 
   const byWeek = [...weekMap.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -518,10 +595,14 @@ export function computeAnalytics(
   const worstDayPnl = worstDayEntry ? worstDayEntry[1].reduce((s, p) => s + p, 0) : 0
 
   const tradesPerDayCounts = [...dayMap.values()].map((pnls) => pnls.length)
+  const datedTrades = tradesPerDayCounts.reduce((sum, count) => sum + count, 0)
   const tradingDays = tradesPerDayCounts.length
-  const avgTradesPerDay = tradingDays ? closed.length / tradingDays : 0
+  const avgTradesPerDay = tradingDays ? datedTrades / tradingDays : 0
+  const medianTradesPerDay = median(tradesPerDayCounts)
   const minTradesPerDay = tradingDays ? Math.min(...tradesPerDayCounts) : 0
   const maxTradesPerDay = tradingDays ? Math.max(...tradesPerDayCounts) : 0
+  const calendarWeeks = calendarWeeksSpan([...dayMap.keys()])
+  const avgTradesPerWeek = calendarWeeks > 0 ? datedTrades / calendarWeeks : 0
   const accountWinRate = closed.length ? (wins.length / closed.length) * 100 : 0
   const zoneThresholds = computeZoneThresholds({ winRate: accountWinRate })
 
@@ -556,10 +637,16 @@ export function computeAnalytics(
         ? { date: worstDayEntry[0], pnl: worstDayEntry[1].reduce((s, p) => s + p, 0) }
         : null,
       bestMonth: bestMonthEntry
-        ? { month: bestMonthEntry[0], pnl: bestMonthEntry[1].reduce((s, p) => s + p, 0) }
+        ? {
+            month: formatMonthLabel(bestMonthEntry[0]),
+            pnl: bestMonthEntry[1].reduce((s, p) => s + p, 0),
+          }
         : null,
       worstMonth: worstMonthEntry
-        ? { month: worstMonthEntry[0], pnl: worstMonthEntry[1].reduce((s, p) => s + p, 0) }
+        ? {
+            month: formatMonthLabel(worstMonthEntry[0]),
+            pnl: worstMonthEntry[1].reduce((s, p) => s + p, 0),
+          }
         : null,
       avgHoldTimeMs: averageMs(holdTimes),
       avgHoldTimeWinMs: averageMs(winHoldTimes),
@@ -567,8 +654,11 @@ export function computeAnalytics(
       holdTimeTrades: holdTimes.length,
       tradingDays,
       avgTradesPerDay,
+      medianTradesPerDay,
       minTradesPerDay,
       maxTradesPerDay,
+      calendarWeeks,
+      avgTradesPerWeek,
     },
     equityCurve,
     byHour,

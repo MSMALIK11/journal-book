@@ -32,9 +32,6 @@ type Options = {
 const POLL_SSE_UP_MS = 15_000
 const POLL_SSE_DOWN_MS = 2_000
 const POLL_HIDDEN_MS = 30_000
-// On mount the stored event is history, so anything older than this is used only
-// as a baseline — otherwise every page load replays the last trade's alarm.
-const STALE_EVENT_MS = 2 * 60_000
 
 /** SSE + extension DOM event + DB poll backup — reliable UI refresh after TV sync. */
 function logicalSyncKey(detail: TradeSyncEventDetail) {
@@ -142,7 +139,6 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
           return
         }
 
-        const alreadyHadLiveEvent = Boolean(lastEventIdRef.current)
         const wasPrimed = primed
         primed = true
         lastServerEventIdRef.current = serverEventId
@@ -154,14 +150,7 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
           for (const event of events) {
             if (event.eventId) seenEventIdsRef.current.add(String(event.eventId))
           }
-          // History, or DOM/SSE already delivered this fill — do not replay the alarm.
-          if (alreadyHadLiveEvent) return
-          for (const event of events) {
-            const ageMs = event.at ? Date.now() - new Date(event.at).getTime() : 0
-            if (ageMs > STALE_EVENT_MS) continue
-            seenEventIdsRef.current.delete(String(event.eventId))
-            handleEvent({ type: "trades_updated", ...event })
-          }
+          // Page load must not replay stored events — only live SSE/DOM fills should alarm.
           return
         }
 

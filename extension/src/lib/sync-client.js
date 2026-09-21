@@ -90,6 +90,20 @@ JBSync.isPaintedMtmOpen = function isPaintedMtmOpen(trade) {
   return Math.abs(exitMs - entryMs) <= 90_000 && Math.abs(exitPrice - entryPrice) / entryPrice <= 0.0002
 }
 
+JBSync.isFlatMtmOpen = function isFlatMtmOpen(trade) {
+  const entry = trade?.entry
+  const exit = trade?.exit
+  if (!entry || !exit) return false
+  if (JBSync.isTpSlSignal(exit.signal)) return false
+  const entryPrice = Number(entry.price)
+  const exitPrice = Number(exit.price)
+  if (!Number.isFinite(entryPrice) || !Number.isFinite(exitPrice) || entryPrice <= 0) return false
+  if (Math.abs(exitPrice - entryPrice) / entryPrice > 0.0002) return false
+  if (typeof trade.netPnl === "number" && Math.abs(trade.netPnl) > 0.01) return false
+  if (typeof trade.returnPct === "number" && Math.abs(trade.returnPct) > 0.01) return false
+  return true
+}
+
 JBSync.isMtmUnrealizedOpen = function isMtmUnrealizedOpen(trade) {
   const entry = trade?.entry
   const exit = trade?.exit
@@ -118,6 +132,7 @@ JBSync.isOpenTrade = function isOpenTrade(trade) {
   if (leftoverOpen && !confirmedTpSl) return true
   if (!confirmedTpSl && JBSync.isPaintedMtmOpen(trade)) return true
   if (!confirmedTpSl && JBSync.isMtmUnrealizedOpen(trade)) return true
+  if (!confirmedTpSl && JBSync.isFlatMtmOpen(trade)) return true
   return false
 }
 
@@ -974,9 +989,17 @@ JBSync.sendTelegramScreenshotTest = async function sendTelegramScreenshotTest(co
   return JBSync.postJson(`${config.apiUrl}/api/sync/telegram-screenshot-test`, config.syncToken, payload)
 }
 
-JBSync.awaitChartScreenshot = async function awaitChartScreenshot(screenshotPromise) {
+JBSync.awaitChartScreenshot = async function awaitChartScreenshot(screenshotPromise, timeoutMs = 0) {
   try {
-    const screenshotJpeg = await screenshotPromise
+    let screenshotJpeg
+    if (timeoutMs > 0) {
+      screenshotJpeg = await Promise.race([
+        screenshotPromise,
+        new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+      ])
+    } else {
+      screenshotJpeg = await screenshotPromise
+    }
     return JBSync.isChartScreenshotDataUrl(screenshotJpeg) ? screenshotJpeg : null
   } catch {
     return null
@@ -1387,7 +1410,7 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
   const syncResult = await JBSync.syncTrades(newOrUpdated, config, symbol, {
     reconcileFromTrades: stamped,
     reconcile: true,
-    screenshotJpeg: await JBSync.awaitChartScreenshot(screenshotPromise),
+    screenshotJpeg: await JBSync.awaitChartScreenshot(screenshotPromise, 300),
   })
 
   const closedStale = syncResult.closedStale || 0
@@ -1452,13 +1475,22 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
 
   const tab = await JBSync.getTradingViewTab()
   const screenshotPromise = JBSync.captureChartScreenshot(tab)
-  const captured = await JBSync.readCapturedTradesFromTab(tab)
 
-  // Polls use light scrape (top ~40 rows + capture). Never full-table walk.
-  let result = await JBSync.scrapeFromActiveTab(false, { mode: "light" }).catch((error) => ({
-    trades: [],
-    error: error?.message || "Scrape failed",
-  }))
+  const [resultRaw, captured, snapshot] = await Promise.all([
+    JBSync.scrapeFromActiveTab(false, { mode: "light" }).catch((error) => ({
+      trades: [],
+      error: error?.message || "Scrape failed",
+    })),
+    JBSync.readCapturedTradesFromTab(tab),
+    JBSync.fetchKnownTradeSnapshot(config, { limit: 1500 }).catch(() => ({
+      ids: new Set(),
+      openIds: new Set(),
+      fps: new Set(),
+      openFps: new Set(),
+    })),
+  ])
+
+  let result = resultRaw
 
   if (result?.skippedDueToImportAll) {
     return {
@@ -1483,7 +1515,6 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
     }
   }
 
-  const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: 1500 })
   const chartSymbol =
     JBSync.normalizeChartSymbol(result?.instrument || captured.chartSymbol) ||
     JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
@@ -1534,7 +1565,7 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
     syncResult = await JBSync.syncTrades(newOrUpdated, config, chartSymbol, {
       reconcileFromTrades: result.trades,
       reconcile: scrapedOpens.length > 0,
-      screenshotJpeg: await JBSync.awaitChartScreenshot(screenshotPromise),
+      screenshotJpeg: await JBSync.awaitChartScreenshot(screenshotPromise, 300),
     })
   }
 

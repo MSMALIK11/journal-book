@@ -12,6 +12,13 @@ enableShort = input.bool(true, "Enable Short Trades", group=strategyGroup)
 emaLen = input.int(5, "Fast EMA Length", minval=1, group=strategyGroup)
 emaLen20 = input.int(20, "Slow EMA Length", minval=1, group=strategyGroup)
 rr = input.float(1.5, "Risk-Reward Ratio", minval=0.1, step=0.1, group=strategyGroup)
+tradeCooldownBars = input.int(
+     1,
+     "Bars to wait after trade closes",
+     minval=0,
+     maxval=50,
+     group=strategyGroup,
+     tooltip="After TP/SL close, skip new entries for this many bars. 0 = off. Reversals while in a trade still work.")
 
 //────────────────────────────────────────────
 // HEIKIN ASHI ENTRY FILTERS
@@ -173,50 +180,68 @@ getShortSignal(_ema) =>
 //────────────────────────────────────────────
 // LONG AND SHORT STRATEGY
 // Opposite entry automatically reverses position.
-// Entry comment carries TP/SL — journal extension reads List of Trades Signal column.
+// Full TP/SL in entry comment (journal extension also reads scanner dashboard SL/TP column).
+// One entry per bar + optional cooldown after each closed trade.
 //────────────────────────────────────────────
 var float chartTradeStop = na
 var float chartTradeTarget = na
+var int lastLongEntryBar = na
+var int lastShortEntryBar = na
+var int lastClosedTradeBar = na
 
-if enableLong and longSignal and strategy.position_size <= 0
-    longStop = low[1]
-    longRisk = close - longStop
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    lastClosedTradeBar := bar_index
 
-    if longRisk > syminfo.mintick
-        longTarget = close + longRisk * rr
-        chartTradeStop := longStop
-        chartTradeTarget := longTarget
+longStop = low[1]
+longRisk = close - longStop
+shortStop = high[1]
+shortRisk = shortStop - close
 
-        strategy.entry(
-             "Long",
-             strategy.long,
-             comment=f_slTpTableText("LONG", longTarget, longStop))
+cooldownOk = tradeCooldownBars == 0 or na(lastClosedTradeBar) or bar_index - lastClosedTradeBar > tradeCooldownBars
+// Flat = respect cooldown. In a position = allow opposite reversal.
+canOpenNew = strategy.position_size != 0 or cooldownOk
+oneLongPerBar = na(lastLongEntryBar) or lastLongEntryBar != bar_index
+oneShortPerBar = na(lastShortEntryBar) or lastShortEntryBar != bar_index
 
-        strategy.exit(
-             "Long TP/SL",
-             from_entry="Long",
-             stop=longStop,
-             limit=longTarget)
+longAllowed = enableLong and longSignal and strategy.position_size <= 0 and canOpenNew and oneLongPerBar
+shortAllowed = enableShort and shortSignal and strategy.position_size >= 0 and canOpenNew and oneShortPerBar
 
-else if enableShort and shortSignal and strategy.position_size >= 0
-    shortStop = high[1]
-    shortRisk = shortStop - close
+longFire = longAllowed and longRisk > syminfo.mintick
+shortFire = shortAllowed and shortRisk > syminfo.mintick
 
-    if shortRisk > syminfo.mintick
-        shortTarget = close - shortRisk * rr
-        chartTradeStop := shortStop
-        chartTradeTarget := shortTarget
+if longFire
+    longTarget = close + longRisk * rr
+    chartTradeStop := longStop
+    chartTradeTarget := longTarget
+    lastLongEntryBar := bar_index
 
-        strategy.entry(
-             "Short",
-             strategy.short,
-             comment=f_slTpTableText("SHORT", shortTarget, shortStop))
+    strategy.entry(
+         "Long",
+         strategy.long,
+         comment=f_slTpTableText("LONG", longTarget, longStop))
 
-        strategy.exit(
-             "Short TP/SL",
-             from_entry="Short",
-             stop=shortStop,
-             limit=shortTarget)
+    strategy.exit(
+         "Long TP/SL",
+         from_entry="Long",
+         stop=longStop,
+         limit=longTarget)
+
+else if shortFire
+    shortTarget = close - shortRisk * rr
+    chartTradeStop := shortStop
+    chartTradeTarget := shortTarget
+    lastShortEntryBar := bar_index
+
+    strategy.entry(
+         "Short",
+         strategy.short,
+         comment=f_slTpTableText("SHORT", shortTarget, shortStop))
+
+    strategy.exit(
+         "Short TP/SL",
+         from_entry="Short",
+         stop=shortStop,
+         limit=shortTarget)
 
 if strategy.position_size == 0 and not longSignal and not shortSignal
     chartTradeStop := na
@@ -634,7 +659,7 @@ plot(ema5, color=color.green, title="Fast EMA", linewidth=2)
 plot(ema20, color=color.red, title="Slow EMA", linewidth=2)
 
 plotshape(
-     enableLong and longSignal,
+     longFire,
      title="Long Signal",
      style=shape.labelup,
      location=location.belowbar,
@@ -644,7 +669,7 @@ plotshape(
      size=size.tiny)
 
 plotshape(
-     enableShort and shortSignal,
+     shortFire,
      title="Short Signal",
      style=shape.labeldown,
      location=location.abovebar,
@@ -657,11 +682,11 @@ plotshape(
 // ALERTS
 //────────────────────────────────────────────
 alertcondition(
-     enableLong and longSignal,
+     longFire,
      title="Bullish HA EMA Reversal",
      message="LONG Heikin Ashi EMA reversal on {{ticker}} {{interval}}")
 
 alertcondition(
-     enableShort and shortSignal,
+     shortFire,
      title="Bearish HA EMA Reversal",
      message="SHORT Heikin Ashi EMA reversal on {{ticker}} {{interval}}")

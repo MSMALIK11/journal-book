@@ -10,6 +10,14 @@ type ClosedTradeInput = {
   instrument?: string
   net_pnl?: number | null
   return_pct?: number | null
+  /** Profit cell scraped from TV List of trades — prefer when sane. */
+  tv_scraped_profit?: number | null
+  tv_scraped_return_pct?: number | null
+}
+
+export type SanitizeClosedEconomicsOptions = {
+  /** DB heal / synthetic close — derive from fills, do not reuse poisoned stored P&L. */
+  fillOnly?: boolean
 }
 
 function lotAndContract(trade: Pick<ClosedTradeInput, "quantity" | "contract_size" | "instrument">) {
@@ -63,9 +71,12 @@ function isLegacyCryptoSize10Poison(trade: ClosedTradeInput) {
   const raw = Number(trade.quantity)
   const incoming = Number(trade.net_pnl)
   const unit = unitFillMove(trade)
-  if (!Number.isFinite(raw) || raw < 9 || raw > 11) return false
   if (!Number.isFinite(incoming) || Math.abs(unit) < 0.05) return false
-  return nearlyEqual(Math.abs(incoming), Math.abs(unit * raw), 0.06)
+  if (Number.isFinite(raw) && raw >= 9 && raw <= 11) {
+    return nearlyEqual(Math.abs(incoming), Math.abs(unit * raw), 0.06)
+  }
+  // Stored qty can be 0.2 while scraped $ P&L used gold tester lot (10 × $/point).
+  return nearlyEqual(Math.abs(incoming), Math.abs(unit * GOLD_TESTER_LOTS), 0.06)
 }
 
 /** TV scraped size for BTC/ETH/SOL — keep 0.2, 1, etc. Never gold-default 10. */
@@ -126,15 +137,102 @@ function trustedTvFillPnl(trade: ClosedTradeInput) {
   return Math.round(unitFillMove(trade) * sizeForFill(trade) * 100) / 100
 }
 
+function fillSlack(reference: number, fill: number) {
+  return Math.max(2.5, Math.abs(fill) * 0.45, Math.abs(reference) * 0.06)
+}
+
+/**
+ * Same-bar TV rows sometimes land with entry/exit prices reversed.
+ * When TV Profit disagrees in sign but matches in magnitude, swap the fills.
+ */
+export function alignClosedFillPrices(trade: ClosedTradeInput): ClosedTradeInput {
+  const tvProfit = trade.tv_scraped_profit ?? trade.net_pnl
+  if (typeof tvProfit !== "number" || !Number.isFinite(tvProfit) || Math.abs(tvProfit) < 0.01) {
+    return trade
+  }
+  if (!Number.isFinite(trade.entry_price) || !Number.isFinite(trade.exit_price)) return trade
+
+  const fill = trustedTvFillPnl(trade)
+  const slack = fillSlack(tvProfit, fill)
+  if (Math.abs(tvProfit - fill) <= slack) return trade
+
+  const swapped: ClosedTradeInput = {
+    ...trade,
+    entry_price: trade.exit_price,
+    exit_price: trade.entry_price,
+  }
+  const swappedFill = trustedTvFillPnl(swapped)
+  if (Math.abs(tvProfit - swappedFill) <= slack) return swapped
+
+  if (
+    Math.sign(tvProfit) !== Math.sign(fill) &&
+    Math.abs(Math.abs(tvProfit) - Math.abs(fill)) <= slack
+  ) {
+    return swapped
+  }
+
+  return trade
+}
+
 function trustedReturnPct(trade: ClosedTradeInput) {
   if (trade.entry_price <= 0) return 0
   return Math.round((unitFillMove(trade) / trade.entry_price) * 10000) / 100
 }
 
-function returnPctMatchesFill(trade: ClosedTradeInput) {
-  if (typeof trade.return_pct !== "number" || !Number.isFinite(trade.return_pct)) return true
+function scrapedReturnPct(trade: ClosedTradeInput) {
+  const tv = trade.tv_scraped_return_pct ?? trade.return_pct
+  return typeof tv === "number" && Number.isFinite(tv) ? tv : null
+}
+
+function returnPctMatchesFill(trade: ClosedTradeInput, tolerance = 0.12) {
+  const tvReturn = scrapedReturnPct(trade)
+  if (tvReturn == null) return true
   const priceReturn = Math.abs(unitFillMove(trade) / trade.entry_price) * 100
-  return Math.abs(Math.abs(trade.return_pct) - priceReturn) < 0.12
+  return Math.abs(Math.abs(tvReturn) - priceReturn) < tolerance
+}
+
+function looksLikeNotionalProfit(incoming: number, trade: ClosedTradeInput) {
+  const raw = lotAndContract(trade)
+  return notionals(trade, raw).some((value) => nearlyEqual(Math.abs(incoming), value))
+}
+
+function isCryptoGoldLotScrapedPnl(trade: ClosedTradeInput, incoming: number) {
+  if (!isCryptoFill(trade)) return false
+  const unit = unitFillMove(trade)
+  if (!Number.isFinite(incoming) || !Number.isFinite(unit) || Math.abs(unit) < 0.05) return false
+  return nearlyEqual(Math.abs(incoming), Math.abs(unit * GOLD_TESTER_LOTS), 0.06)
+}
+
+/** Trust TV Profit column when it looks like a real fill P&L, not position notional. */
+export function shouldTrustTvScrapedProfit(trade: ClosedTradeInput, incoming: number, fill: number) {
+  if (!Number.isFinite(incoming)) return false
+  if (isLegacyCryptoSize10Poison(trade)) return false
+  if (isCryptoGoldLotScrapedPnl(trade, incoming)) return false
+  const unit = unitFillMove(trade)
+  if (isAbsurdIncoming(incoming, unit, trade)) return false
+  if (looksLikeNotionalProfit(incoming, trade)) return false
+
+  const slack = Math.max(2.5, Math.abs(fill) * 0.45)
+  if (Math.abs(incoming - fill) <= slack) return true
+
+  if (Math.abs(fill) >= 0.01 && Math.sign(incoming) !== Math.sign(fill)) return false
+
+  // Return % can match while $ P&L used gold lot (10) on a BTC 0.2 row — prefer fill math.
+  if (isCryptoFill(trade) && Math.abs(fill) >= 0.01 && Math.abs(incoming) > Math.abs(fill) * 3) {
+    return false
+  }
+
+  // TV profit with matching return % — common on BTC tester rows.
+  if (returnPctMatchesFill(trade, 0.25)) return true
+
+  return false
+}
+
+function pickReturnPct(trade: ClosedTradeInput, trustTv: boolean) {
+  const calc = trustedReturnPct(trade)
+  const tv = scrapedReturnPct(trade)
+  if (trustTv && tv != null) return tv
+  return calc
 }
 
 function notionals(trade: ClosedTradeInput, raw: { quantity: number; contract: number }) {
@@ -194,17 +292,18 @@ export function resolveClosedTradeMetrics(trade: ClosedTradeInput) {
     const fill = Math.round(unit * quantity * 100) / 100
 
     if (isLegacyCryptoSize10Poison(trade)) {
-      return { net_pnl: fill, return_pct }
+      return { net_pnl: fill, return_pct: trustedReturnPct(trade) }
     }
 
-    if (Number.isFinite(incoming) && !isAbsurdIncoming(incoming, unit, trade) && returnPctMatchesFill(trade)) {
-      const slack = Math.max(1.5, Math.abs(fill) * 0.35)
-      if (Math.abs(incoming - fill) <= slack) {
-        return { net_pnl: Math.round(incoming * 100) / 100, return_pct }
+    const tvProfit = Number(trade.tv_scraped_profit ?? incoming)
+    if (shouldTrustTvScrapedProfit(trade, tvProfit, fill)) {
+      return {
+        net_pnl: Math.round(tvProfit * 100) / 100,
+        return_pct: pickReturnPct(trade, true),
       }
     }
 
-    return { net_pnl: fill, return_pct }
+    return { net_pnl: fill, return_pct: trustedReturnPct(trade) }
   }
 
   if (isHighPriceFill(trade)) {
@@ -263,34 +362,60 @@ export function clampTvCryptoQuantity(trade: {
   return cryptoTesterSize(probe)
 }
 
+function fillOnlyClosedEconomics(trade: ClosedTradeInput) {
+  const quantity = sizeForFill({ ...trade, net_pnl: null, return_pct: null })
+  const fill = trustedTvFillPnl({ ...trade, quantity })
+  return {
+    net_pnl: fill,
+    return_pct: trustedReturnPct(trade),
+    quantity,
+  }
+}
+
 /** Gold: Size 10 × $ move. Crypto: TV scraped size (0.2) × $ move, trust TV Profit when sane. */
-export function sanitizeTvClosedEconomics(trade: ClosedTradeInput) {
-  const quantity = sizeForFill(trade)
-  const return_pct = trustedReturnPct(trade)
-  const unit = unitFillMove(trade)
-  const fill = Math.round(unit * quantity * 100) / 100
+export function sanitizeTvClosedEconomics(
+  trade: ClosedTradeInput,
+  options?: SanitizeClosedEconomicsOptions,
+) {
+  const aligned = options?.fillOnly ? trade : alignClosedFillPrices(trade)
 
-  if (isCryptoFill(trade)) {
-    if (isLegacyCryptoSize10Poison(trade)) {
-      return { net_pnl: fill, return_pct, quantity }
-    }
-
-    const incoming = Number(trade.net_pnl)
-    if (Number.isFinite(incoming) && !isAbsurdIncoming(incoming, unit, trade) && returnPctMatchesFill(trade)) {
-      const slack = Math.max(1.5, Math.abs(fill) * 0.35)
-      const net_pnl =
-        Math.abs(incoming - fill) <= slack ? Math.round(incoming * 100) / 100 : fill
-      return { net_pnl, return_pct, quantity }
-    }
-
-    return { net_pnl: fill, return_pct, quantity }
+  if (options?.fillOnly) {
+    return fillOnlyClosedEconomics(aligned)
   }
 
-  const metrics = resolveClosedTradeMetrics({ ...trade, quantity })
-  const net_pnl = isMetalFill(trade) ? trustedTvFillPnl({ ...trade, quantity }) : metrics.net_pnl
+  const quantity = sizeForFill(aligned)
+  const unit = unitFillMove(aligned)
+  const fill = Math.round(unit * quantity * 100) / 100
+
+  if (isCryptoFill(aligned)) {
+    if (isLegacyCryptoSize10Poison(aligned)) {
+      return { net_pnl: fill, return_pct: trustedReturnPct(aligned), quantity }
+    }
+
+    const tvProfit = Number(aligned.tv_scraped_profit ?? aligned.net_pnl)
+    if (shouldTrustTvScrapedProfit(aligned, tvProfit, fill)) {
+      return {
+        net_pnl: Math.round(tvProfit * 100) / 100,
+        return_pct: pickReturnPct(aligned, true),
+        quantity,
+      }
+    }
+
+    return { net_pnl: fill, return_pct: trustedReturnPct(aligned), quantity }
+  }
+
+  const fillPnl = trustedTvFillPnl({ ...aligned, quantity })
+  const tvProfit = Number(aligned.tv_scraped_profit ?? aligned.net_pnl)
+  const trustTv = shouldTrustTvScrapedProfit(aligned, tvProfit, fillPnl)
+  const net_pnl = isMetalFill(aligned)
+    ? trustTv
+      ? Math.round(tvProfit * 100) / 100
+      : fillPnl
+    : resolveClosedTradeMetrics({ ...aligned, quantity }).net_pnl
+
   return {
     net_pnl,
-    return_pct: metrics.return_pct,
+    return_pct: pickReturnPct(aligned, trustTv),
     quantity,
   }
 }

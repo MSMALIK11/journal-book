@@ -9,7 +9,7 @@ import { sessionCookieOptions } from "@/lib/session"
 export const ACTIVE_ACCOUNT_COOKIE = "active_account_id"
 
 export const activeAccountCookieOptions = {
-  ...sessionCookieOptions,
+  ...sessionCookieOptions(),
 }
 
 export async function getAccountContext(request: NextRequest, userId: string) {

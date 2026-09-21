@@ -20,6 +20,7 @@ import { PerformanceSummary } from "@/components/analytics/performance-summary"
 import { PnlDistributionChart } from "@/components/analytics/pnl-distribution-chart"
 import { StreaksRecords } from "@/components/analytics/streaks-records"
 import { TimeAnalysisCharts } from "@/components/analytics/time-analysis-charts"
+import { MonthlyProfitLoss } from "@/components/analytics/monthly-profit-loss"
 import { WeeklyProfitLoss } from "@/components/analytics/weekly-profit-loss"
 import {
   Accordion,
@@ -65,7 +66,7 @@ const currency = new Intl.NumberFormat("en-US", {
 
 type SourceFilter = "all" | "tradingview" | "manual"
 type RangePreset = "7d" | "30d" | "90d" | "all"
-type DashboardTab = "overview" | "time-edge" | "breakdown" | "weekly"
+type DashboardTab = "overview" | "time-edge" | "breakdown" | "weekly" | "monthly"
 
 const KPI_TOOLTIPS: Record<string, string> = {
   "Net P&L": "Total profit or loss from all closed trades in this filter.",
@@ -170,6 +171,12 @@ export function AnalyticsDashboard() {
   const overview = data.overview
   const pf =
     overview.profitFactor === Infinity ? "∞" : overview.profitFactor.toFixed(2)
+  const bestMonthBucket = overview.bestMonth
+    ? data.byMonth.find((m) => m.label === overview.bestMonth?.month)
+    : undefined
+  const worstMonthBucket = overview.worstMonth
+    ? data.byMonth.find((m) => m.label === overview.worstMonth?.month)
+    : undefined
 
   return (
     <div className="space-y-6">
@@ -205,6 +212,9 @@ export function AnalyticsDashboard() {
           <TabsTrigger value="weekly" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
             Weekly
           </TabsTrigger>
+          <TabsTrigger value="monthly" className="data-[state=active]:bg-cyan-400/15 data-[state=active]:text-cyan-200">
+            Monthly
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="mt-6 space-y-6">
@@ -217,16 +227,22 @@ export function AnalyticsDashboard() {
 
           <HeroKpiRow overview={overview} pf={pf} comparison={data.comparison} />
 
-          {(overview.bestMonth || overview.worstMonth) && (
+          {(overview.bestMonth || overview.worstMonth || data.byMonth.length > 0) && (
             <div className="flex flex-wrap gap-2">
               {overview.bestMonth ? (
                 <Badge variant="outline" className="border-emerald-400/30 text-emerald-400">
                   Best month: {overview.bestMonth.month} · {currency.format(overview.bestMonth.pnl)}
+                  {bestMonthBucket?.returnPct != null
+                    ? ` · ${bestMonthBucket.returnPct >= 0 ? "+" : ""}${bestMonthBucket.returnPct.toFixed(2)}%`
+                    : ""}
                 </Badge>
               ) : null}
               {overview.worstMonth ? (
                 <Badge variant="outline" className="border-rose-400/30 text-rose-400">
                   Worst month: {overview.worstMonth.month} · {currency.format(overview.worstMonth.pnl)}
+                  {worstMonthBucket?.returnPct != null
+                    ? ` · ${worstMonthBucket.returnPct >= 0 ? "+" : ""}${worstMonthBucket.returnPct.toFixed(2)}%`
+                    : ""}
                 </Badge>
               ) : null}
             </div>
@@ -274,6 +290,10 @@ export function AnalyticsDashboard() {
 
         <TabsContent value="weekly" className="mt-6">
           <WeeklyProfitLoss byWeek={data.byWeek} />
+        </TabsContent>
+
+        <TabsContent value="monthly" className="mt-6">
+          <MonthlyProfitLoss byMonth={data.byMonth} />
         </TabsContent>
       </Tabs>
     </div>

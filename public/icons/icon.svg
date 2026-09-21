@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Trading Journal">
+  <rect width="512" height="512" rx="96" fill="#05070a"/>
+  <rect x="48" y="48" width="416" height="416" rx="72" fill="#0a1018" stroke="#22d3ee" stroke-width="12"/>
+  <path d="M128 336 L192 256 L256 288 L384 176" fill="none" stroke="#34d399" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="384" cy="176" r="20" fill="#34d399"/>
+  <circle cx="128" cy="336" r="16" fill="#22d3ee"/>
+</svg>

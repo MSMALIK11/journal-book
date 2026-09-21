@@ -6,6 +6,7 @@ import { format, subDays } from "date-fns"
 import Link from "next/link"
 import { Map, ShieldAlert } from "lucide-react"
 import { FundedRoadmapCharts } from "@/components/funded-roadmap/funded-roadmap-charts"
+import { PassAssessmentCard } from "@/components/funded-roadmap/pass-assessment-card"
 import {
   FundedRoadmapHelpButton,
   FundedRoadmapHelpProvider,
@@ -36,6 +37,7 @@ import {
   type RiskMode,
 } from "@/lib/trading/funded-presets"
 import {
+  buildChallengeAssessment,
   formatDays,
   formatRr,
   type CompareSnapshot,
@@ -71,7 +73,9 @@ const money = new Intl.NumberFormat("en-US", {
 type SourceFilter = "all" | "tradingview" | "manual"
 type RangePreset = "7d" | "30d" | "90d" | "all"
 
-type RoadmapResponse = FundedRoadmapModel & {
+type RoadmapResponse = Omit<FundedRoadmapModel, "assessment"> & {
+  /** Present on fresh API responses; stale SWR cache may omit until revalidated. */
+  assessment?: FundedRoadmapModel["assessment"]
   timezone: string
   strategies: string[]
   instruments: string[]
@@ -134,6 +138,11 @@ function readSettings(accountId?: string): PersistedSettings {
   } catch {
     return fallback
   }
+}
+
+function formatTrades(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "—"
+  return Math.round(value).toLocaleString("en-US")
 }
 
 function statusClass(status: StageStatus) {
@@ -364,11 +373,19 @@ export function FundedRoadmapDashboard() {
   const pf = data.profile.profitFactor === Infinity ? "∞" : data.profile.profitFactor.toFixed(2)
   const lowN = data.profile.closedTrades < 100
   const realizedPnl = data.realizedPnl ?? 0
+  const targetMet = Boolean(current && current.profitTarget > 0 && realizedPnl >= current.profitTarget)
   const progressPct =
     current && current.profitTarget > 0
-      ? Math.min(100, Math.max(0, (realizedPnl / current.profitTarget) * 100))
+      ? Math.min(100, Math.max(0, (Math.max(0, realizedPnl) / current.profitTarget) * 100))
       : 0
+  const progressRatio =
+    current && current.profitTarget > 0 ? (realizedPnl / current.profitTarget) * 100 : 0
   const nextStage = data.stages[currentStageIndex + 1]
+  const assessment =
+    data.assessment ??
+    (current
+      ? buildChallengeAssessment(current, data.profile, data.recommendation, data.rules)
+      : null)
 
   return (
     <FundedRoadmapHelpProvider>
@@ -395,15 +412,23 @@ export function FundedRoadmapDashboard() {
         timezone={data.timezone}
       />
 
-      {current ? (
-        <PlaybookCard
-          accountName={activeAccount?.name ?? "This account"}
-          stage={current}
-          nextStageLabel={nextStage?.label}
-          recommendation={data.recommendation}
-          profile={data.profile}
-          rules={data.rules}
-        />
+      {current && assessment ? (
+        <>
+          <PassAssessmentCard
+            accountName={activeAccount?.name ?? "This account"}
+            stage={current}
+            assessment={assessment}
+            rules={data.rules}
+          />
+          <PlaybookCard
+            accountName={activeAccount?.name ?? "This account"}
+            stage={current}
+            nextStageLabel={nextStage?.label}
+            recommendation={data.recommendation}
+            profile={data.profile}
+            rules={data.rules}
+          />
+        </>
       ) : null}
 
       <HudPanel glow="green" className="p-5">
@@ -415,13 +440,17 @@ export function FundedRoadmapDashboard() {
           <Badge variant="outline" className="border-white/10 text-muted-foreground">
             {data.filterLabel}
           </Badge>
-          {data.profile.rMethod === "median_loss" ? (
+          {data.profile.rMethod === "challenge_r" ? (
+            <Badge variant="outline" className="border-emerald-400/30 text-emerald-200">
+              R from challenge risk (1R = planned $ risk)
+            </Badge>
+          ) : data.profile.rMethod === "median_loss" ? (
             <Badge variant="outline" className="border-amber-400/30 text-amber-200">
               Estimated R (stop-loss missing)
             </Badge>
           ) : (
-            <Badge variant="outline" className="border-emerald-400/30 text-emerald-200">
-              R from stop-loss
+            <Badge variant="outline" className="border-cyan-400/30 text-cyan-200">
+              Chart SL reference · MC uses challenge 1R
             </Badge>
           )}
         </div>
@@ -444,11 +473,13 @@ export function FundedRoadmapDashboard() {
             </p>
           </div>
           <div>
-            <p className="text-xs text-muted-foreground">Happy flow</p>
+            <p className="text-xs text-muted-foreground">{current?.shortLabel} conservative plan</p>
             <p className="mt-1 text-lg font-semibold text-emerald-300">
-              {formatDays(data.happyFlowDays)}
+              {formatTrades(current?.conservativeTrades)} trades · {formatDays(current?.conservativeDays)}
             </p>
-            <p className="text-xs text-muted-foreground">Optimistic statistical projection</p>
+            <p className="text-xs text-muted-foreground">
+              Happy flow {formatDays(current?.optimisticDays)} · full ladder {formatDays(data.happyFlowDays)}
+            </p>
           </div>
           <div>
             <p className="text-xs text-muted-foreground">Long-term goal</p>
@@ -479,7 +510,11 @@ export function FundedRoadmapDashboard() {
           hint="From actual R-multiples, not account P&L"
           helpTerm="expectancy"
         />
-        <Kpi title="Avg trades / week" value={data.profile.avgTradesPerWeek.toFixed(1)} hint={`Median ${data.profile.medianTradesPerWeek.toFixed(1)} · ${data.profile.avgTradesPerDay.toFixed(1)} / day`} />
+        <Kpi
+          title="Trading days"
+          value={String(data.profile.tradingDays)}
+          hint={`${data.profile.avgTradesPerDay.toFixed(1)} avg · ${data.profile.medianTradesPerDay.toFixed(1)} median trades / day · ${data.profile.avgTradesPerWeek.toFixed(1)} / week`}
+        />
         <Kpi title="Max drawdown" value={`${data.profile.maxDrawdownPct.toFixed(1)}%`} hint={money.format(data.profile.maxDrawdown)} tone="down" />
         <Kpi title="Worst loss streak" value={String(data.profile.worstLossStreak)} hint={`Best win streak ${data.profile.bestWinStreak}`} />
         <Kpi
@@ -636,19 +671,31 @@ export function FundedRoadmapDashboard() {
           />
           <div className="space-y-3 p-5">
             <div className="flex justify-between text-xs text-muted-foreground">
-              <span>{money.format(Math.min(realizedPnl, 0))}</span>
+              <span>{money.format(0)}</span>
               <span>{currency.format(current.profitTarget)}</span>
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-white/10">
               <div
-                className="h-full rounded-full bg-cyan-400/80"
+                className={cn(
+                  "h-full rounded-full",
+                  targetMet ? "bg-emerald-400/80" : "bg-cyan-400/80",
+                )}
                 style={{ width: `${progressPct}%` }}
               />
             </div>
             <p className="text-sm text-cyan-100">
-              {money.format(realizedPnl)} of {currency.format(current.profitTarget)} (
-              {progressPct.toFixed(0)}%) · journal P&amp;L on this filter, not a live funded account · 1R{" "}
-              {money.format(current.oneR)}
+              {targetMet ? (
+                <>
+                  Target exceeded — {money.format(realizedPnl)} ({progressRatio.toFixed(0)}% of{" "}
+                  {currency.format(current.profitTarget)})
+                </>
+              ) : (
+                <>
+                  {money.format(realizedPnl)} of {currency.format(current.profitTarget)} (
+                  {progressPct.toFixed(0)}%)
+                </>
+              )}{" "}
+              · journal P&amp;L on this filter, not a live funded account · 1R {money.format(current.oneR)}
             </p>
           </div>
         </HudPanel>
@@ -657,14 +704,18 @@ export function FundedRoadmapDashboard() {
       <HudPanel glow="green">
         <HudPanelHeader
           title="Happy flow"
-          description="Optimistic statistical projection — not a guarantee."
+          description={
+            riskMode === "percent"
+              ? "Per-challenge timeline at each account size (% risk keeps the R target constant). Not a guarantee."
+              : "Optimistic statistical projection — not a guarantee."
+          }
         />
         <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
           {data.stages.map((stage) => (
             <div key={stage.id} className="rounded-lg border border-emerald-400/20 bg-emerald-400/5 p-3">
               <p className="text-xs text-muted-foreground">{stage.shortLabel}</p>
               <p className="mt-1 text-lg font-semibold text-emerald-200">{formatDays(stage.optimisticDays)}</p>
-              <p className="text-xs text-muted-foreground">{stage.optimisticTrades ?? "—"} trades</p>
+              <p className="text-xs text-muted-foreground">{formatTrades(stage.optimisticTrades)} trades</p>
             </div>
           ))}
         </div>
@@ -700,10 +751,10 @@ export function FundedRoadmapDashboard() {
               <Row label="Profit target" value={currency.format(stage.profitTarget)} />
               <Row label="Your cut" value={`${currency.format(stage.payoutUsd)} (${data.rules.profitSplitPct}%)`} />
               <Row label="Target" value={`${stage.targetR.toFixed(1)}R`} />
-              <Row label="Expected trades" value={stage.expectedTrades?.toFixed(0) ?? "—"} />
-              <Row label="Happy flow" value={`${stage.optimisticTrades?.toFixed(0) ?? "—"} · ${formatDays(stage.optimisticDays)}`} />
-              <Row label="Base case" value={`${stage.baseTrades?.toFixed(0) ?? "—"} · ${formatDays(stage.baseDays)}`} />
-              <Row label="Conservative" value={`${stage.conservativeTrades?.toFixed(0) ?? "—"} · ${formatDays(stage.conservativeDays)}`} />
+              <Row label="Expected trades" value={formatTrades(stage.expectedTrades)} />
+              <Row label="Happy flow" value={`${formatTrades(stage.optimisticTrades)} · ${formatDays(stage.optimisticDays)}`} />
+              <Row label="Base case" value={`${formatTrades(stage.baseTrades)} · ${formatDays(stage.baseDays)}`} />
+              <Row label="Conservative" value={`${formatTrades(stage.conservativeTrades)} · ${formatDays(stage.conservativeDays)}`} />
               <Row label="Historical DD" value={`${stage.historicalDdPct.toFixed(1)}%`} />
               <Row label="Stress DD" value={`${stage.stressDdPct.toFixed(1)}%`} />
               <Row label="Reach target" value={`${stage.monteCarlo.targetHitPct.toFixed(0)}%`} />
@@ -731,13 +782,13 @@ export function FundedRoadmapDashboard() {
           />
           <Kpi
             title="Median trades"
-            value={current?.monteCarlo.medianTradesToTarget?.toFixed(0) ?? "—"}
-            hint={`Best 10% ${current?.monteCarlo.p10TradesToTarget ?? "—"} · Worst 10% ${current?.monteCarlo.p90TradesToTarget ?? "—"}`}
+            value={formatTrades(current?.monteCarlo.medianTradesToTarget)}
+            hint={`Best 10% ${formatTrades(current?.monteCarlo.p10TradesToTarget)} · Worst 10% ${formatTrades(current?.monteCarlo.p90TradesToTarget)}`}
             helpTerm="median-trades"
           />
           <Kpi
             title="P5 / P95 trades"
-            value={`${current?.monteCarlo.p5TradesToTarget ?? "—"} / ${current?.monteCarlo.p95TradesToTarget ?? "—"}`}
+            value={`${formatTrades(current?.monteCarlo.p5TradesToTarget)} / ${formatTrades(current?.monteCarlo.p95TradesToTarget)}`}
             helpTerm="p5-p95"
           />
         </div>
@@ -921,8 +972,9 @@ function PlaybookCard({
       </div>
       <p className="mt-4 text-xs text-muted-foreground">
         Why: {profile.winRate.toFixed(1)}% WR · {profile.expectancyR >= 0 ? "+" : ""}
-        {profile.expectancyR.toFixed(2)}R expectancy on {profile.closedTrades} closed trades. Conservative
-        timeline is at least {rules.minTradingDays} trading days. {recommendation.note}
+        {profile.expectancyR.toFixed(2)}R expectancy on {profile.closedTrades} closed trades across{" "}
+        {profile.tradingDays} active trading days. Conservative timeline is at least {rules.minTradingDays}{" "}
+        calendar days per challenge stage. {recommendation.note}
       </p>
     </HudPanel>
   )

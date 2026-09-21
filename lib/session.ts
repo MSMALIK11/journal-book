@@ -3,7 +3,9 @@ import { jwtVerify } from "jose/jwt/verify"
 import type { NextRequest } from "next/server"
 
 export const SESSION_COOKIE = "session"
-export const SESSION_MAX_AGE = 60 * 60 * 24
+/** Default browser session — 30 days so mobile PWA home-screen stays signed in. */
+export const SESSION_MAX_AGE = 60 * 60 * 24 * 30
+export const SESSION_SHORT_AGE = 60 * 60 * 24
 
 export interface SessionPayload {
   sub: string
@@ -20,14 +22,18 @@ function getSecret() {
   return new TextEncoder().encode(secret)
 }
 
-export async function createSessionToken(userId: string, email: string) {
+export async function createSessionToken(
+  userId: string,
+  email: string,
+  maxAgeSeconds: number = SESSION_MAX_AGE,
+) {
   return new SignJWT({ email })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(userId)
     .setIssuer("trading-journal")
     .setAudience("trading-journal-web")
     .setIssuedAt()
-    .setExpirationTime("24h")
+    .setExpirationTime(`${maxAgeSeconds}s`)
     .sign(getSecret())
 }
 
@@ -53,10 +59,13 @@ export async function getSession(request: NextRequest) {
   return token ? verifySessionToken(token) : null
 }
 
-export const sessionCookieOptions = {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "strict" as const,
-  path: "/",
-  maxAge: SESSION_MAX_AGE,
+export function sessionCookieOptions(maxAgeSeconds: number = SESSION_MAX_AGE) {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    // lax keeps Add-to-Home-screen / standalone launches authenticated.
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: maxAgeSeconds,
+  }
 }

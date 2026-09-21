@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
     { headers: { "Cache-Control": "no-store" } },
   )
   response.cookies.set(SESSION_COOKIE, "", {
-    ...sessionCookieOptions,
+    ...sessionCookieOptions(0),
     maxAge: 0,
   })
   return response
