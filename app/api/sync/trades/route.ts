@@ -279,6 +279,51 @@ async function dispatchFillSideEffects(
   return lastEventId
 }
 
+/** Close-only DB updates don't always enter fillEvents — still push SSE so the journal refreshes. */
+async function publishSyncRefreshEvent(
+  userId: string,
+  byAccountSummary: Record<
+    string,
+    {
+      name: string
+      imported: number
+      updated: number
+      skipped: number
+      latestTrade?: TradeSnapshot
+    }
+  >,
+  imported: number,
+  updated: number,
+): Promise<string | undefined> {
+  const top = Object.entries(byAccountSummary).sort(
+    (a, b) => b[1].imported + b[1].updated - (a[1].imported + a[1].updated),
+  )[0]
+  if (!top) return undefined
+
+  const [accountId, stats] = top
+  const latestTrade = stats.latestTrade
+  const kind = latestTrade?.is_open === false ? "close" : "open"
+  const event = await recordTradeSyncEvent(userId, {
+    kind,
+    accountId,
+    accountName: stats.name,
+    imported,
+    updated,
+    skipped: stats.skipped,
+    latestTrade,
+  })
+  publishTradesUpdated(userId, accountId, {
+    eventId: event.eventId,
+    kind,
+    imported,
+    updated,
+    skipped: stats.skipped,
+    accountName: stats.name,
+    latestTrade,
+  })
+  return event.eventId
+}
+
 export async function OPTIONS(request: NextRequest) {
   return withSyncCors(request, new NextResponse(null, { status: 204 }))
 }
@@ -616,15 +661,19 @@ export async function POST(request: NextRequest) {
               trade: snapshot,
             })
           }
-        } else if (wasOpen && mapped.exit_date && isRealLiveClose(mapped, tvTrade)) {
-          fillEvents.push({
-            kind: "close",
-            reason: "live_close",
-            userId: auth.userId,
-            accountId,
-            accountName: targetAccount.name,
-            trade: closeFillTrade(snapshot, mapped),
-          })
+        } else if (wasOpen && mapped.exit_date) {
+          const closedTrade = closeFillTrade(snapshot, mapped)
+          latestUpdatedByAccount[accountId] = closedTrade
+          if (isRealLiveClose(mapped, tvTrade)) {
+            fillEvents.push({
+              kind: "close",
+              reason: "live_close",
+              userId: auth.userId,
+              accountId,
+              accountName: targetAccount.name,
+              trade: closedTrade,
+            })
+          }
         }
       } else if (existing.accountId !== accountId) {
         existing.accountId = accountId
@@ -786,11 +835,21 @@ export async function POST(request: NextRequest) {
 
     await touchSyncHeartbeat(auth.userId)
 
+    const totalUpdated = updated + closedStale
+    if (!lastEventId && (imported > 0 || totalUpdated > 0)) {
+      lastEventId = await publishSyncRefreshEvent(
+        auth.userId,
+        byAccountSummary,
+        imported,
+        totalUpdated,
+      )
+    }
+
     return withSyncCors(
       request,
       NextResponse.json({
         imported,
-        updated: updated + closedStale,
+        updated: totalUpdated,
         skipped,
         deduped,
         reassigned,
