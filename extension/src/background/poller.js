@@ -1,8 +1,8 @@
 /* global JBSync */
-const VERSION = "1.18.12"
+const VERSION = "1.18.15"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
-const CAPTURE_SYNC_DEBOUNCE_MS = 120
+const CAPTURE_SYNC_DEBOUNCE_MS = 80
 const LOCAL_JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
 const JOURNAL_SCRIPT_ID = "jb-journal-bridge-dynamic"
 const IMPORT_ALL_MAX_MS = 15 * 60 * 1000
@@ -21,7 +21,7 @@ let lastJournalSyncAt = 0
 let lastTableSyncAt = 0
 let lastRefreshCheckAt = 0
 const JOURNAL_SYNC_MIN_MS = 3_000
-const TABLE_SYNC_MIN_MS = 350
+const TABLE_SYNC_MIN_MS = 120
 const REFRESH_CHECK_MIN_MS = 5_000
 
 function sleep(ms) {

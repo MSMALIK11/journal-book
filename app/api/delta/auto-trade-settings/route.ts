@@ -33,6 +33,7 @@ const patchSchema = z.object({
   ]).optional(),
   leverage: z.number().int().positive().optional(),
   lotSize: z.number().int().positive().nullable().optional(),
+  attachTvBrackets: z.boolean().optional(),
 })
 
 export async function GET(request: NextRequest) {

@@ -1,7 +1,7 @@
 import type { AssetType } from "@/lib/instruments"
 import { ASSET_TYPE_DEFAULTS, getQuantityMode, INSTRUMENTS } from "@/lib/instruments"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
-import { clampTvCryptoQuantity, sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
+import { alignClosedFillPrices, clampTvCryptoQuantity, sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 import { normalizeSignalLabel, parseSignalLevels } from "@/lib/trading/signal-levels"
 import { isOpenTvSignal, isOpenTvTrade } from "@/lib/trading/tradingview-open"
 import {
@@ -87,10 +87,11 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
   const levels = parseSignalLevels(
     [storedSignal, trade.entry.signal, trade.exit?.signal].filter(Boolean).join(" | "),
   )
-  const closedMetrics =
+  const tradeType = trade.direction === "long" ? ("Buy" as const) : ("Sell" as const)
+  const alignedFills =
     !open && exit_price != null
-      ? sanitizeTvClosedEconomics({
-          trade_type: trade.direction === "long" ? "Buy" : "Sell",
+      ? alignClosedFillPrices({
+          trade_type: tradeType,
           entry_price,
           exit_price,
           quantity: quantityRaw,
@@ -98,6 +99,28 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
           instrument: instrument.symbol,
           net_pnl: trade.netPnl,
           return_pct: trade.returnPct,
+          tv_scraped_profit: trade.netPnl,
+          tv_scraped_return_pct: trade.returnPct,
+        })
+      : null
+  if (alignedFills) {
+    entry_price = alignedFills.entry_price
+    exit_price = alignedFills.exit_price
+  }
+
+  const closedMetrics =
+    !open && exit_price != null
+      ? sanitizeTvClosedEconomics({
+          trade_type: tradeType,
+          entry_price,
+          exit_price,
+          quantity: quantityRaw,
+          contract_size: instrument.contractSize,
+          instrument: instrument.symbol,
+          net_pnl: trade.netPnl,
+          return_pct: trade.returnPct,
+          tv_scraped_profit: trade.netPnl,
+          tv_scraped_return_pct: trade.returnPct,
         })
       : null
   const quantity = closedMetrics?.quantity ?? clampTvCryptoQuantity({
@@ -113,7 +136,7 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
     instrument: instrument.symbol,
     entry_date,
     exit_date,
-    trade_type: trade.direction === "long" ? ("Buy" as const) : ("Sell" as const),
+    trade_type: tradeType,
     order_type: "Futures" as const,
     entry_price,
     exit_price,

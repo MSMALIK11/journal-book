@@ -5,6 +5,7 @@ const email = z.string().trim().email("Enter a valid email address").max(254).tr
 export const signInSchema = z.object({
   email,
   password: z.string().min(1, "Password is required").max(72, "Password is too long"),
+  rememberMe: z.boolean().optional(),
 })
 
 export const signUpSchema = z.object({

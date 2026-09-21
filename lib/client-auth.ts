@@ -1,8 +1,30 @@
+async function tryRefreshSession() {
+  try {
+    const response = await fetch("/api/auth/refresh", {
+      method: "POST",
+      credentials: "include",
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
 export async function authFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  const response = await fetch(input, {
+  let response = await fetch(input, {
     ...init,
     credentials: "include",
   })
+
+  if (response.status === 401) {
+    const refreshed = await tryRefreshSession()
+    if (refreshed) {
+      response = await fetch(input, {
+        ...init,
+        credentials: "include",
+      })
+    }
+  }
 
   if (
     response.status === 401 &&

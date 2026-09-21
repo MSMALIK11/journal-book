@@ -37,12 +37,25 @@ function mulberry32(seed: number) {
   }
 }
 
+export function resolveMonteCarloMaxTrades(
+  rMultiples: number[],
+  targetR: number,
+  expectancyR?: number,
+): number {
+  const usable = rMultiples.filter((value) => Number.isFinite(value))
+  const avgR = usable.length ? usable.reduce((sum, value) => sum + value, 0) / usable.length : 0
+  const perTrade =
+    typeof expectancyR === "number" && expectancyR > 0.001 ? expectancyR : avgR > 0.001 ? avgR : 0.05
+  const estimate = Math.ceil(targetR / perTrade)
+  return Math.min(25_000, Math.max(500, Math.ceil(estimate * 2.5)))
+}
+
 export function runMonteCarlo(rMultiples: number[], options: MonteCarloOptions): MonteCarloResult {
   const simulations = options.simulations ?? 1000
-  const maxTrades = options.maxTrades ?? 400
   const targetR = options.targetR
   const maxDrawdownR = options.maxDrawdownR
   const usable = rMultiples.filter((value) => Number.isFinite(value))
+  const maxTrades = options.maxTrades ?? resolveMonteCarloMaxTrades(usable, targetR)
 
   const empty: MonteCarloResult = {
     simulations: 0,

@@ -3,11 +3,10 @@ import connectDB from "@/app/api/db/mongoose"
 import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
-import { sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 import { dropSupersededOpenTradesFromPayload, resolveSyncedInstrument } from "@/lib/trading/price-sanity"
-import { closeDuplicateLiveOpens, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, purgeSupersededOpenTrades, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { closeDuplicateLiveOpens, enforceOneLiveOpenPerInstrument, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, healWrongReversalCloses, purgeSupersededOpenTrades, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
-import { isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades } from "@/lib/trading/tradingview-open"
+import { isFlatMtmOpen, isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades, pickTvActiveOpens, type TvActiveOpenHint } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, isOpenCoveredByLaterClose, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
 import { publishAccountsUpdated, publishTradesUpdated } from "@/lib/sync-events"
@@ -17,6 +16,7 @@ import { getSyncAuth } from "@/lib/sync-auth"
 import { touchSyncHeartbeat } from "@/lib/sync-heartbeat"
 import {
   flushLiveFillAlerts,
+  isFreshFillEvent,
   isRealLiveClose,
   isRecentScalp,
   type LiveFillEvent,
@@ -25,7 +25,35 @@ import {
 import { withUserSyncLock } from "@/lib/trading/sync-lock"
 import { tradingViewSyncSchema } from "@/lib/validations/tradingview-sync"
 import { decodeScreenshotJpeg } from "@/lib/telegram/screenshot"
-import { runDeltaAutoTradeForFills } from "@/lib/broker/delta-auto-trade"
+import {
+  runDeltaAutoTradeForFills,
+  runDeltaBracketUpdatesForOpenTrades,
+  type DeltaBracketLevelUpdate,
+} from "@/lib/broker/delta-auto-trade"
+
+function mergeActiveOpenHints(
+  scraped: TvActiveOpenHint[],
+  payload?: { opens?: TvActiveOpenHint[] } | null,
+): TvActiveOpenHint[] {
+  const all = [...scraped, ...(payload?.opens || [])]
+  if (!all.length) return []
+  const live = all.reduce((best, hint) => {
+    const num = Number(hint.tradeNumber) || 0
+    const bestNum = Number(best.tradeNumber) || 0
+    return num > bestNum ? hint : best
+  }, all[0])
+  return [live]
+}
+
+function hasNewerTvOpen(
+  incomingTrades: { tradeNumber?: number; entry?: { datetime?: string }; exit?: { datetime?: string; signal?: string } | null; netPnl?: number; returnPct?: number }[],
+  tvTrade: { tradeNumber?: number },
+) {
+  const num = Number(tvTrade.tradeNumber) || 0
+  return incomingTrades.some(
+    (row) => isOpenTvTrade(row) && (Number(row.tradeNumber) || 0) > num,
+  )
+}
 
 function mergeSyncedTrade(
   existing: InstanceType<typeof Trade>,
@@ -56,24 +84,8 @@ function mergeSyncedTrade(
   }
 
   if (typeof mapped.quantity === "number") existing.quantity = mapped.quantity
-  if (mapped.exit_date && mapped.exit_price != null && mapped.entry_price > 0) {
-    const sanitized = sanitizeTvClosedEconomics({
-      trade_type: mapped.trade_type,
-      entry_price: mapped.entry_price,
-      exit_price: mapped.exit_price,
-      quantity: mapped.quantity,
-      contract_size: mapped.contract_size,
-      instrument: mapped.instrument,
-      net_pnl: mapped.net_pnl,
-      return_pct: mapped.return_pct,
-    })
-    existing.quantity = sanitized.quantity
-    existing.net_pnl = sanitized.net_pnl
-    existing.return_pct = sanitized.return_pct
-  } else {
-    if (typeof mapped.net_pnl === "number") existing.net_pnl = mapped.net_pnl
-    if (typeof mapped.return_pct === "number") existing.return_pct = mapped.return_pct
-  }
+  if (typeof mapped.net_pnl === "number") existing.net_pnl = mapped.net_pnl
+  if (typeof mapped.return_pct === "number") existing.return_pct = mapped.return_pct
   if (typeof mapped.commission === "number") existing.commission = mapped.commission
   persistExtractedLevels(existing, mapped)
   if (mapped.tags?.length) existing.tags = mapped.tags
@@ -132,16 +144,63 @@ function syncedTradeChanged(
   return false
 }
 
+type TradeSnapshot = {
+  id: string
+  instrument: string
+  trade_type: string
+  entry_date: string
+  entry_price: number
+  signal?: string | null
+  stop_loss?: number
+  target?: number
+  is_open?: boolean
+}
+
+function tradeSnapshotFromMapped(
+  id: string,
+  mapped: ReturnType<typeof mapTradingViewTrade>,
+  isOpen: boolean,
+): TradeSnapshot {
+  return {
+    id,
+    instrument: mapped.instrument,
+    trade_type: mapped.trade_type,
+    entry_date: mapped.entry_date.toISOString(),
+    entry_price: mapped.entry_price,
+    signal: mapped.signal ?? null,
+    stop_loss: typeof mapped.stop_loss === "number" ? mapped.stop_loss : undefined,
+    target: typeof mapped.target === "number" ? mapped.target : undefined,
+    is_open: isOpen,
+  }
+}
+
+function pushBracketLevelUpdate(
+  bucket: DeltaBracketLevelUpdate[],
+  existing: InstanceType<typeof Trade>,
+  mapped: ReturnType<typeof mapTradingViewTrade>,
+) {
+  bucket.push({
+    tradeId: String(existing._id),
+    instrument: mapped.instrument,
+    trade_type: mapped.trade_type,
+    entry_price: mapped.entry_price,
+    stop_loss:
+      typeof existing.stop_loss === "number"
+        ? existing.stop_loss
+        : typeof mapped.stop_loss === "number"
+          ? mapped.stop_loss
+          : undefined,
+    target:
+      typeof existing.target === "number"
+        ? existing.target
+        : typeof mapped.target === "number"
+          ? mapped.target
+          : undefined,
+  })
+}
+
 function closeFillTrade(
-  snapshot: {
-    id: string
-    instrument: string
-    trade_type: string
-    entry_date: string
-    entry_price: number
-    signal?: string | null
-    is_open?: boolean
-  },
+  snapshot: TradeSnapshot,
   mapped: ReturnType<typeof mapTradingViewTrade>,
 ): LiveFillTrade {
   return {
@@ -152,6 +211,72 @@ function closeFillTrade(
     net_pnl: typeof mapped.net_pnl === "number" ? mapped.net_pnl : undefined,
     return_pct: typeof mapped.return_pct === "number" ? mapped.return_pct : undefined,
   }
+}
+
+/** Fire Telegram/push/Delta as soon as fills are known — don't wait for DB heal passes. */
+async function dispatchFillSideEffects(
+  userId: string,
+  fillEvents: LiveFillEvent[],
+  bracketLevelUpdates: DeltaBracketLevelUpdate[],
+  chartPhoto: Buffer | null,
+): Promise<string | undefined> {
+  if (fillEvents.length === 0 && bracketLevelUpdates.length === 0) return undefined
+
+  let lastEventId: string | undefined
+  const freshFills = fillEvents.filter((fill) => isFreshFillEvent(fill))
+  for (const fill of fillEvents) {
+    const isOpenFill = fill.kind === "open"
+    const fresh = isFreshFillEvent(fill)
+    const latestTrade = {
+      id: fill.trade.id,
+      instrument: fill.trade.instrument,
+      trade_type: fill.trade.trade_type,
+      entry_date: fill.trade.entry_date,
+      entry_price: fill.trade.entry_price,
+      signal: fill.trade.signal ?? null,
+      is_open: isOpenFill && fill.reason !== "recent_scalp_open",
+    }
+    const imported = isOpenFill && fresh ? 1 : 0
+    const updated = isOpenFill ? (fresh ? 0 : 1) : 1
+    const event = await recordTradeSyncEvent(userId, {
+      kind: fill.kind,
+      accountId: fill.accountId,
+      accountName: fill.accountName,
+      imported,
+      updated,
+      skipped: 0,
+      latestTrade,
+    })
+    lastEventId = event.eventId
+    publishTradesUpdated(userId, fill.accountId, {
+      eventId: event.eventId,
+      kind: fill.kind,
+      imported,
+      updated,
+      skipped: 0,
+      accountName: fill.accountName,
+      latestTrade,
+    })
+  }
+
+  if (freshFills.length > 0) {
+    await flushLiveFillAlerts(freshFills, chartPhoto)
+    void runDeltaAutoTradeForFills(userId, freshFills).catch((error) => {
+      console.error("Delta auto-trade failed:", error)
+    })
+  }
+
+  const openFillTradeIds = new Set(
+    freshFills.filter((fill) => fill.kind === "open").map((fill) => fill.trade.id),
+  )
+  const lateBracketUpdates = bracketLevelUpdates.filter((update) => !openFillTradeIds.has(update.tradeId))
+  if (lateBracketUpdates.length > 0) {
+    void runDeltaBracketUpdatesForOpenTrades(userId, lateBracketUpdates).catch((error) => {
+      console.error("Delta bracket update failed:", error)
+    })
+  }
+
+  return lastEventId
 }
 
 export async function OPTIONS(request: NextRequest) {
@@ -208,9 +333,10 @@ export async function POST(request: NextRequest) {
     if (parsed.data.trades.length === 0) {
       await healMisclosedSameFillOpens(auth.userId)
       await closeDuplicateLiveOpens(auth.userId)
-      let closedStale = 0
+      const reversedOpens = await enforceOneLiveOpenPerInstrument(auth.userId)
+      let closedStale = reversedOpens.length + (await healWrongReversalCloses(auth.userId))
       if (parsed.data.reconcileOpens) {
-        closedStale = await reconcileStaleOpenTrades(
+        closedStale += await reconcileStaleOpenTrades(
           auth.userId,
           parsed.data.reconcileOpens.instrument,
           parsed.data.reconcileOpens.opens,
@@ -225,67 +351,6 @@ export async function POST(request: NextRequest) {
       healResult.touches.push(
         ...purged.touches.map((touch) => ({ ...touch, updated: 1 })),
       )
-      if (closedStale > 0) {
-        const refreshTargets = new Map<
-          string,
-          { accountId: string; instrument: string; accountName: string; updated: number }
-        >()
-        const symbol = canonicalInstrumentSymbol(
-          parsed.data.reconcileOpens?.instrument || chartSymbolOverride || "",
-        )
-        if (symbol && parsed.data.reconcileOpens) {
-          const account = resolveAccountForInstrument(accounts, symbol)
-          refreshTargets.set(String(account._id), {
-            accountId: String(account._id),
-            instrument: symbol,
-            accountName: account.name,
-            updated: closedStale - healResult.healed,
-          })
-        }
-        for (const touch of healResult.touches) {
-          const existing = refreshTargets.get(touch.accountId)
-          if (existing) {
-            existing.updated += touch.updated
-            continue
-          }
-          const account = resolveAccountForInstrument(accounts, touch.instrument)
-          refreshTargets.set(touch.accountId, {
-            accountId: touch.accountId,
-            instrument: touch.instrument,
-            accountName: account.name,
-            updated: touch.updated,
-          })
-        }
-
-        for (const target of refreshTargets.values()) {
-          const latestTrade = {
-            id: `closed:${target.accountId}`,
-            instrument: target.instrument,
-            trade_type: "Buy" as const,
-            entry_date: new Date().toISOString(),
-            entry_price: 0,
-            is_open: false,
-          }
-          const event = await recordTradeSyncEvent(auth.userId, {
-            kind: "close",
-            accountId: target.accountId,
-            accountName: target.accountName,
-            imported: 0,
-            updated: target.updated,
-            skipped: 0,
-            latestTrade,
-          })
-          publishTradesUpdated(auth.userId, target.accountId, {
-            eventId: event.eventId,
-            kind: "close",
-            imported: 0,
-            updated: target.updated,
-            skipped: 0,
-            accountName: target.accountName,
-            latestTrade,
-          })
-        }
-      }
 
       if (newAccounts.length) {
         publishAccountsUpdated(auth.userId, {
@@ -313,18 +378,8 @@ export async function POST(request: NextRequest) {
     let imported = 0
     let updated = 0
     let skipped = 0
-    let lastEventId: string | undefined
     const byAccount: Record<string, { name: string; imported: number; updated: number; skipped: number }> = {}
     const touchedAccounts = new Set<string>()
-    type TradeSnapshot = {
-      id: string
-      instrument: string
-      trade_type: string
-      entry_date: string
-      entry_price: number
-      signal?: string | null
-      is_open?: boolean
-    }
     const latestImportedByAccount: Record<string, TradeSnapshot> = {}
     const latestOpenImportedByAccount: Record<string, TradeSnapshot> = {}
     const latestUpdatedByAccount: Record<string, TradeSnapshot> = {}
@@ -336,6 +391,7 @@ export async function POST(request: NextRequest) {
     incomingTrades.sort((a, b) => Number(isOpenTvTrade(a)) - Number(isOpenTvTrade(b)))
 
     const fillEvents: LiveFillEvent[] = []
+    const bracketLevelUpdates: DeltaBracketLevelUpdate[] = []
 
     for (const tvTrade of incomingTrades) {
       const symbol = resolveSyncedInstrument(
@@ -388,15 +444,7 @@ export async function POST(request: NextRequest) {
         byAccount[accountId].imported += 1
         touchedAccounts.add(accountId)
         const isOpen = !mapped.exit_date
-        const snapshot: TradeSnapshot = {
-          id: String(created._id),
-          instrument: mapped.instrument,
-          trade_type: mapped.trade_type,
-          entry_date: mapped.entry_date.toISOString(),
-          entry_price: mapped.entry_price,
-          signal: mapped.signal ?? null,
-          is_open: isOpen,
-        }
+        const snapshot = tradeSnapshotFromMapped(String(created._id), mapped, isOpen)
         latestImportedByAccount[accountId] = snapshot
         if (isOpen) {
           latestOpenImportedByAccount[accountId] = snapshot
@@ -433,8 +481,33 @@ export async function POST(request: NextRequest) {
       const tvStillOpen = isOpenTvTrade(tvTrade)
       const dbStillOpen = !existing.exit_date
 
+      // TV List of Trades exit wins over a synthetic reversal stamp from reconcile.
+      if (
+        !tvStillOpen &&
+        mapped.exit_date &&
+        mapped.exit_price != null &&
+        existing.exit_date &&
+        (Math.abs(mapped.exit_date.getTime() - existing.exit_date.getTime()) > 60_000 ||
+          !sameEntryPrice(mapped.exit_price, existing.exit_price) ||
+          (typeof mapped.net_pnl === "number" &&
+            typeof existing.net_pnl === "number" &&
+            Math.abs(mapped.net_pnl - existing.net_pnl) >= 0.02))
+      ) {
+        mergeSyncedTrade(existing, mapped, accountId)
+        await existing.save()
+        updated += 1
+        byAccount[accountId].updated += 1
+        touchedAccounts.add(accountId)
+        continue
+      }
+
       // Recover a prior glitchy poll that synthetic-closed a still-live TV row.
-      if (tvStillOpen && existing.exit_date && sameEntryPrice(existing.entry_price, mapped.entry_price)) {
+      if (
+        tvStillOpen &&
+        existing.exit_date &&
+        sameEntryPrice(existing.entry_price, mapped.entry_price) &&
+        !hasNewerTvOpen(incomingTrades, tvTrade)
+      ) {
         existing.set("exit_date", null)
         existing.set("exit_price", null)
         existing.set("net_pnl", null)
@@ -454,6 +527,7 @@ export async function POST(request: NextRequest) {
           updated += 1
           byAccount[accountId].updated += 1
           touchedAccounts.add(accountId)
+          pushBracketLevelUpdate(bracketLevelUpdates, existing, mapped)
         } else if (existing.accountId !== accountId) {
           existing.accountId = accountId
           await existing.save()
@@ -474,6 +548,7 @@ export async function POST(request: NextRequest) {
           updated += 1
           byAccount[accountId].updated += 1
           touchedAccounts.add(accountId)
+          pushBracketLevelUpdate(bracketLevelUpdates, existing, mapped)
         } else if (existing.accountId !== accountId) {
           existing.accountId = accountId
           await existing.save()
@@ -489,12 +564,24 @@ export async function POST(request: NextRequest) {
 
       if (syncedTradeChanged(existing, mapped)) {
         const wasOpen = dbStillOpen
-        if (wasOpen && mapped.exit_date && tvStillOpen) {
+        const flatMtmGhost =
+          isFlatMtmOpen({
+            entry: tvTrade.entry,
+            exit: tvTrade.exit,
+            netPnl: tvTrade.netPnl,
+            returnPct: tvTrade.returnPct,
+          }) ||
+          (mapped.exit_price != null &&
+            sameEntryPrice(mapped.entry_price, mapped.exit_price) &&
+            (mapped.net_pnl == null || Math.abs(mapped.net_pnl) <= 0.01))
+
+        if (wasOpen && mapped.exit_date && (tvStillOpen || flatMtmGhost)) {
           if (persistExtractedLevels(existing, mapped)) {
             await existing.save()
             updated += 1
             byAccount[accountId].updated += 1
             touchedAccounts.add(accountId)
+            pushBracketLevelUpdate(bracketLevelUpdates, existing, mapped)
           } else {
             skipped += 1
             byAccount[accountId].skipped += 1
@@ -506,15 +593,7 @@ export async function POST(request: NextRequest) {
         updated += 1
         byAccount[accountId].updated += 1
         touchedAccounts.add(accountId)
-        const snapshot: TradeSnapshot = {
-          id: String(existing._id),
-          instrument: mapped.instrument,
-          trade_type: mapped.trade_type,
-          entry_date: mapped.entry_date.toISOString(),
-          entry_price: mapped.entry_price,
-          signal: mapped.signal ?? null,
-          is_open: !mapped.exit_date,
-        }
+        const snapshot = tradeSnapshotFromMapped(String(existing._id), mapped, !mapped.exit_date)
         latestUpdatedByAccount[accountId] = snapshot
         if (!wasOpen && !mapped.exit_date) {
           const repaint = sameEntryPrice(existing.entry_price, mapped.entry_price)
@@ -559,6 +638,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    let lastEventId = await dispatchFillSideEffects(
+      auth.userId,
+      fillEvents,
+      bracketLevelUpdates,
+      chartPhoto,
+    )
+
     const deduped = await dedupeSyncedTradesByExternalId(auth.userId)
     await healMisclosedSameFillOpens(auth.userId)
     const duplicateOpens = await closeDuplicateLiveOpens(auth.userId)
@@ -572,13 +658,37 @@ export async function POST(request: NextRequest) {
       updated += 1
     }
 
-    let closedStale = 0
-    if (parsed.data.reconcileOpens) {
-      closedStale = await reconcileStaleOpenTrades(
-        auth.userId,
-        parsed.data.reconcileOpens.instrument,
-        parsed.data.reconcileOpens.opens,
-      )
+    const reversedOpens = await enforceOneLiveOpenPerInstrument(auth.userId)
+    for (const row of reversedOpens) {
+      const accountId = String(row.accountId)
+      touchedAccounts.add(accountId)
+      if (!byAccount[accountId]) {
+        byAccount[accountId] = { name: "TradingView", imported: 0, updated: 0, skipped: 0 }
+      }
+      byAccount[accountId].updated += 1
+      updated += 1
+    }
+
+    const healedReversals = await healWrongReversalCloses(auth.userId)
+    if (healedReversals) updated += healedReversals
+
+    let closedStale = reversedOpens.length + healedReversals
+    const reconcileInstrument =
+      chartSymbolOverride ||
+      parsed.data.reconcileOpens?.instrument ||
+      canonicalInstrumentSymbol(incomingTrades[0]?.instrument || "")
+    const scrapedOpens = reconcileInstrument
+      ? pickTvActiveOpens(
+          incomingTrades.filter(
+            (row) =>
+              canonicalInstrumentSymbol(row.instrument || "") === reconcileInstrument ||
+              row.instrument === reconcileInstrument,
+          ),
+        )
+      : []
+    const activeOpens = mergeActiveOpenHints(scrapedOpens, parsed.data.reconcileOpens)
+    if (reconcileInstrument && activeOpens.length) {
+      closedStale += await reconcileStaleOpenTrades(auth.userId, reconcileInstrument, activeOpens)
     }
     const purged = await purgeSupersededOpenTrades(auth.userId)
     closedStale += purged.deleted
@@ -655,74 +765,6 @@ export async function POST(request: NextRequest) {
         primaryAccountId: newAccounts[newAccounts.length - 1]?.id,
       })
     }
-
-    const publishedFillAccounts = new Set<string>()
-    for (const fill of fillEvents) {
-      const isOpenFill = fill.kind === "open"
-      const latestTrade = {
-        id: fill.trade.id,
-        instrument: fill.trade.instrument,
-        trade_type: fill.trade.trade_type,
-        entry_date: fill.trade.entry_date,
-        entry_price: fill.trade.entry_price,
-        signal: fill.trade.signal ?? null,
-        is_open: isOpenFill && fill.reason !== "recent_scalp_open",
-      }
-      const event = await recordTradeSyncEvent(auth.userId, {
-        kind: fill.kind,
-        accountId: fill.accountId,
-        accountName: fill.accountName,
-        imported: isOpenFill ? 1 : 0,
-        updated: isOpenFill ? 0 : 1,
-        skipped: 0,
-        latestTrade,
-      })
-      lastEventId = event.eventId
-      publishedFillAccounts.add(fill.accountId)
-      publishTradesUpdated(auth.userId, fill.accountId, {
-        eventId: event.eventId,
-        kind: fill.kind,
-        imported: isOpenFill ? 1 : 0,
-        updated: isOpenFill ? 0 : 1,
-        skipped: 0,
-        accountName: fill.accountName,
-        latestTrade,
-      })
-    }
-
-    for (const accountId of touchedAccounts) {
-      if (publishedFillAccounts.has(accountId)) continue
-      const stats = byAccount[accountId]
-      if (!stats || (stats.imported === 0 && stats.updated === 0)) continue
-      const latestTrade =
-        latestUpdatedByAccount[accountId] ||
-        latestImportedByAccount[accountId] ||
-        latestOpenImportedByAccount[accountId]
-      const event = await recordTradeSyncEvent(auth.userId, {
-        kind: latestTrade?.is_open ? "open" : "close",
-        accountId,
-        accountName: stats.name,
-        imported: 0,
-        updated: stats.updated,
-        skipped: stats.skipped,
-        latestTrade: latestTrade ? { ...latestTrade, is_open: false } : undefined,
-      })
-      lastEventId = event.eventId
-      publishTradesUpdated(auth.userId, accountId, {
-        eventId: event.eventId,
-        kind: "close",
-        imported: 0,
-        updated: stats.updated,
-        skipped: stats.skipped,
-        accountName: stats.name,
-        latestTrade: latestTrade ? { ...latestTrade, is_open: false } : undefined,
-      })
-    }
-
-    await flushLiveFillAlerts(fillEvents, chartPhoto)
-    void runDeltaAutoTradeForFills(auth.userId, fillEvents).catch((error) => {
-      console.error("Delta auto-trade failed:", error)
-    })
 
     const byAccountSummary = Object.fromEntries(
       Object.entries(byAccount)

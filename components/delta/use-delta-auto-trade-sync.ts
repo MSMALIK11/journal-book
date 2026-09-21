@@ -57,6 +57,7 @@ export function useDeltaAutoTradeSync({
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [enabled, setEnabled] = useState(false)
+  const [attachTvBrackets, setAttachTvBrackets] = useState(true)
   const [enabledSymbols, setEnabledSymbols] = useState<DeltaAutoTradeSymbol[]>(["BTCUSD"])
   const [leverageBySymbol, setLeverageBySymbol] = useState<DeltaLeverageBySymbol>({})
   const [lotSizeBySymbol, setLotSizeBySymbol] = useState<DeltaLotSizeBySymbol>({})
@@ -70,6 +71,7 @@ export function useDeltaAutoTradeSync({
 
   const applyConfig = useCallback((config: DeltaAutoTradeConfig) => {
     setEnabled(config.enabled)
+    setAttachTvBrackets(config.attachTvBrackets !== false)
     const nextSymbols = config.symbols.length > 0 ? config.symbols : [config.symbol]
     // Keep the previous array when the contents match, otherwise a new reference on
     // every response would retrigger the debounced save and loop forever.
@@ -89,9 +91,10 @@ export function useDeltaAutoTradeSync({
       symbols: enabledSymbols,
       symbol: isDeltaAutoTradeSymbol(ticketSymbol) ? ticketSymbol : undefined,
       marginPct: (marginPct ?? savedMarginPct) as DeltaAutoTradeMarginPct,
+      attachTvBrackets,
       ...partial,
     }),
-    [broadcastAccountIds, enabledSymbols, marginPct, savedMarginPct, singleAccountId, ticketSymbol, tradeMode],
+    [attachTvBrackets, broadcastAccountIds, enabledSymbols, marginPct, savedMarginPct, singleAccountId, ticketSymbol, tradeMode],
   )
 
   const patchSettings = useCallback(
@@ -159,11 +162,16 @@ export function useDeltaAutoTradeSync({
       void patchSettingsRef.current({}).catch(() => undefined)
     }, 400)
     return () => window.clearTimeout(timer)
-  }, [enabled, persistReady, tradeMode, singleAccountId, broadcastKey, marginPct, ticketSymbol])
+  }, [attachTvBrackets, enabled, persistReady, tradeMode, singleAccountId, broadcastKey, marginPct, ticketSymbol])
 
   async function toggleEnabled(checked: boolean) {
     if (checked && !canEnable) return
     await patchSettings({ enabled: checked })
+  }
+
+  async function toggleAttachTvBrackets(checked: boolean) {
+    setAttachTvBrackets(checked)
+    await patchSettings({ attachTvBrackets: checked })
   }
 
   async function setSymbols(next: DeltaAutoTradeSymbol[]) {
@@ -222,6 +230,8 @@ export function useDeltaAutoTradeSync({
     loading,
     saving,
     enabled,
+    attachTvBrackets,
+    toggleAttachTvBrackets,
     enabledSymbols,
     setSymbols,
     leverageBySymbol,

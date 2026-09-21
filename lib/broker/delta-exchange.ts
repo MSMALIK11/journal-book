@@ -91,6 +91,12 @@ async function deltaRequest<T>(
   throw new Error(message_)
 }
 
+export type DeltaBracketOrderParams = {
+  bracket_stop_loss_price?: string
+  bracket_take_profit_price?: string
+  bracket_stop_trigger_method?: "mark_price" | "last_traded_price" | "spot_price"
+}
+
 export async function placeOrder(
   creds: DeltaCredentials,
   environment: DeltaEnvironment,
@@ -102,7 +108,7 @@ export async function placeOrder(
     order_type: "market_order" | "limit_order"
     limit_price?: string
     reduce_only?: boolean
-  },
+  } & DeltaBracketOrderParams,
 ) {
   if (params.product_id == null && !params.product_symbol) {
     throw new Error("Either product_id or product_symbol is required")
@@ -115,8 +121,103 @@ export async function placeOrder(
     order_type: params.order_type,
     ...(params.limit_price ? { limit_price: params.limit_price } : {}),
     ...(params.reduce_only ? { reduce_only: true } : {}),
+    ...(params.bracket_stop_loss_price ? { bracket_stop_loss_price: params.bracket_stop_loss_price } : {}),
+    ...(params.bracket_take_profit_price ? { bracket_take_profit_price: params.bracket_take_profit_price } : {}),
+    ...(params.bracket_stop_trigger_method
+      ? { bracket_stop_trigger_method: params.bracket_stop_trigger_method }
+      : {}),
   }
   return deltaRequest<{ success?: boolean; result?: unknown }>(creds, "POST", "/v2/orders", environment, body)
+}
+
+export async function editBracketOrder(
+  creds: DeltaCredentials,
+  environment: DeltaEnvironment,
+  params: {
+    id: number | string
+    product_id?: number | string
+    product_symbol?: string
+  } & DeltaBracketOrderParams,
+) {
+  const body: Record<string, unknown> = {
+    id: params.id,
+    ...(params.product_id != null ? { product_id: params.product_id } : {}),
+    ...(params.product_symbol ? { product_symbol: params.product_symbol } : {}),
+    ...(params.bracket_stop_loss_price ? { bracket_stop_loss_price: params.bracket_stop_loss_price } : {}),
+    ...(params.bracket_take_profit_price ? { bracket_take_profit_price: params.bracket_take_profit_price } : {}),
+    ...(params.bracket_stop_trigger_method
+      ? { bracket_stop_trigger_method: params.bracket_stop_trigger_method }
+      : {}),
+  }
+  return deltaRequest<{ success?: boolean; result?: unknown }>(
+    creds,
+    "PUT",
+    "/v2/orders/bracket",
+    environment,
+    body,
+  )
+}
+
+export async function createPositionBracketOrder(
+  creds: DeltaCredentials,
+  environment: DeltaEnvironment,
+  params: {
+    product_id?: number | string
+    product_symbol?: string
+    stopLoss?: number
+    takeProfit?: number
+    stopTriggerMethod?: "mark_price" | "last_traded_price" | "spot_price"
+  },
+) {
+  if (params.product_id == null && !params.product_symbol) {
+    throw new Error("Either product_id or product_symbol is required")
+  }
+  if (params.stopLoss == null && params.takeProfit == null) {
+    throw new Error("At least one of stopLoss or takeProfit is required")
+  }
+
+  const formatPrice = (price: number) => {
+    const raw = price.toString()
+    if (raw.includes("e") || raw.includes("E")) {
+      return price.toFixed(8).replace(/\.?0+$/, "")
+    }
+    return raw
+  }
+
+  const body: Record<string, unknown> = {
+    ...(params.product_id != null ? { product_id: params.product_id } : {}),
+    ...(params.product_symbol ? { product_symbol: params.product_symbol } : {}),
+    bracket_stop_trigger_method: params.stopTriggerMethod ?? "mark_price",
+  }
+
+  if (params.stopLoss != null) {
+    body.stop_loss_order = {
+      order_type: "market_order",
+      stop_price: formatPrice(params.stopLoss),
+    }
+  }
+  if (params.takeProfit != null) {
+    body.take_profit_order = {
+      order_type: "market_order",
+      stop_price: formatPrice(params.takeProfit),
+    }
+  }
+
+  return deltaRequest<{ success?: boolean; result?: unknown }>(
+    creds,
+    "POST",
+    "/v2/orders/bracket",
+    environment,
+    body,
+  )
+}
+
+export function parseAverageFillPrice(raw: unknown): number | undefined {
+  if (!raw || typeof raw !== "object" || !("result" in raw)) return undefined
+  const result = (raw as { result?: unknown }).result
+  if (!result || typeof result !== "object" || !("average_fill_price" in result)) return undefined
+  const price = Number((result as { average_fill_price?: unknown }).average_fill_price)
+  return Number.isFinite(price) && price > 0 ? price : undefined
 }
 
 export async function closeAllPositions(

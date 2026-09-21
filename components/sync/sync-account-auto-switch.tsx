@@ -6,6 +6,13 @@ import { useTradeSyncEvent } from "@/hooks/use-trade-sync-event"
 import type { TradeSyncEventDetail } from "@/hooks/use-trade-sync-listener"
 import { useToast } from "@/hooks/use-toast"
 
+function isBackgroundReconcileEvent(data: TradeSyncEventDetail) {
+  const id = data.latestTrade?.id || ""
+  if (id.startsWith("closed:")) return true
+  if ((data.imported ?? 0) === 0 && (data.updated ?? 0) > 1) return true
+  return false
+}
+
 /** Refresh accounts + all trade/analytics data when extension syncs (new or closed trades). */
 export function SyncAccountAutoSwitch() {
   const { activeAccountId, switchAccount, refresh, revalidateSyncedData } = useActiveAccount()
@@ -52,6 +59,8 @@ export function SyncAccountAutoSwitch() {
           await revalidateSyncedData().catch(() => {})
         }
 
+        if (isBackgroundReconcileEvent(data)) return
+
         if (imported > 0 && updated > 0) {
           toast({
             title: data.accountName ? `Synced to ${data.accountName}` : "Trades synced",
@@ -62,19 +71,10 @@ export function SyncAccountAutoSwitch() {
             title: data.accountName ? `New trade · ${data.accountName}` : "New trade synced",
             description: `${imported} new trade(s) from TradingView`,
           })
-        } else if (updated > 0) {
-          const closed = data.latestTrade?.is_open === false
+        } else if (updated > 0 && data.kind === "close") {
           toast({
-            title: data.accountName
-              ? closed
-                ? `Trade closed · ${data.accountName}`
-                : `Trade updated · ${data.accountName}`
-              : closed
-                ? "Trade closed"
-                : "Trade updated",
-            description: closed
-              ? `${updated} trade(s) closed on TradingView`
-              : `${updated} trade(s) updated from TradingView`,
+            title: data.accountName ? `Trade closed · ${data.accountName}` : "Trade closed",
+            description: "Position closed on TradingView",
           })
         }
       })()

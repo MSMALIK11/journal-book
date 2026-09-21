@@ -23,6 +23,35 @@ function datetimeMs(value?: string | null) {
   }
 }
 
+function sameFillPrice(a?: number | null, b?: number | null) {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || !a) return false
+  return Math.abs((a as number) - (b as number)) / Math.abs(a as number) <= 0.0002
+}
+
+/** ~$0 close at the same fill price — TV repainting the live exit half, not a real fill. */
+export function isFlatMtmOpen(trade: {
+  entry?: { price?: number; signal?: string }
+  exit?: { price?: number; signal?: string } | null
+  netPnl?: number | null
+  returnPct?: number | null
+}) {
+  if (!trade.entry || !trade.exit) return false
+  if (isTpSlSignal(trade.exit.signal)) return false
+
+  const entryPrice = Number(trade.entry.price)
+  const exitPrice = Number(trade.exit.price)
+  if (!Number.isFinite(entryPrice) || !Number.isFinite(exitPrice) || entryPrice <= 0) return false
+  if (!sameFillPrice(entryPrice, exitPrice)) return false
+
+  const pnl = trade.netPnl
+  if (typeof pnl === "number" && Number.isFinite(pnl) && Math.abs(pnl) > 0.01) return false
+
+  const ret = trade.returnPct
+  if (typeof ret === "number" && Number.isFinite(ret) && Math.abs(ret) > 0.01) return false
+
+  return true
+}
+
 /** Live Open row often paints current time/price on the exit half — not a TP/SL fill. */
 export function isPaintedMtmOpen(trade: {
   entry?: { datetime?: string; price?: number }
@@ -96,6 +125,9 @@ export function isOpenTvTrade(trade: {
   // Live quote + unrealized P&L on exit half — not a TP/SL fill.
   if (!confirmedTpSl && isMtmUnrealizedOpen(trade)) return true
 
+  // Exit time advances but price/P&L stay flat — still live on TV.
+  if (!confirmedTpSl && isFlatMtmOpen(trade)) return true
+
   return false
 }
 
@@ -117,4 +149,40 @@ export function isOpenSyncedTrade(trade: {
   // a closed row stuck after TV sends the fill.
   if (trade.exit_date) return false
   return true
+}
+
+export type TvActiveOpenHint = {
+  externalId?: string
+  entryDatetime?: string
+  direction?: "long" | "short"
+  tradeNumber?: number
+}
+
+/** pyramiding=0 — trust the scraped TV table: one live Open row (highest trade #). */
+export function pickTvActiveOpens(
+  trades: {
+    tradeNumber?: number
+    direction?: "long" | "short"
+    entry?: { datetime?: string }
+    exit?: { datetime?: string; signal?: string } | null
+    netPnl?: number
+    returnPct?: number
+  }[],
+): TvActiveOpenHint[] {
+  const opens = trades.filter((trade) => isOpenTvTrade(trade))
+  if (!opens.length) return []
+
+  const live = opens.reduce((best, trade) => {
+    const num = Number(trade.tradeNumber) || 0
+    const bestNum = Number(best.tradeNumber) || 0
+    return num > bestNum ? trade : best
+  }, opens[0])
+
+  return [
+    {
+      entryDatetime: live.entry?.datetime,
+      direction: live.direction,
+      tradeNumber: live.tradeNumber,
+    },
+  ]
 }

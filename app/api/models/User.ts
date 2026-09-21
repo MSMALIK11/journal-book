@@ -86,6 +86,12 @@ export interface IUser {
     demo?: Record<string, unknown>;
     live?: Record<string, unknown>;
   };
+  pushSubscriptions?: Array<{
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+    userAgent?: string;
+    createdAt?: Date;
+  }>;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -178,6 +184,10 @@ const UserSchema = new Schema<IUser>(
     deltaAutoTradePreferences: {
       type: Schema.Types.Mixed,
       default: {},
+    },
+    pushSubscriptions: {
+      type: [Schema.Types.Mixed],
+      default: undefined,
     },
   },
   {

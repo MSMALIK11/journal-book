@@ -20,6 +20,7 @@ export function AuthForm() {
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
+  const [rememberMe, setRememberMe] = useState(true)
   const [loading, setLoading] = useState(false)
 
   const submit = async (event: React.FormEvent) => {
@@ -40,7 +41,7 @@ export function AuthForm() {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, rememberMe: mode === "signin" ? rememberMe : true }),
       })
       const data = await response.json()
 
@@ -163,6 +164,18 @@ export function AuthForm() {
                       </p>
                     )}
                   </div>
+
+                  {mode === "signin" && (
+                    <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={rememberMe}
+                        onChange={(event) => setRememberMe(event.target.checked)}
+                        className="h-4 w-4 rounded border border-cyan-400/30 bg-[#05070a]"
+                      />
+                      Keep me signed in on this phone (30 days)
+                    </label>
+                  )}
 
                   {mode === "signup" && (
                     <div className="space-y-2">

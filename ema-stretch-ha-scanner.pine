@@ -1,6 +1,5 @@
 //@version=5
-// @strategy_alert_message {{strategy.order.alert_message}}
-strategy("EMA Stretch Long + Short Reversal and HA Scanner", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, calc_on_every_tick=false, process_orders_on_close=true, pyramiding=0)
+strategy("EMA Stretch Long + Short Reversal and HA Scanner", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, calc_on_every_tick=true, pyramiding=0)
 
 //────────────────────────────────────────────
 // STRATEGY SETTINGS
@@ -13,13 +12,13 @@ enableShort = input.bool(true, "Enable Short Trades", group=strategyGroup)
 emaLen = input.int(5, "Fast EMA Length", minval=1, group=strategyGroup)
 emaLen20 = input.int(20, "Slow EMA Length", minval=1, group=strategyGroup)
 rr = input.float(1.5, "Risk-Reward Ratio", minval=0.1, step=0.1, group=strategyGroup)
-
-//────────────────────────────────────────────
-// TP/SL IN LIST OF TRADES
-//────────────────────────────────────────────
-labelGroup = "TP/SL Table"
-
-fullTableSignals = input.bool(true, "Full TP/SL in List of Trades", group=labelGroup)
+tradeCooldownBars = input.int(
+     1,
+     "Bars to wait after trade closes",
+     minval=0,
+     maxval=50,
+     group=strategyGroup,
+     tooltip="After TP/SL close, skip new entries for this many bars. 0 = off. Reversals while in a trade still work.")
 
 //────────────────────────────────────────────
 // HEIKIN ASHI ENTRY FILTERS
@@ -40,6 +39,7 @@ avoidShortTopWick = input.bool(false, "Avoid Short With Top Wick", group=filterG
 scannerGroup = "Heikin Ashi Multi Pair Scanner"
 
 confirmedOnly = input.bool(false, "Confirmed Closed Candle Only", group=scannerGroup)
+slTpTimeframe = input.timeframe("", "SL/TP Column Timeframe (empty = chart)", group=scannerGroup)
 
 enableGOLD = input.bool(true, "Enable GOLD", group=scannerGroup)
 enableBTC = input.bool(true, "Enable BTC", group=scannerGroup)
@@ -71,19 +71,21 @@ isBodyValid() =>
 
     not enableBodyFilter or bodyPercent >= minimumBodyPercent
 
-// Human-readable price + journal-parseable entry comment (TP: / SL: tokens).
 f_priceLabel(_price) =>
     str.tostring(_price, format.mintick)
 
-f_entryTableComment(_side, _tp, _sl) =>
+f_slTpTableText(_side, _tp, _sl) =>
     _side + " | TP: " + f_priceLabel(_tp) + " | SL: " + f_priceLabel(_sl)
 
-// List of Trades: full TP/SL. Chart markers use the same comment field in TradingView.
-f_entryOrderComment(_side, _tp, _sl) =>
-    fullTableSignals ? f_entryTableComment(_side, _tp, _sl) : _side
-
-// Delayed EMA wait expires after this many bars (refresh/replay otherwise re-fires).
-emaWaitBars = 8
+f_pairKey(_ticker) =>
+    t = str.upper(_ticker)
+    str.contains(t, "XAU") or str.contains(t, "GOLD") ? "GOLD" :
+         str.contains(t, "BTC") ? "BTC" :
+         str.contains(t, "ETH") ? "ETH" :
+         str.contains(t, "SOL") ? "SOLUSD" :
+         str.contains(t, "XAG") or str.contains(t, "SILVER") ? "XAGUSD" :
+         str.contains(t, "OIL") or str.contains(t, "WTI") or str.contains(t, "USOIL") ? "USOIL" :
+         ""
 
 //────────────────────────────────────────────
 // LONG SIGNAL
@@ -95,7 +97,6 @@ getLongSignal(_ema) =>
     // Current HA candle breaks previous high.
     bullishBreak = high > high[1] and close > high[1]
     rawLongSignal = candleANoTouch and bullishBreak
-    rawShortSignal = low[1] > _ema[1] and low < low[1] and close < low[1]
 
     bodyValid = isBodyValid()
 
@@ -108,30 +109,20 @@ getLongSignal(_ema) =>
     hasBottomWick = bottomWick > syminfo.mintick
     wickValid = not avoidLongBottomWick or not hasBottomWick
 
+    // Wait after raw reversal when EMA confirmation is missing.
     var bool waitingForLongEma = false
-    var int waitingLongFrom = na
     bool finalLongSignal = false
-
-    waitExpired = waitingForLongEma and not na(waitingLongFrom) and (bar_index - waitingLongFrom) > emaWaitBars
-    waitInvalid = waitingForLongEma and high < _ema
-
-    if rawShortSignal or waitExpired or waitInvalid
-        waitingForLongEma := false
-        waitingLongFrom := na
 
     if rawLongSignal
         if emaValid
             finalLongSignal := bodyValid and wickValid
             waitingForLongEma := false
-            waitingLongFrom := na
         else
             waitingForLongEma := true
-            waitingLongFrom := bar_index
-    else if waitingForLongEma and emaValid and close > open and close > _ema
+    else if waitingForLongEma and emaValid
         if bodyValid and wickValid
             finalLongSignal := true
             waitingForLongEma := false
-            waitingLongFrom := na
 
     finalLongSignal
 
@@ -145,7 +136,6 @@ getShortSignal(_ema) =>
     // Current HA candle breaks previous low.
     bearishBreak = low < low[1] and close < low[1]
     rawShortSignal = candleANoTouch and bearishBreak
-    rawLongSignal = high[1] < _ema[1] and high > high[1] and close > high[1]
 
     bodyValid = isBodyValid()
 
@@ -158,107 +148,104 @@ getShortSignal(_ema) =>
     hasTopWick = topWick > syminfo.mintick
     wickValid = not avoidShortTopWick or not hasTopWick
 
+    // Wait after raw reversal when EMA confirmation is missing.
     var bool waitingForShortEma = false
-    var int waitingShortFrom = na
     bool finalShortSignal = false
-
-    waitExpired = waitingForShortEma and not na(waitingShortFrom) and (bar_index - waitingShortFrom) > emaWaitBars
-    waitInvalid = waitingForShortEma and low > _ema
-
-    if rawLongSignal or waitExpired or waitInvalid
-        waitingForShortEma := false
-        waitingShortFrom := na
 
     if rawShortSignal
         if emaValid
             finalShortSignal := bodyValid and wickValid
             waitingForShortEma := false
-            waitingShortFrom := na
         else
             waitingForShortEma := true
-            waitingShortFrom := bar_index
-    else if waitingForShortEma and emaValid and close < open and close < _ema
+    else if waitingForShortEma and emaValid
         if bodyValid and wickValid
             finalShortSignal := true
             waitingForShortEma := false
-            waitingShortFrom := na
 
     finalShortSignal
 
 //────────────────────────────────────────────
-// CURRENT CHART HA SIGNALS + HA LEVELS FOR SL/TP
+// CURRENT CHART HA SIGNALS
 //────────────────────────────────────────────
-[longSignal, shortSignal, haClose, haHighPrev, haLowPrev] = request.security(
+[longSignal, shortSignal] = request.security(
      ticker.heikinashi(syminfo.tickerid),
      timeframe.period,
      [
          getLongSignal(ta.ema(close, emaLen)),
-         getShortSignal(ta.ema(close, emaLen)),
-         close,
-         high[1],
-         low[1]
+         getShortSignal(ta.ema(close, emaLen))
      ],
      lookahead=barmerge.lookahead_off)
 
 //────────────────────────────────────────────
 // LONG AND SHORT STRATEGY
 // Opposite entry automatically reverses position.
-// TP/SL in List of Trades + alerts. No chart TP/SL lines or labels.
-// Entries only on a closed candle, once per bar. calc_on_every_tick
-// would otherwise re-fire HA signals after a same-bar SL/TP fill.
+// Full TP/SL in entry comment (journal extension also reads scanner dashboard SL/TP column).
+// One entry per bar + optional cooldown after each closed trade.
 //────────────────────────────────────────────
-var int lastEntryBar = na
-longTrigger = longSignal and not nz(longSignal[1], false)
-shortTrigger = shortSignal and not nz(shortSignal[1], false)
-canOpenTrade = barstate.isconfirmed and (na(lastEntryBar) or lastEntryBar != bar_index)
+var float chartTradeStop = na
+var float chartTradeTarget = na
+var int lastLongEntryBar = na
+var int lastShortEntryBar = na
+var int lastClosedTradeBar = na
 
-if canOpenTrade and enableLong and longTrigger and strategy.position_size <= 0
-    longStop = haLowPrev
-    longRisk = haClose - longStop
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    lastClosedTradeBar := bar_index
 
-    if longRisk > syminfo.mintick
-        longTarget = haClose + longRisk * rr
-        lastEntryBar := bar_index
+longStop = low[1]
+longRisk = close - longStop
+shortStop = high[1]
+shortRisk = shortStop - close
 
-        strategy.entry(
-             "Long",
-             strategy.long,
-             comment=f_entryOrderComment("LONG", longTarget, longStop),
-             alert_message=f_entryTableComment("LONG", longTarget, longStop))
+cooldownOk = tradeCooldownBars == 0 or na(lastClosedTradeBar) or bar_index - lastClosedTradeBar > tradeCooldownBars
+// Flat = respect cooldown. In a position = allow opposite reversal.
+canOpenNew = strategy.position_size != 0 or cooldownOk
+oneLongPerBar = na(lastLongEntryBar) or lastLongEntryBar != bar_index
+oneShortPerBar = na(lastShortEntryBar) or lastShortEntryBar != bar_index
 
-        strategy.exit(
-             "Long TP/SL",
-             from_entry="Long",
-             stop=longStop,
-             limit=longTarget,
-             comment="",
-             comment_profit="",
-             comment_loss="",
-             alert_message="LONG exit | TP: " + f_priceLabel(longTarget) + " | SL: " + f_priceLabel(longStop))
+longAllowed = enableLong and longSignal and strategy.position_size <= 0 and canOpenNew and oneLongPerBar
+shortAllowed = enableShort and shortSignal and strategy.position_size >= 0 and canOpenNew and oneShortPerBar
 
-else if canOpenTrade and enableShort and shortTrigger and strategy.position_size >= 0
-    shortStop = haHighPrev
-    shortRisk = shortStop - haClose
+longFire = longAllowed and longRisk > syminfo.mintick
+shortFire = shortAllowed and shortRisk > syminfo.mintick
 
-    if shortRisk > syminfo.mintick
-        shortTarget = haClose - shortRisk * rr
-        lastEntryBar := bar_index
+if longFire
+    longTarget = close + longRisk * rr
+    chartTradeStop := longStop
+    chartTradeTarget := longTarget
+    lastLongEntryBar := bar_index
 
-        strategy.entry(
-             "Short",
-             strategy.short,
-             comment=f_entryOrderComment("SHORT", shortTarget, shortStop),
-             alert_message=f_entryTableComment("SHORT", shortTarget, shortStop))
+    strategy.entry(
+         "Long",
+         strategy.long,
+         comment=f_slTpTableText("LONG", longTarget, longStop))
 
-        strategy.exit(
-             "Short TP/SL",
-             from_entry="Short",
-             stop=shortStop,
-             limit=shortTarget,
-             comment="",
-             comment_profit="",
-             comment_loss="",
-             alert_message="SHORT exit | TP: " + f_priceLabel(shortTarget) + " | SL: " + f_priceLabel(shortStop))
+    strategy.exit(
+         "Long TP/SL",
+         from_entry="Long",
+         stop=longStop,
+         limit=longTarget)
+
+else if shortFire
+    shortTarget = close - shortRisk * rr
+    chartTradeStop := shortStop
+    chartTradeTarget := shortTarget
+    lastShortEntryBar := bar_index
+
+    strategy.entry(
+         "Short",
+         strategy.short,
+         comment=f_slTpTableText("SHORT", shortTarget, shortStop))
+
+    strategy.exit(
+         "Short TP/SL",
+         from_entry="Short",
+         stop=shortStop,
+         limit=shortTarget)
+
+if strategy.position_size == 0 and not longSignal and not shortSignal
+    chartTradeStop := na
+    chartTradeTarget := na
 
 //────────────────────────────────────────────
 // TODAY'S CLOSED-TRADE PERFORMANCE
@@ -291,81 +278,123 @@ formatMoney(_value) =>
     str.tostring(_value, "#.##")
 
 //────────────────────────────────────────────
-// HA SCANNER FUNCTION
+// HA SCANNER — signals + SL/TP in one call (TV 40-security limit)
 //────────────────────────────────────────────
-getScannerSignals(_symbol, _timeframe) =>
+f_scannerRow() =>
+    _ema = ta.ema(close, emaLen)
+    longSig = confirmedOnly ? getLongSignal(_ema)[1] : getLongSignal(_ema)
+    shortSig = confirmedOnly ? getShortSignal(_ema)[1] : getShortSignal(_ema)
+    float stop = na
+    float target = na
+
+    if longSig
+        stop := low[1]
+        risk = close - stop
+        target := risk > syminfo.mintick ? close + risk * rr : na
+    else if shortSig
+        stop := high[1]
+        risk = stop - close
+        target := risk > syminfo.mintick ? close - risk * rr : na
+
+    [longSig, shortSig, stop, target]
+
+getScannerRow(_symbol, _timeframe) =>
     request.security(
          ticker.heikinashi(_symbol),
          _timeframe,
-         [
-             confirmedOnly
-                 ? getLongSignal(ta.ema(close, emaLen))[1]
-                 : getLongSignal(ta.ema(close, emaLen)),
-             confirmedOnly
-                 ? getShortSignal(ta.ema(close, emaLen))[1]
-                 : getShortSignal(ta.ema(close, emaLen))
-         ],
+         f_scannerRow(),
          lookahead=barmerge.lookahead_off)
+
+slTpTf = slTpTimeframe == "" ? timeframe.period : slTpTimeframe
+
+f_pickSlTpSlot(_tf, _m1, _m3, _m5, _m15, _m30, _h1) =>
+    _tf == "1" ? _m1 :
+         _tf == "3" ? _m3 :
+         _tf == "5" ? _m5 :
+         _tf == "15" ? _m15 :
+         _tf == "30" ? _m30 :
+         _tf == "60" ? _h1 :
+         _m15
+
+f_rowSlTp(_rowKey, _sigLong, _sigShort, _sigStop, _sigTarget) =>
+    useOpen = f_pairKey(syminfo.ticker) == _rowKey and strategy.position_size != 0 and not na(chartTradeStop) and not na(chartTradeTarget)
+    showLong = useOpen ? strategy.position_size > 0 : _sigLong
+    showShort = useOpen ? strategy.position_size < 0 : _sigShort
+    stop = useOpen ? chartTradeStop : _sigStop
+    target = useOpen ? chartTradeTarget : _sigTarget
+    [showLong, showShort, stop, target]
+
+f_slTpCellText(_longSignal, _shortSignal, _stop, _target, _pairEnabled) =>
+    scannerEnabled = _pairEnabled and (enableLong or enableShort)
+    validLong = enableLong and _longSignal
+    validShort = enableShort and _shortSignal
+    hasLevels = not na(_stop) and not na(_target)
+
+    not scannerEnabled
+         ? "OFF"
+         : (validLong or validShort) and hasLevels
+             ? f_slTpTableText(validLong ? "LONG" : "SHORT", _target, _stop)
+             : "-"
 
 //────────────────────────────────────────────
 // GOLD
 //────────────────────────────────────────────
-[goldM1Long, goldM1Short] = getScannerSignals(goldSymbol, "1")
-[goldM3Long, goldM3Short] = getScannerSignals(goldSymbol, "3")
-[goldM5Long, goldM5Short] = getScannerSignals(goldSymbol, "5")
-[goldM15Long, goldM15Short] = getScannerSignals(goldSymbol, "15")
-[goldM30Long, goldM30Short] = getScannerSignals(goldSymbol, "30")
-[goldH1Long, goldH1Short] = getScannerSignals(goldSymbol, "60")
+[goldM1Long, goldM1Short, goldM1Sl, goldM1Tp] = getScannerRow(goldSymbol, "1")
+[goldM3Long, goldM3Short, goldM3Sl, goldM3Tp] = getScannerRow(goldSymbol, "3")
+[goldM5Long, goldM5Short, goldM5Sl, goldM5Tp] = getScannerRow(goldSymbol, "5")
+[goldM15Long, goldM15Short, goldM15Sl, goldM15Tp] = getScannerRow(goldSymbol, "15")
+[goldM30Long, goldM30Short, goldM30Sl, goldM30Tp] = getScannerRow(goldSymbol, "30")
+[goldH1Long, goldH1Short, goldH1Sl, goldH1Tp] = getScannerRow(goldSymbol, "60")
 
 //────────────────────────────────────────────
 // BTC
 //────────────────────────────────────────────
-[btcM1Long, btcM1Short] = getScannerSignals(btcSymbol, "1")
-[btcM3Long, btcM3Short] = getScannerSignals(btcSymbol, "3")
-[btcM5Long, btcM5Short] = getScannerSignals(btcSymbol, "5")
-[btcM15Long, btcM15Short] = getScannerSignals(btcSymbol, "15")
-[btcM30Long, btcM30Short] = getScannerSignals(btcSymbol, "30")
-[btcH1Long, btcH1Short] = getScannerSignals(btcSymbol, "60")
+[btcM1Long, btcM1Short, btcM1Sl, btcM1Tp] = getScannerRow(btcSymbol, "1")
+[btcM3Long, btcM3Short, btcM3Sl, btcM3Tp] = getScannerRow(btcSymbol, "3")
+[btcM5Long, btcM5Short, btcM5Sl, btcM5Tp] = getScannerRow(btcSymbol, "5")
+[btcM15Long, btcM15Short, btcM15Sl, btcM15Tp] = getScannerRow(btcSymbol, "15")
+[btcM30Long, btcM30Short, btcM30Sl, btcM30Tp] = getScannerRow(btcSymbol, "30")
+[btcH1Long, btcH1Short, btcH1Sl, btcH1Tp] = getScannerRow(btcSymbol, "60")
 
 //────────────────────────────────────────────
 // ETH
 //────────────────────────────────────────────
-[ethM1Long, ethM1Short] = getScannerSignals(ethSymbol, "1")
-[ethM3Long, ethM3Short] = getScannerSignals(ethSymbol, "3")
-[ethM5Long, ethM5Short] = getScannerSignals(ethSymbol, "5")
-[ethM15Long, ethM15Short] = getScannerSignals(ethSymbol, "15")
-[ethM30Long, ethM30Short] = getScannerSignals(ethSymbol, "30")
-[ethH1Long, ethH1Short] = getScannerSignals(ethSymbol, "60")
+[ethM1Long, ethM1Short, ethM1Sl, ethM1Tp] = getScannerRow(ethSymbol, "1")
+[ethM3Long, ethM3Short, ethM3Sl, ethM3Tp] = getScannerRow(ethSymbol, "3")
+[ethM5Long, ethM5Short, ethM5Sl, ethM5Tp] = getScannerRow(ethSymbol, "5")
+[ethM15Long, ethM15Short, ethM15Sl, ethM15Tp] = getScannerRow(ethSymbol, "15")
+[ethM30Long, ethM30Short, ethM30Sl, ethM30Tp] = getScannerRow(ethSymbol, "30")
+[ethH1Long, ethH1Short, ethH1Sl, ethH1Tp] = getScannerRow(ethSymbol, "60")
 
 //────────────────────────────────────────────
 // SOLUSD
 //────────────────────────────────────────────
-[solM1Long, solM1Short] = getScannerSignals(solSymbol, "1")
-[solM3Long, solM3Short] = getScannerSignals(solSymbol, "3")
-[solM5Long, solM5Short] = getScannerSignals(solSymbol, "5")
-[solM15Long, solM15Short] = getScannerSignals(solSymbol, "15")
-[solM30Long, solM30Short] = getScannerSignals(solSymbol, "30")
-[solH1Long, solH1Short] = getScannerSignals(solSymbol, "60")
+[solM1Long, solM1Short, solM1Sl, solM1Tp] = getScannerRow(solSymbol, "1")
+[solM3Long, solM3Short, solM3Sl, solM3Tp] = getScannerRow(solSymbol, "3")
+[solM5Long, solM5Short, solM5Sl, solM5Tp] = getScannerRow(solSymbol, "5")
+[solM15Long, solM15Short, solM15Sl, solM15Tp] = getScannerRow(solSymbol, "15")
+[solM30Long, solM30Short, solM30Sl, solM30Tp] = getScannerRow(solSymbol, "30")
+[solH1Long, solH1Short, solH1Sl, solH1Tp] = getScannerRow(solSymbol, "60")
 
 //────────────────────────────────────────────
 // XAGUSD
 //────────────────────────────────────────────
-[xagM1Long, xagM1Short] = getScannerSignals(xagSymbol, "1")
-[xagM3Long, xagM3Short] = getScannerSignals(xagSymbol, "3")
-[xagM5Long, xagM5Short] = getScannerSignals(xagSymbol, "5")
-[xagM15Long, xagM15Short] = getScannerSignals(xagSymbol, "15")
-[xagM30Long, xagM30Short] = getScannerSignals(xagSymbol, "30")
-[xagH1Long, xagH1Short] = getScannerSignals(xagSymbol, "60")
+[xagM1Long, xagM1Short, xagM1Sl, xagM1Tp] = getScannerRow(xagSymbol, "1")
+[xagM3Long, xagM3Short, xagM3Sl, xagM3Tp] = getScannerRow(xagSymbol, "3")
+[xagM5Long, xagM5Short, xagM5Sl, xagM5Tp] = getScannerRow(xagSymbol, "5")
+[xagM15Long, xagM15Short, xagM15Sl, xagM15Tp] = getScannerRow(xagSymbol, "15")
+[xagM30Long, xagM30Short, xagM30Sl, xagM30Tp] = getScannerRow(xagSymbol, "30")
+[xagH1Long, xagH1Short, xagH1Sl, xagH1Tp] = getScannerRow(xagSymbol, "60")
 
 //────────────────────────────────────────────
 // USOIL
 //────────────────────────────────────────────
-[oilM1Long, oilM1Short] = getScannerSignals(oilSymbol, "1")
-[oilM3Long, oilM3Short] = getScannerSignals(oilSymbol, "3")
-[oilM5Long, oilM5Short] = getScannerSignals(oilSymbol, "5")
-[oilM15Long, oilM15Short] = getScannerSignals(oilSymbol, "15")
-[oilM30Long, oilM30Short] = getScannerSignals(oilSymbol, "30")
-[oilH1Long, oilH1Short] = getScannerSignals(oilSymbol, "60")
+[oilM1Long, oilM1Short, oilM1Sl, oilM1Tp] = getScannerRow(oilSymbol, "1")
+[oilM3Long, oilM3Short, oilM3Sl, oilM3Tp] = getScannerRow(oilSymbol, "3")
+[oilM5Long, oilM5Short, oilM5Sl, oilM5Tp] = getScannerRow(oilSymbol, "5")
+[oilM15Long, oilM15Short, oilM15Sl, oilM15Tp] = getScannerRow(oilSymbol, "15")
+[oilM30Long, oilM30Short, oilM30Sl, oilM30Tp] = getScannerRow(oilSymbol, "30")
+[oilH1Long, oilH1Short, oilH1Sl, oilH1Tp] = getScannerRow(oilSymbol, "60")
 
 //────────────────────────────────────────────
 // DASHBOARD COLORS
@@ -389,7 +418,7 @@ netBg = todayNet >= 0
 //────────────────────────────────────────────
 var table scannerTable = table.new(
      position.top_right,
-     7,
+     8,
      10,
      bgcolor=pairBg,
      frame_color=color.gray,
@@ -398,13 +427,13 @@ var table scannerTable = table.new(
      border_width=1)
 
 // Merge summary rows once.
-var bool summaryMerged = false
+var bool summaryMergedSlTp = false
 
-if not summaryMerged
-    table.merge_cells(scannerTable, 0, 7, 6, 7)
-    table.merge_cells(scannerTable, 0, 8, 6, 8)
-    table.merge_cells(scannerTable, 0, 9, 6, 9)
-    summaryMerged := true
+if not summaryMergedSlTp
+    table.merge_cells(scannerTable, 0, 7, 7, 7)
+    table.merge_cells(scannerTable, 0, 8, 7, 8)
+    table.merge_cells(scannerTable, 0, 9, 7, 9)
+    summaryMergedSlTp := true
 
 drawCell(_column, _row, _longSignal, _shortSignal, _pairEnabled) =>
     scannerEnabled = _pairEnabled and (enableLong or enableShort)
@@ -437,8 +466,32 @@ drawCell(_column, _row, _longSignal, _shortSignal, _pairEnabled) =>
          text_halign=text.align_center,
          text_size=size.tiny)
 
+drawSlTpCell(_row, _longSignal, _shortSignal, _stop, _target, _pairEnabled) =>
+    scannerEnabled = _pairEnabled and (enableLong or enableShort)
+    validLong = enableLong and _longSignal
+    validShort = enableShort and _shortSignal
+    slTpText = f_slTpCellText(_longSignal, _shortSignal, _stop, _target, _pairEnabled)
+    slTpBackground = not scannerEnabled
+         ? disabledBg
+         : validLong
+             ? longBg
+             : validShort
+                 ? shortBg
+                 : waitBg
+
+    table.cell(
+         scannerTable,
+         7,
+         _row,
+         slTpText,
+         text_color=whiteText,
+         bgcolor=slTpBackground,
+         text_halign=text.align_center,
+         text_size=size.tiny)
+
 drawRow(
      _row,
+     _rowKey,
      _name,
      _enabled,
      _m1Long,
@@ -452,9 +505,14 @@ drawRow(
      _m30Long,
      _m30Short,
      _h1Long,
-     _h1Short) =>
+     _h1Short,
+     _slLong,
+     _slShort,
+     _stop,
+     _target) =>
 
     rowEnabled = _enabled and (enableLong or enableShort)
+    [slLong, slShort, stop, target] = f_rowSlTp(_rowKey, _slLong, _slShort, _stop, _target)
 
     table.cell(
          scannerTable,
@@ -472,6 +530,7 @@ drawRow(
     drawCell(4, _row, _m15Long, _m15Short, _enabled)
     drawCell(5, _row, _m30Long, _m30Short, _enabled)
     drawCell(6, _row, _h1Long, _h1Short, _enabled)
+    drawSlTpCell(_row, slLong, slShort, stop, target, _enabled)
 
 drawSummaryRow(_row, _label, _value, _background) =>
     table.cell(
@@ -495,60 +554,85 @@ if barstate.islast
     table.cell(scannerTable, 4, 0, "M15", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
     table.cell(scannerTable, 5, 0, "M30", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
     table.cell(scannerTable, 6, 0, "H1", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
+    table.cell(scannerTable, 7, 0, "SL/TP", text_color=whiteText, bgcolor=headerBg, text_halign=text.align_center, text_size=size.tiny)
 
     drawRow(
-         1, "GOLD", enableGOLD,
+         1, "GOLD", "GOLD", enableGOLD,
          goldM1Long, goldM1Short,
          goldM3Long, goldM3Short,
          goldM5Long, goldM5Short,
          goldM15Long, goldM15Short,
          goldM30Long, goldM30Short,
-         goldH1Long, goldH1Short)
+         goldH1Long, goldH1Short,
+         f_pickSlTpSlot(slTpTf, goldM1Long, goldM3Long, goldM5Long, goldM15Long, goldM30Long, goldH1Long),
+         f_pickSlTpSlot(slTpTf, goldM1Short, goldM3Short, goldM5Short, goldM15Short, goldM30Short, goldH1Short),
+         f_pickSlTpSlot(slTpTf, goldM1Sl, goldM3Sl, goldM5Sl, goldM15Sl, goldM30Sl, goldH1Sl),
+         f_pickSlTpSlot(slTpTf, goldM1Tp, goldM3Tp, goldM5Tp, goldM15Tp, goldM30Tp, goldH1Tp))
 
     drawRow(
-         2, "BTC", enableBTC,
+         2, "BTC", "BTC", enableBTC,
          btcM1Long, btcM1Short,
          btcM3Long, btcM3Short,
          btcM5Long, btcM5Short,
          btcM15Long, btcM15Short,
          btcM30Long, btcM30Short,
-         btcH1Long, btcH1Short)
+         btcH1Long, btcH1Short,
+         f_pickSlTpSlot(slTpTf, btcM1Long, btcM3Long, btcM5Long, btcM15Long, btcM30Long, btcH1Long),
+         f_pickSlTpSlot(slTpTf, btcM1Short, btcM3Short, btcM5Short, btcM15Short, btcM30Short, btcH1Short),
+         f_pickSlTpSlot(slTpTf, btcM1Sl, btcM3Sl, btcM5Sl, btcM15Sl, btcM30Sl, btcH1Sl),
+         f_pickSlTpSlot(slTpTf, btcM1Tp, btcM3Tp, btcM5Tp, btcM15Tp, btcM30Tp, btcH1Tp))
 
     drawRow(
-         3, "ETH", enableETH,
+         3, "ETH", "ETH", enableETH,
          ethM1Long, ethM1Short,
          ethM3Long, ethM3Short,
          ethM5Long, ethM5Short,
          ethM15Long, ethM15Short,
          ethM30Long, ethM30Short,
-         ethH1Long, ethH1Short)
+         ethH1Long, ethH1Short,
+         f_pickSlTpSlot(slTpTf, ethM1Long, ethM3Long, ethM5Long, ethM15Long, ethM30Long, ethH1Long),
+         f_pickSlTpSlot(slTpTf, ethM1Short, ethM3Short, ethM5Short, ethM15Short, ethM30Short, ethH1Short),
+         f_pickSlTpSlot(slTpTf, ethM1Sl, ethM3Sl, ethM5Sl, ethM15Sl, ethM30Sl, ethH1Sl),
+         f_pickSlTpSlot(slTpTf, ethM1Tp, ethM3Tp, ethM5Tp, ethM15Tp, ethM30Tp, ethH1Tp))
 
     drawRow(
-         4, "SOLUSD", enableSOL,
+         4, "SOLUSD", "SOLUSD", enableSOL,
          solM1Long, solM1Short,
          solM3Long, solM3Short,
          solM5Long, solM5Short,
          solM15Long, solM15Short,
          solM30Long, solM30Short,
-         solH1Long, solH1Short)
+         solH1Long, solH1Short,
+         f_pickSlTpSlot(slTpTf, solM1Long, solM3Long, solM5Long, solM15Long, solM30Long, solH1Long),
+         f_pickSlTpSlot(slTpTf, solM1Short, solM3Short, solM5Short, solM15Short, solM30Short, solH1Short),
+         f_pickSlTpSlot(slTpTf, solM1Sl, solM3Sl, solM5Sl, solM15Sl, solM30Sl, solH1Sl),
+         f_pickSlTpSlot(slTpTf, solM1Tp, solM3Tp, solM5Tp, solM15Tp, solM30Tp, solH1Tp))
 
     drawRow(
-         5, "XAGUSD", enableXAG,
+         5, "XAGUSD", "XAGUSD", enableXAG,
          xagM1Long, xagM1Short,
          xagM3Long, xagM3Short,
          xagM5Long, xagM5Short,
          xagM15Long, xagM15Short,
          xagM30Long, xagM30Short,
-         xagH1Long, xagH1Short)
+         xagH1Long, xagH1Short,
+         f_pickSlTpSlot(slTpTf, xagM1Long, xagM3Long, xagM5Long, xagM15Long, xagM30Long, xagH1Long),
+         f_pickSlTpSlot(slTpTf, xagM1Short, xagM3Short, xagM5Short, xagM15Short, xagM30Short, xagH1Short),
+         f_pickSlTpSlot(slTpTf, xagM1Sl, xagM3Sl, xagM5Sl, xagM15Sl, xagM30Sl, xagH1Sl),
+         f_pickSlTpSlot(slTpTf, xagM1Tp, xagM3Tp, xagM5Tp, xagM15Tp, xagM30Tp, xagH1Tp))
 
     drawRow(
-         6, "USOIL", enableOIL,
+         6, "USOIL", "USOIL", enableOIL,
          oilM1Long, oilM1Short,
          oilM3Long, oilM3Short,
          oilM5Long, oilM5Short,
          oilM15Long, oilM15Short,
          oilM30Long, oilM30Short,
-         oilH1Long, oilH1Short)
+         oilH1Long, oilH1Short,
+         f_pickSlTpSlot(slTpTf, oilM1Long, oilM3Long, oilM5Long, oilM15Long, oilM30Long, oilH1Long),
+         f_pickSlTpSlot(slTpTf, oilM1Short, oilM3Short, oilM5Short, oilM15Short, oilM30Short, oilH1Short),
+         f_pickSlTpSlot(slTpTf, oilM1Sl, oilM3Sl, oilM5Sl, oilM15Sl, oilM30Sl, oilH1Sl),
+         f_pickSlTpSlot(slTpTf, oilM1Tp, oilM3Tp, oilM5Tp, oilM15Tp, oilM30Tp, oilH1Tp))
 
     drawSummaryRow(
          7,
@@ -575,7 +659,7 @@ plot(ema5, color=color.green, title="Fast EMA", linewidth=2)
 plot(ema20, color=color.red, title="Slow EMA", linewidth=2)
 
 plotshape(
-     barstate.isconfirmed and enableLong and longTrigger,
+     longFire,
      title="Long Signal",
      style=shape.labelup,
      location=location.belowbar,
@@ -585,7 +669,7 @@ plotshape(
      size=size.tiny)
 
 plotshape(
-     barstate.isconfirmed and enableShort and shortTrigger,
+     shortFire,
      title="Short Signal",
      style=shape.labeldown,
      location=location.abovebar,
@@ -598,11 +682,11 @@ plotshape(
 // ALERTS
 //────────────────────────────────────────────
 alertcondition(
-     barstate.isconfirmed and enableLong and longTrigger,
+     longFire,
      title="Bullish HA EMA Reversal",
      message="LONG Heikin Ashi EMA reversal on {{ticker}} {{interval}}")
 
 alertcondition(
-     barstate.isconfirmed and enableShort and shortTrigger,
+     shortFire,
      title="Bearish HA EMA Reversal",
      message="SHORT Heikin Ashi EMA reversal on {{ticker}} {{interval}}")

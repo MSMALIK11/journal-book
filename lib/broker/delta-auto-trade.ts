@@ -2,8 +2,11 @@ import mongoose from "mongoose"
 import connectDB from "@/app/api/db/mongoose"
 import DeltaAutoTradeLog, {
   type DeltaAutoTradeAccountResult,
+  type DeltaAutoTradeBracketStatus,
   type DeltaAutoTradeLogStatus,
 } from "@/app/api/models/DeltaAutoTradeLog"
+import DeltaOrderLog from "@/app/api/models/DeltaOrderLog"
+import Trade from "@/app/api/models/Trade"
 import User from "@/app/api/models/User"
 import { closeDeltaPosition } from "@/lib/broker/delta-close"
 import {
@@ -17,14 +20,23 @@ import {
   ineligibleToAccountResult,
   resolveAutoTradeSizing,
 } from "@/lib/broker/delta-broadcast-sizing"
-import { getDeltaProductId, getPositions } from "@/lib/broker/delta-exchange"
+import {
+  getDeltaProductId,
+  getDeltaProductMeta,
+  getDeltaTickerPrice,
+  getPositions,
+  parseAverageFillPrice,
+} from "@/lib/broker/delta-exchange"
 import { persistDeltaTradeNotifications } from "@/lib/delta/delta-trade-notifications"
 import { isServerLiveTradingBlocked } from "@/lib/broker/delta-live-guard"
 import {
+  editDeltaBracketForOrder,
   getDeltaSymbolCandidates,
   placeDeltaMarketOrderBatch,
   placeDeltaMarketOrderForAccount,
   resolveDeltaProductId,
+  type DeltaBracketContext,
+  type DeltaMarketOrderBracket,
 } from "@/lib/broker/delta-orders"
 import { normalizeDeltaPositions } from "@/lib/broker/delta-positions"
 import { mapTvInstrumentToDelta, isEnabledAutoTradeSymbol } from "@/lib/broker/delta-symbol-map"
@@ -32,6 +44,11 @@ import {
   getDeltaAutoTradeConfig,
   type DeltaAutoTradeConfig,
 } from "@/lib/delta/auto-trade-settings"
+import {
+  computeDeltaBracketLevels,
+  getDeltaTickSize,
+} from "@/lib/trading/delta-bracket-levels"
+import { parseSignalLevels } from "@/lib/trading/signal-levels"
 import type { LiveFillEvent } from "@/lib/trading/live-fill-alerts"
 
 const ENVIRONMENTS: DeltaEnvironment[] = ["demo", "live"]
@@ -128,6 +145,12 @@ async function finalizeAutoTradeLog(input: {
   lots?: number
   tvInstrument?: string
   tvTradeType?: string
+  tvSl?: number
+  tvTp?: number
+  deltaSl?: number
+  deltaTp?: number
+  deltaFillPrice?: number
+  bracketStatus?: DeltaAutoTradeBracketStatus
   accountResults?: DeltaAutoTradeAccountResult[]
   error?: string
 }) {
@@ -147,11 +170,107 @@ async function finalizeAutoTradeLog(input: {
         lots: input.lots,
         tvInstrument: input.tvInstrument,
         tvTradeType: input.tvTradeType,
+        tvSl: input.tvSl,
+        tvTp: input.tvTp,
+        deltaSl: input.deltaSl,
+        deltaTp: input.deltaTp,
+        deltaFillPrice: input.deltaFillPrice,
+        bracketStatus: input.bracketStatus,
         accountResults: input.accountResults,
         error: input.error,
       },
     },
   )
+}
+
+async function resolveFillTradeLevels(fill: LiveFillEvent) {
+  let stopLoss = fill.trade.stop_loss
+  let target = fill.trade.target
+  let signal = fill.trade.signal
+
+  if (stopLoss == null || target == null) {
+    const trade = await Trade.findById(fill.trade.id).select("stop_loss target signal").lean()
+    if (stopLoss == null && typeof trade?.stop_loss === "number") stopLoss = trade.stop_loss
+    if (target == null && typeof trade?.target === "number") target = trade.target
+    if (!signal && trade?.signal) signal = trade.signal
+  }
+
+  if (stopLoss == null || target == null) {
+    const parsed = parseSignalLevels(signal ?? fill.trade.signal)
+    if (stopLoss == null && parsed.stopLoss != null) stopLoss = parsed.stopLoss
+    if (target == null && parsed.takeProfit != null) target = parsed.takeProfit
+  }
+
+  return { stopLoss, target }
+}
+
+async function resolveOpenBracket(input: {
+  config: DeltaAutoTradeConfig
+  fill: LiveFillEvent
+  symbol: string
+  environment: DeltaEnvironment
+  markPrice: number
+}): Promise<{
+  bracket?: DeltaMarketOrderBracket
+  tickSize?: number
+  tvSl?: number
+  tvTp?: number
+  bracketStatus: DeltaAutoTradeBracketStatus
+  bracketNote?: string
+}> {
+  const { stopLoss: tvSl, target: tvTp } = await resolveFillTradeLevels(input.fill)
+  if (input.config.attachTvBrackets === false) {
+    return { tvSl, tvTp, bracketStatus: "none", bracketNote: "attachTvBrackets_disabled" }
+  }
+
+  const productMeta = await getDeltaProductMeta(input.symbol, input.environment)
+  const tickSize = getDeltaTickSize(productMeta.raw)
+  const computed = computeDeltaBracketLevels({
+    tradeType: input.fill.trade.trade_type,
+    tvEntry: input.fill.trade.entry_price,
+    tvSl,
+    tvTp,
+    deltaAnchor: input.markPrice,
+    tickSize,
+  })
+
+  if (computed.stopLoss == null && computed.takeProfit == null) {
+    return {
+      tvSl,
+      tvTp,
+      tickSize,
+      bracketStatus: "skipped",
+      bracketNote: computed.skippedReason,
+    }
+  }
+
+  return {
+    tvSl,
+    tvTp,
+    tickSize,
+    bracket: {
+      stopLoss: computed.stopLoss,
+      takeProfit: computed.takeProfit,
+    },
+    bracketStatus: "attached",
+    bracketNote: computed.skippedReason,
+  }
+}
+
+function summarizeBracketFromResults(results: DeltaAutoTradeAccountResult[]) {
+  const successful = results.filter((r) => r.ok)
+  const first = successful.find((r) => r.deltaSl != null || r.deltaTp != null || r.bracketStatus)
+  const bracketErrors = results
+    .map((r) => r.bracketError)
+    .filter(Boolean)
+    .join("; ")
+  return {
+    deltaSl: first?.deltaSl,
+    deltaTp: first?.deltaTp,
+    deltaFillPrice: first?.deltaFillPrice,
+    bracketStatus: first?.bracketStatus,
+    bracketErrors: bracketErrors || undefined,
+  }
 }
 
 async function executeAutoTradeOpen(input: {
@@ -207,6 +326,19 @@ async function executeAutoTradeOpen(input: {
   const { lots, markPrice, eligible, ineligible } = sizing
   const targetIds = eligible.map((a) => a.accountId)
   let results: DeltaAutoTradeAccountResult[] = ineligible.map(ineligibleToAccountResult)
+  const bracketPlan = await resolveOpenBracket({
+    config: input.config,
+    fill: input.fill,
+    symbol: input.symbol,
+    environment: input.environment,
+    markPrice,
+  })
+  const bracketContext: DeltaBracketContext = {
+    tradeType: input.fill.trade.trade_type,
+    tvEntry: input.fill.trade.entry_price,
+    tvSl: bracketPlan.tvSl,
+    tvTp: bracketPlan.tvTp,
+  }
 
   if (targetIds.length === 1) {
     const placed = await placeDeltaMarketOrderForAccount({
@@ -219,6 +351,9 @@ async function executeAutoTradeOpen(input: {
       price: markPrice,
       source: "auto",
       tvTradeId: input.fill.trade.id,
+      bracket: bracketPlan.bracket,
+      bracketContext,
+      tickSize: bracketPlan.tickSize,
     })
     results = [
       ...results,
@@ -228,6 +363,11 @@ async function executeAutoTradeOpen(input: {
             label: placed.accountLabel,
             ok: true,
             brokerOrderId: placed.brokerOrderId,
+            deltaFillPrice: placed.deltaFillPrice,
+            deltaSl: placed.deltaSl,
+            deltaTp: placed.deltaTp,
+            bracketStatus: placed.bracketStatus ?? bracketPlan.bracketStatus,
+            bracketError: placed.bracketError,
           }
         : {
             accountId: targetIds[0],
@@ -247,6 +387,9 @@ async function executeAutoTradeOpen(input: {
       price: markPrice,
       source: "auto",
       tvTradeId: input.fill.trade.id,
+      bracket: bracketPlan.bracket,
+      bracketContext,
+      tickSize: bracketPlan.tickSize,
     })
     results = [
       ...results,
@@ -256,6 +399,11 @@ async function executeAutoTradeOpen(input: {
         ok: r.ok,
         brokerOrderId: r.brokerOrderId,
         error: r.error,
+        deltaFillPrice: r.deltaFillPrice,
+        deltaSl: r.deltaSl,
+        deltaTp: r.deltaTp,
+        bracketStatus: r.bracketStatus ?? bracketPlan.bracketStatus,
+        bracketError: r.bracketError,
       })),
     ]
   }
@@ -263,6 +411,14 @@ async function executeAutoTradeOpen(input: {
   const okCount = results.filter((r) => r.ok).length
   const status: DeltaAutoTradeLogStatus =
     okCount === 0 ? "failed" : okCount === results.length ? "success" : "partial"
+  const bracketSummary = summarizeBracketFromResults(results)
+  const errors = [
+    okCount === 0 ? results.map((r) => r.error).filter(Boolean).join("; ") : undefined,
+    bracketSummary.bracketErrors,
+    bracketPlan.bracketNote,
+  ]
+    .filter(Boolean)
+    .join("; ")
 
   await finalizeAutoTradeLog({
     userId: input.userId,
@@ -276,8 +432,14 @@ async function executeAutoTradeOpen(input: {
     lots,
     tvInstrument: input.fill.trade.instrument,
     tvTradeType: input.fill.trade.trade_type,
+    tvSl: bracketPlan.tvSl,
+    tvTp: bracketPlan.tvTp,
+    deltaSl: bracketSummary.deltaSl,
+    deltaTp: bracketSummary.deltaTp,
+    deltaFillPrice: bracketSummary.deltaFillPrice,
+    bracketStatus: bracketSummary.bracketStatus ?? bracketPlan.bracketStatus,
     accountResults: results,
-    error: okCount === 0 ? results.map((r) => r.error).filter(Boolean).join("; ") : undefined,
+    error: errors || undefined,
   })
   await persistDeltaTradeNotifications(input.userId, input.environment, {
     source: "auto",
@@ -482,6 +644,95 @@ async function processFillForEnvironment(
   }
 }
 
+export type DeltaBracketLevelUpdate = {
+  tradeId: string
+  instrument: string
+  trade_type: string
+  entry_price: number
+  stop_loss?: number
+  target?: number
+}
+
+export async function runDeltaBracketUpdatesForOpenTrades(
+  userId: string,
+  updates: DeltaBracketLevelUpdate[],
+) {
+  if (updates.length === 0) return
+
+  await connectDB()
+  const user = await User.findById(userId).select("deltaAutoTradePreferences").lean()
+  if (!user) return
+
+  for (const update of updates) {
+    if (update.stop_loss == null && update.target == null) continue
+
+    for (const environment of ENVIRONMENTS) {
+      const config = getDeltaAutoTradeConfig(user.deltaAutoTradePreferences, environment)
+      if (!config.enabled || config.attachTvBrackets === false) continue
+      if (environment === "live" && isServerLiveTradingBlocked()) continue
+
+      const mapped = mapTvInstrumentToDelta(update.instrument)
+      if (!mapped || !isEnabledAutoTradeSymbol(config.symbols, mapped)) continue
+
+      const symbol = await resolveAutoTradeSymbol(mapped, environment)
+      if (!symbol) continue
+
+      const orderLog = await DeltaOrderLog.findOne({
+        userId: new mongoose.Types.ObjectId(userId),
+        environment,
+        tvTradeId: update.tradeId,
+        source: "auto",
+      })
+        .sort({ createdAt: -1 })
+        .lean()
+
+      if (!orderLog?.brokerOrderId) continue
+
+      const productMeta = await getDeltaProductMeta(orderLog.symbol, environment)
+      const tickSize = getDeltaTickSize(productMeta.raw)
+      const anchor =
+        parseAverageFillPrice(orderLog.raw) ??
+        orderLog.price ??
+        (await getDeltaTickerPrice(orderLog.symbol, environment).catch(() => null))?.price
+
+      if (!anchor) continue
+
+      const computed = computeDeltaBracketLevels({
+        tradeType: update.trade_type,
+        tvEntry: update.entry_price,
+        tvSl: update.stop_loss,
+        tvTp: update.target,
+        deltaAnchor: anchor,
+        tickSize,
+      })
+
+      if (computed.stopLoss == null && computed.takeProfit == null) continue
+
+      const accountId =
+        hasEnvDeltaCredentials(environment) || !orderLog.brokerAccountId
+          ? "env"
+          : orderLog.brokerAccountId.toString()
+
+      try {
+        await editDeltaBracketForOrder({
+          userId,
+          accountId,
+          environment,
+          brokerOrderId: orderLog.brokerOrderId,
+          productId: productMeta.id,
+          symbol: orderLog.symbol,
+          bracket: {
+            stopLoss: computed.stopLoss,
+            takeProfit: computed.takeProfit,
+          },
+        })
+      } catch (error) {
+        console.error("Delta bracket update failed:", error)
+      }
+    }
+  }
+}
+
 export async function runDeltaAutoTradeForFills(userId: string, fills: LiveFillEvent[]) {
   if (fills.length === 0) return
 
@@ -515,6 +766,12 @@ export async function getRecentAutoTradeLogs(userId: string, environment: DeltaE
     side: log.side,
     lots: log.lots,
     tvInstrument: log.tvInstrument,
+    tvSl: log.tvSl,
+    tvTp: log.tvTp,
+    deltaSl: log.deltaSl,
+    deltaTp: log.deltaTp,
+    deltaFillPrice: log.deltaFillPrice,
+    bracketStatus: log.bracketStatus,
     error: log.error,
     accountResults: log.accountResults,
     createdAt: log.createdAt,

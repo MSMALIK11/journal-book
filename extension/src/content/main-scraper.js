@@ -43,12 +43,44 @@ async function jbMainScrape() {
     return Math.round(signed * qty * 100) / 100
   }
 
+  function fillSlack(reference, fill) {
+    return Math.max(2, Math.abs(fill) * 0.35, Math.abs(reference) * 0.06)
+  }
+
+  function alignPricesFromTvPnl(direction, entryPrice, exitPrice, size, netPnl) {
+    if (entryPrice == null || exitPrice == null || typeof netPnl !== "number") {
+      return { entryPrice, exitPrice, netPnl }
+    }
+    const fill = trustedFillPnl(direction, entryPrice, exitPrice, size)
+    if (typeof fill !== "number") return { entryPrice, exitPrice, netPnl }
+    const slack = fillSlack(netPnl, fill)
+    if (Math.abs(netPnl - fill) <= slack) return { entryPrice, exitPrice, netPnl }
+    const swappedFill = trustedFillPnl(direction, exitPrice, entryPrice, size)
+    if (
+      typeof swappedFill === "number" &&
+      Math.abs(netPnl - swappedFill) <= slack
+    ) {
+      return { entryPrice: exitPrice, exitPrice: entryPrice, netPnl }
+    }
+    if (
+      Math.sign(netPnl) !== Math.sign(fill) &&
+      Math.abs(Math.abs(netPnl) - Math.abs(fill)) <= slack
+    ) {
+      return { entryPrice: exitPrice, exitPrice: entryPrice, netPnl }
+    }
+    return { entryPrice, exitPrice, netPnl }
+  }
+
   function clampScrapedPnl(direction, entryPrice, exitPrice, size, netPnl) {
     if (typeof netPnl !== "number") return netPnl
-    const fill = trustedFillPnl(direction, entryPrice, exitPrice, size)
+    const aligned = alignPricesFromTvPnl(direction, entryPrice, exitPrice, size, netPnl)
+    const fill = trustedFillPnl(direction, aligned.entryPrice, aligned.exitPrice, size)
     if (typeof fill !== "number") return netPnl
-    const slack = Math.max(2, Math.abs(fill) * 0.35)
+    const slack = fillSlack(netPnl, fill)
     if (Math.abs(netPnl - fill) <= slack) return netPnl
+    if (Math.sign(netPnl) !== Math.sign(fill) && Math.abs(Math.abs(netPnl) - Math.abs(fill)) <= slack) {
+      return netPnl
+    }
     return fill
   }
 
@@ -217,10 +249,99 @@ async function jbMainScrape() {
     return /\b(tp\/sl|take\s*profit|stop\s*loss|\btp\b|\bsl\b|stop|target)\b/i.test(String(value || "").trim())
   }
 
+  function hasTpSlPrices(value) {
+    const text = String(value || "").trim()
+    return /\bTP\s*:\s*[\d,.]+/i.test(text) && /\bSL\s*:\s*[\d,.]+/i.test(text)
+  }
+
+  function pairKeyFromInstrument(symbol) {
+    const t = String(symbol || "").toUpperCase()
+    if (/XAU|GOLD/.test(t)) return "GOLD"
+    if (/BTC/.test(t)) return "BTC"
+    if (/ETH/.test(t)) return "ETH"
+    if (/SOL/.test(t)) return "SOLUSD"
+    if (/XAG|SILVER/.test(t)) return "XAGUSD"
+    if (/OIL|USOIL|WTI/.test(t)) return "USOIL"
+    return ""
+  }
+
+  /** EMA scanner dashboard SL/TP column — TV List of Trades Signal often shows only SHORT/LONG. */
+  function scrapeScannerSlTpOverlay(pairKey, direction) {
+    if (!pairKey) return ""
+
+    const sideHint = direction === "short" ? "SHORT" : direction === "long" ? "LONG" : "(?:SHORT|LONG)"
+    const levelRe = new RegExp(
+      `\\b${sideHint}\\s*\\|\\s*TP\\s*:\\s*([\\d,.]+)\\s*\\|\\s*SL\\s*:\\s*([\\d,.]+)`,
+      "i",
+    )
+
+    const roots = [
+      document.querySelector("#overlap-manager-root"),
+      document.querySelector(".chart-markup-table"),
+      document.querySelector(".chart-container"),
+      document.body,
+    ].filter(Boolean)
+
+    for (const root of roots) {
+      for (const row of root.querySelectorAll("tr")) {
+        const cells = [...row.querySelectorAll("td, th")]
+        if (cells.length < 2) continue
+        const pairText = cells[0]?.textContent?.replace(/\s+/g, " ").trim() || ""
+        if (pairText !== pairKey) continue
+        const slTpCell = cells[7] || cells[cells.length - 1]
+        const slTpText = slTpCell?.textContent?.replace(/\s+/g, " ").trim() || ""
+        if (hasTpSlPrices(slTpText)) return slTpText
+      }
+
+      const blob = root.innerText?.replace(/\s+/g, " ") || ""
+      const idx = blob.indexOf(pairKey)
+      if (idx < 0) continue
+      const slice = blob.slice(idx, idx + 320)
+      const match = slice.match(levelRe)
+      if (match) {
+        const side = slice.match(/\b(SHORT|LONG)\b/i)?.[1]?.toUpperCase() || sideHint.replace(/[()?]/g, "")
+        return `${side} | TP: ${match[1]} | SL: ${match[2]}`
+      }
+    }
+
+    return ""
+  }
+
+  function readSignalParts(signalTd, instrument, direction, looksOpen, entrySignal, exitSignal) {
+    const fullText = signalTd?.textContent?.replace(/\s+/g, " ").trim() || ""
+    const title =
+      signalTd?.getAttribute("title")?.trim() ||
+      signalTd?.querySelector("[title]")?.getAttribute("title")?.trim() ||
+      ""
+
+    for (const candidate of [entrySignal, fullText, title]) {
+      if (hasTpSlPrices(candidate)) {
+        entrySignal = candidate
+        break
+      }
+    }
+
+    if (looksOpen && !hasTpSlPrices(entrySignal)) {
+      const overlay = scrapeScannerSlTpOverlay(pairKeyFromInstrument(instrument), direction)
+      if (overlay) entrySignal = overlay
+    }
+
+    return [entrySignal, exitSignal]
+  }
+
   function datetimeMs(value) {
     if (!value || isLiteralOpenToken(value)) return NaN
     const ms = new Date(value).getTime()
     return Number.isFinite(ms) ? ms : NaN
+  }
+
+  function isFlatMtmOpen(entryPrice, exitPrice, netPnl, returnPct, exitSignal) {
+    if (isTpSlSignal(exitSignal)) return false
+    if (entryPrice == null || exitPrice == null || entryPrice <= 0) return false
+    if (Math.abs(exitPrice - entryPrice) / entryPrice > 0.0002) return false
+    if (typeof netPnl === "number" && Math.abs(netPnl) > 0.01) return false
+    if (typeof returnPct === "number" && Math.abs(returnPct) > 0.01) return false
+    return true
   }
 
   function isPaintedMtmOpen(entryDt, exitDt, entryPrice, exitPrice) {
@@ -344,13 +465,29 @@ async function jbMainScrape() {
           netPnlPreview,
           returnPctPreview,
         )
-        const looksOpen =
+        let looksOpen =
           isLiteralOpenToken(typeText) ||
           isLiteralOpenToken(entryDt) ||
           isLiteralOpenToken(exitDtRaw) ||
           paintedMtm ||
           (leftoverOpen && !confirmedTpSl) ||
           (mtmUnrealized && !confirmedTpSl)
+
+        ;[entrySignal, exitSignal] = readSignalParts(signalTd, instrument, direction, looksOpen, entrySignal, exitSignal)
+
+        if (
+          !looksOpen &&
+          !confirmedTpSl &&
+          isFlatMtmOpen(
+            entryPricePreview,
+            exitPricePreview,
+            netPnlPreview,
+            returnPctPreview,
+            exitSignal,
+          )
+        ) {
+          looksOpen = true
+        }
 
         // Exit half is the "Open" token (often painted on top). Other half is the fill.
         if (looksOpen && isLiteralOpenToken(entryDtFinal) && exitDt && !isLiteralOpenToken(exitDt)) {
@@ -393,8 +530,27 @@ async function jbMainScrape() {
         const [entryComm, exitComm] = getCellParts(commTd)
         const commission = parseNumber(getExitText(entryComm, exitComm, commTd))
 
-        const entryPrice = parseNumber(entryPriceText)
+        let entryPrice = parseNumber(entryPriceText)
         if (!entryDtFinal || isLiteralOpenToken(entryDtFinal) || entryPrice == null) continue
+
+        let exitPrice = parseNumber(exitPriceText)
+        if (
+          !looksOpen &&
+          exitDt &&
+          !isLiteralOpenToken(exitDt) &&
+          exitPrice != null &&
+          netPnl != null
+        ) {
+          const aligned = alignPricesFromTvPnl(
+            direction,
+            entryPrice,
+            exitPrice,
+            parseSize(entrySizeText),
+            netPnl,
+          )
+          entryPrice = aligned.entryPrice
+          exitPrice = aligned.exitPrice
+        }
 
         const trade = {
           tradeNumber,
@@ -410,7 +566,6 @@ async function jbMainScrape() {
           exit: null,
         }
 
-        const exitPrice = parseNumber(exitPriceText)
         if (looksOpen) {
           trade.exit = {
             datetime: isLiteralOpenToken(exitDt) ? entryDtFinal : exitDt || entryDtFinal,
@@ -484,7 +639,7 @@ async function jbMainScrape() {
   if (scroller) {
     // Opens + newest closes sit at the TOP of List of trades.
     scroller.scrollTop = 0
-    await new Promise((r) => setTimeout(r, scrapeMode === "light" ? 40 : 150))
+    await new Promise((r) => setTimeout(r, scrapeMode === "light" ? 20 : 150))
     ingest()
 
     if (scrapeMode === "full") {
@@ -509,7 +664,7 @@ async function jbMainScrape() {
       // Poll/instant — only peek a couple viewports below the top. Never full-scan.
       for (let i = 0; i < 2; i++) {
         scroller.scrollTop += Math.max(80, scroller.clientHeight * 0.9)
-        await new Promise((r) => setTimeout(r, 45))
+        await new Promise((r) => setTimeout(r, 25))
         ingest()
       }
       scroller.scrollTop = 0

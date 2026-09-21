@@ -15,12 +15,18 @@ import {
   dataSourceLabel,
   filterFundedTrades,
   filterLabel,
+  oneRValue,
   toCompareSnapshot,
   type DirectionFilter,
   type SessionFilter,
   type WeekdayFilter,
 } from "@/lib/trading/funded-roadmap"
-import { computeRMultipleStats, type FundedTrade } from "@/lib/trading/r-multiples"
+import { FUNDED_ACCOUNT_LADDER } from "@/lib/trading/funded-presets"
+import {
+  computeChallengeRStats,
+  computeRMultipleStats,
+  type FundedTrade,
+} from "@/lib/trading/r-multiples"
 import {
   FUNDED_TRADE_SELECT,
   buildTradeQuery,
@@ -94,29 +100,37 @@ export async function GET(request: NextRequest) {
     })
 
     const analytics = computeAnalytics(trades, { timezone })
-    const rStats = computeRMultipleStats(trades)
+    const slRStats = computeRMultipleStats(trades)
     const rules = parseRules(searchParams)
     const riskMode = (searchParams.get("riskMode") === "fixed" ? "fixed" : "percent") as RiskMode
     const riskPercent = Number(searchParams.get("riskPercent"))
     const fixedRisk = Number(searchParams.get("fixedRisk"))
     const currentStageIndex = Number(searchParams.get("currentStageIndex") || 0)
 
+    const riskConfig = {
+      mode: riskMode,
+      riskPercent: Number.isFinite(riskPercent) && riskPercent > 0 ? riskPercent : 1,
+      fixedRisk: Number.isFinite(fixedRisk) && fixedRisk > 0 ? fixedRisk : 50,
+    }
+    const stageIndex = Number.isFinite(currentStageIndex) ? currentStageIndex : 0
+    const stageSize = FUNDED_ACCOUNT_LADDER[stageIndex]?.size ?? FUNDED_ACCOUNT_LADDER[0].size
+
     const model = buildFundedRoadmap({
       analytics,
-      rStats,
+      trades,
+      slRStats,
       rules,
-      risk: {
-        mode: riskMode,
-        riskPercent: Number.isFinite(riskPercent) && riskPercent > 0 ? riskPercent : 1,
-        fixedRisk: Number.isFinite(fixedRisk) && fixedRisk > 0 ? fixedRisk : 50,
-      },
-      currentStageIndex: Number.isFinite(currentStageIndex) ? currentStageIndex : 0,
+      risk: riskConfig,
+      currentStageIndex: stageIndex,
     })
+
+    const challengeRStats = computeChallengeRStats(trades, oneRValue(stageSize, riskConfig))
 
     return NextResponse.json(
       {
         ...model,
-        rMultiples: rStats.rMultiples,
+        rMultiples: challengeRStats.rMultiples,
+        slRStats,
         timezone,
         strategies: analytics.strategies,
         instruments: analytics.instruments,

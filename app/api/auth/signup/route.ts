@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
       { user },
       { status: 201, headers: { "Cache-Control": "no-store" } },
     )
-    response.cookies.set(SESSION_COOKIE, token, sessionCookieOptions)
+    response.cookies.set(SESSION_COOKIE, token, sessionCookieOptions())
     return response
   } catch (error) {
     console.error("Sign-up failed:", error)

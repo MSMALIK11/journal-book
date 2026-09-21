@@ -8,7 +8,23 @@ import {
   listDeltaAccounts,
   listEnabledDeltaAccounts,
 } from "@/lib/broker/delta-credentials"
-import { getDeltaProductMeta, placeOrder } from "@/lib/broker/delta-exchange"
+import {
+  createPositionBracketOrder,
+  getDeltaProductMeta,
+  parseAverageFillPrice,
+  placeOrder,
+} from "@/lib/broker/delta-exchange"
+import {
+  computeDeltaBracketLevels,
+  type DeltaBracketPrices,
+} from "@/lib/trading/delta-bracket-levels"
+
+export type DeltaBracketContext = {
+  tradeType: string
+  tvEntry: number
+  tvSl?: number
+  tvTp?: number
+}
 
 export type DeltaOrderSide = "buy" | "sell"
 
@@ -21,7 +37,14 @@ export type DeltaBatchOrderResult = {
   side?: DeltaOrderSide
   size?: number
   error?: string
+  deltaFillPrice?: number
+  deltaSl?: number
+  deltaTp?: number
+  bracketStatus?: "attached" | "refined" | "skipped" | "failed" | "none"
+  bracketError?: string
 }
+
+export type DeltaMarketOrderBracket = DeltaBracketPrices
 
 export function getDeltaSymbolCandidates(symbol: string): string[] {
   const normalized = symbol.toUpperCase().replace(/[^A-Za-z0-9]/g, "")
@@ -87,6 +110,100 @@ function brokerOrderId(raw: unknown): string | undefined {
   return id == null ? undefined : String(id)
 }
 
+function resolveFinalBracket(input: {
+  bracket?: DeltaMarketOrderBracket
+  bracketContext?: DeltaBracketContext
+  fillPrice: number
+  estimatedAnchor: number
+  tickSize?: number
+}): DeltaMarketOrderBracket | null {
+  if (!input.bracket) return null
+
+  const anchor = input.fillPrice > 0 ? input.fillPrice : input.estimatedAnchor
+  if (input.bracketContext != null && anchor > 0) {
+    const recomputed = computeDeltaBracketLevels({
+      tradeType: input.bracketContext.tradeType,
+      tvEntry: input.bracketContext.tvEntry,
+      tvSl: input.bracketContext.tvSl,
+      tvTp: input.bracketContext.tvTp,
+      deltaAnchor: anchor,
+      tickSize: input.tickSize,
+    })
+    if (recomputed.stopLoss != null || recomputed.takeProfit != null) {
+      return { stopLoss: recomputed.stopLoss, takeProfit: recomputed.takeProfit }
+    }
+    return null
+  }
+
+  if (anchor > 0 && input.estimatedAnchor > 0 && anchor !== input.estimatedAnchor) {
+    const shift = anchor - input.estimatedAnchor
+    return {
+      stopLoss: input.bracket.stopLoss != null ? input.bracket.stopLoss + shift : undefined,
+      takeProfit: input.bracket.takeProfit != null ? input.bracket.takeProfit + shift : undefined,
+    }
+  }
+
+  return input.bracket
+}
+
+async function attachPositionBracketAfterFill(input: {
+  creds: { apiKey: string; apiSecret: string }
+  environment: DeltaEnvironment
+  productId: number | null
+  resolvedSymbol: string
+  estimatedAnchor: number
+  tickSize?: number
+  bracket?: DeltaMarketOrderBracket
+  bracketContext?: DeltaBracketContext
+  raw: unknown
+}) {
+  const fillPrice = parseAverageFillPrice(input.raw) ?? input.estimatedAnchor
+  const finalBracket = resolveFinalBracket({
+    bracket: input.bracket,
+    bracketContext: input.bracketContext,
+    fillPrice,
+    estimatedAnchor: input.estimatedAnchor,
+    tickSize: input.tickSize,
+  })
+
+  if (!finalBracket || (finalBracket.stopLoss == null && finalBracket.takeProfit == null)) {
+    return { bracketStatus: "none" as const, deltaFillPrice: fillPrice }
+  }
+
+  const bracketPayload = {
+    ...(input.productId != null ? { product_id: input.productId } : { product_symbol: input.resolvedSymbol }),
+    stopLoss: finalBracket.stopLoss,
+    takeProfit: finalBracket.takeProfit,
+    stopTriggerMethod: "mark_price" as const,
+  }
+
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 350))
+    }
+    try {
+      await createPositionBracketOrder(input.creds, input.environment, bracketPayload)
+      return {
+        bracketStatus: "attached" as const,
+        deltaFillPrice: fillPrice,
+        deltaSl: finalBracket.stopLoss,
+        deltaTp: finalBracket.takeProfit,
+      }
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  return {
+    bracketStatus: "failed" as const,
+    deltaFillPrice: fillPrice,
+    deltaSl: finalBracket.stopLoss,
+    deltaTp: finalBracket.takeProfit,
+    bracketError: lastError instanceof Error ? lastError.message : String(lastError),
+  }
+}
+
 async function placeDeltaMarketOrderWithCreds(input: {
   userId: string
   accountId: string
@@ -100,6 +217,9 @@ async function placeDeltaMarketOrderWithCreds(input: {
   source?: "manual" | "auto"
   tvTradeId?: string
   resolvedProduct?: ResolvedDeltaProduct
+  bracket?: DeltaMarketOrderBracket
+  bracketContext?: DeltaBracketContext
+  tickSize?: number
 }) {
   if (!Number.isInteger(input.qty) || input.qty < 1) {
     throw new Error("Delta order size must be a whole number of contracts")
@@ -121,14 +241,16 @@ async function placeDeltaMarketOrderWithCreds(input: {
     }
   }
 
+  const orderParams = {
+    ...(productId != null ? { product_id: productId } : { product_symbol: resolvedSymbol }),
+    size: input.qty,
+    side: input.side,
+    order_type: "market_order" as const,
+  }
+
   let raw: Awaited<ReturnType<typeof placeOrder>> | null = null
   try {
-    raw = await placeOrder(input.creds, input.environment, {
-      ...(productId != null ? { product_id: productId } : { product_symbol: resolvedSymbol }),
-      size: input.qty,
-      side: input.side,
-      order_type: "market_order",
-    })
+    raw = await placeOrder(input.creds, input.environment, orderParams)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     if (productId != null && message.includes("invalid_contract")) {
@@ -156,6 +278,17 @@ async function placeDeltaMarketOrderWithCreds(input: {
   if (!raw) throw new Error("Delta order failed without response")
 
   const brokerId = brokerOrderId(raw)
+  const bracketOutcome = await attachPositionBracketAfterFill({
+    creds: input.creds,
+    environment: input.environment,
+    productId,
+    resolvedSymbol,
+    estimatedAnchor: input.price ?? parseAverageFillPrice(raw) ?? 0,
+    tickSize: input.tickSize,
+    bracket: input.bracket,
+    bracketContext: input.bracketContext,
+    raw,
+  })
   const brokerAccountObjectId =
     input.accountId !== "env" && mongoose.Types.ObjectId.isValid(input.accountId)
       ? new mongoose.Types.ObjectId(input.accountId)
@@ -184,7 +317,32 @@ async function placeDeltaMarketOrderWithCreds(input: {
     size: input.qty,
     price: input.price,
     raw,
+    ...bracketOutcome,
   }
+}
+
+export async function editDeltaBracketForOrder(input: {
+  userId: string
+  accountId: string
+  environment: DeltaEnvironment
+  brokerOrderId?: string
+  productId?: number | null
+  symbol: string
+  bracket: DeltaMarketOrderBracket
+}) {
+  const resolved = await getDeltaCredentialsByAccountId(input.userId, input.accountId, input.environment)
+  if (!resolved) {
+    return { ok: false as const, reason: "missing_credentials" }
+  }
+
+  await createPositionBracketOrder(resolved.creds, input.environment, {
+    ...(input.productId != null ? { product_id: input.productId } : { product_symbol: input.symbol }),
+    stopLoss: input.bracket.stopLoss,
+    takeProfit: input.bracket.takeProfit,
+    stopTriggerMethod: "mark_price",
+  })
+
+  return { ok: true as const }
 }
 
 export async function placeDeltaMarketOrderForAccount(input: {
@@ -198,6 +356,9 @@ export async function placeDeltaMarketOrderForAccount(input: {
   source?: "manual" | "auto"
   tvTradeId?: string
   resolvedProduct?: ResolvedDeltaProduct
+  bracket?: DeltaMarketOrderBracket
+  bracketContext?: DeltaBracketContext
+  tickSize?: number
 }) {
   const userId = input.userId.toString()
   const resolved = await getDeltaCredentialsByAccountId(userId, input.accountId, input.environment)
@@ -218,6 +379,9 @@ export async function placeDeltaMarketOrderForAccount(input: {
     source: input.source,
     tvTradeId: input.tvTradeId,
     resolvedProduct: input.resolvedProduct,
+    bracket: input.bracket,
+    bracketContext: input.bracketContext,
+    tickSize: input.tickSize,
   })
 
   return { ok: true as const, accountId: resolved.account.id, accountLabel: resolved.account.label, ...placed }
@@ -256,6 +420,9 @@ export async function placeDeltaMarketOrderBatch(input: {
   price?: number
   source?: "manual" | "auto"
   tvTradeId?: string
+  bracket?: DeltaMarketOrderBracket
+  bracketContext?: DeltaBracketContext
+  tickSize?: number
 }): Promise<{ results: DeltaBatchOrderResult[] }> {
   const userId = input.userId.toString()
   let targetIds = input.accountIds
@@ -286,6 +453,9 @@ export async function placeDeltaMarketOrderBatch(input: {
         source: input.source,
         tvTradeId: input.tvTradeId,
         resolvedProduct,
+        bracket: input.bracket,
+        bracketContext: input.bracketContext,
+        tickSize: input.tickSize,
       })
       if (!placed.ok) {
         throw new Error("missing_credentials")
@@ -312,6 +482,11 @@ export async function placeDeltaMarketOrderBatch(input: {
         symbol: entry.value.symbol,
         side: entry.value.side,
         size: entry.value.size,
+        deltaFillPrice: entry.value.deltaFillPrice,
+        deltaSl: entry.value.deltaSl,
+        deltaTp: entry.value.deltaTp,
+        bracketStatus: entry.value.bracketStatus,
+        bracketError: entry.value.bracketError,
       }
     }
     return {

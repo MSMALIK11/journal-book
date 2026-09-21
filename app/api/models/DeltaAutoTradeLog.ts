@@ -3,12 +3,19 @@ import type { DeltaCredentialEnvironment } from "@/app/api/models/BrokerCredenti
 
 export type DeltaAutoTradeLogStatus = "success" | "partial" | "failed" | "skipped"
 
+export type DeltaAutoTradeBracketStatus = "attached" | "refined" | "skipped" | "failed" | "none"
+
 export type DeltaAutoTradeAccountResult = {
   accountId: string
   label: string
   ok: boolean
   brokerOrderId?: string
   error?: string
+  deltaFillPrice?: number
+  deltaSl?: number
+  deltaTp?: number
+  bracketStatus?: DeltaAutoTradeBracketStatus
+  bracketError?: string
 }
 
 export interface IDeltaAutoTradeLog {
@@ -24,6 +31,12 @@ export interface IDeltaAutoTradeLog {
   lots?: number
   tvInstrument?: string
   tvTradeType?: string
+  tvSl?: number
+  tvTp?: number
+  deltaSl?: number
+  deltaTp?: number
+  deltaFillPrice?: number
+  bracketStatus?: DeltaAutoTradeBracketStatus
   accountResults?: DeltaAutoTradeAccountResult[]
   error?: string
   createdAt?: Date
@@ -43,6 +56,12 @@ const DeltaAutoTradeLogSchema = new Schema<IDeltaAutoTradeLog>(
     lots: { type: Number },
     tvInstrument: { type: String },
     tvTradeType: { type: String },
+    tvSl: { type: Number },
+    tvTp: { type: Number },
+    deltaSl: { type: Number },
+    deltaTp: { type: Number },
+    deltaFillPrice: { type: Number },
+    bracketStatus: { type: String, enum: ["attached", "refined", "skipped", "failed", "none"] },
     accountResults: { type: Schema.Types.Mixed },
     error: { type: String },
   },
