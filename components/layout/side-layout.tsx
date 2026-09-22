@@ -7,6 +7,7 @@ import { NewTradeAlarmProvider } from "@/components/notifications/new-trade-alar
 import { TradingAlertsSync } from "@/components/notifications/trading-alerts-sync"
 import { TradeSyncProvider } from "@/hooks/use-trade-sync-event"
 import { AppHeader } from "@/components/layout/app-header"
+import { MobileBottomNav } from "@/components/layout/mobile-bottom-nav"
 import { Sidebar } from "./sidebar"
 
 interface SiteLayoutProps {
@@ -22,12 +23,13 @@ export default function SideLayout({ children }: SiteLayoutProps) {
           <SyncAccountAutoSwitch />
           <AutoExportScheduler />
           <TelegramDailySummaryScheduler />
+          <MobileBottomNav />
           <div className="flex min-h-screen w-full bg-background hud-grid">
             <div className="hidden w-64 shrink-0 lg:block" aria-hidden />
             <Sidebar />
             <AppHeader />
 
-            <main className="min-w-0 flex-1 overflow-auto px-4 pb-8 pt-20 sm:px-5 lg:px-6 lg:pb-10 lg:pt-16">
+            <main className="min-w-0 flex-1 overflow-auto px-4 pb-32 pt-20 sm:px-5 lg:px-6 lg:pb-10 lg:pt-16">
               {children}
             </main>
           </div>

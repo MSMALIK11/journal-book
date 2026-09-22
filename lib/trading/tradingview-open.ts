@@ -109,6 +109,11 @@ export function isOpenTvTrade(trade: {
   returnPct?: number
 }) {
   if (!trade.exit) return true
+
+  const confirmedTpSl = isTpSlSignal(trade.exit.signal) && !isOpenTvSignal(trade.exit.signal)
+  // TP/SL on the exit half wins over a painted "Open" datetime cell.
+  if (confirmedTpSl) return false
+
   // Date/time cell is the word "Open" — still live, even if Type is Long/Short.
   if (isOpenTvSignal(trade.exit.datetime)) return true
 
@@ -116,7 +121,6 @@ export function isOpenTvTrade(trade: {
     isOpenTvSignal(trade.exit.signal) ||
     isOpenTvSignal(trade.entry?.signal) ||
     cellMentionsOpen(trade.exit.datetime, trade.exit.signal, trade.entry?.signal)
-  const confirmedTpSl = isTpSlSignal(trade.exit.signal) && !isOpenTvSignal(trade.exit.signal)
   if (leftoverOpen && !confirmedTpSl) return true
 
   // Same stamp + same price and no TP/SL = just-opened MTM paint, not a close.
