@@ -139,12 +139,57 @@ JBSync.isOpenTrade = function isOpenTrade(trade) {
   return false
 }
 
+/** Real exit from API capture — not a painted MTM "Open" row on the grid. */
+JBSync.isConfirmedClose = function isConfirmedClose(trade) {
+  if (!trade || JBSync.isOpenTrade(trade)) return false
+  if (JBSync.isTpSlSignal(trade.exit?.signal)) return true
+  if (JBSync.isTypedExitTrade(trade)) return true
+  if (typeof trade.netPnl === "number" && Number.isFinite(trade.netPnl)) return true
+  if (typeof trade.returnPct === "number" && Number.isFinite(trade.returnPct)) return true
+  const exitMs = JBSync.tradeExitMs(trade)
+  const entryMs = JBSync.tradeEntryMs(trade)
+  const entryPrice = Number(trade.entry?.price)
+  const exitPrice = Number(trade.exit?.price)
+  if (
+    Number.isFinite(exitMs) &&
+    Number.isFinite(entryMs) &&
+    exitMs > entryMs + 1000 &&
+    Number.isFinite(entryPrice) &&
+    Number.isFinite(exitPrice) &&
+    entryPrice > 0 &&
+    Math.abs(exitPrice - entryPrice) / entryPrice > 0.0002
+  ) {
+    return true
+  }
+  return false
+}
+
 JBSync.preferMergedTrade = function preferMergedTrade(prev, next) {
   if (!prev) return next
   if (!next) return prev
-  if (JBSync.isOpenTrade(next) && !JBSync.isOpenTrade(prev)) return next
-  if (JBSync.isOpenTrade(prev) && !JBSync.isOpenTrade(next)) return prev
+  const prevOpen = JBSync.isOpenTrade(prev)
+  const nextOpen = JBSync.isOpenTrade(next)
+  if (nextOpen && !prevOpen) return next
+  // API capture often shows the close before the Strategy Tester grid repaints.
+  if (prevOpen && !nextOpen) {
+    if (JBSync.isConfirmedClose(next)) return next
+    return prev
+  }
   return next
+}
+
+/** Overlay network-captured trades onto a light scrape — closes win over stale Open rows. */
+JBSync.mergeCapturedIntoScrape = function mergeCapturedIntoScrape(scrapeTrades, capturedTrades) {
+  const byNumber = new Map()
+  for (const trade of scrapeTrades || []) {
+    if (Number.isFinite(trade.tradeNumber)) byNumber.set(trade.tradeNumber, trade)
+  }
+  for (const cap of capturedTrades || []) {
+    if (!Number.isFinite(cap.tradeNumber)) continue
+    const prev = byNumber.get(cap.tradeNumber)
+    byNumber.set(cap.tradeNumber, JBSync.preferMergedTrade(prev, cap))
+  }
+  return [...byNumber.values()].sort((a, b) => (b.tradeNumber || 0) - (a.tradeNumber || 0))
 }
 
 /** Pass-through. Do not coerce the latest closed TP/SL row back to Open. */
@@ -401,14 +446,38 @@ JBSync.captureVisibleTabDataUrl = async function captureVisibleTabDataUrl(window
   return null
 }
 
+/** Capture a specific TV tab even when the journal tab is focused in the same window. */
+JBSync.captureTabDataUrl = async function captureTabDataUrl(tabId) {
+  if (!tabId || typeof chrome.tabs.captureTab !== "function") return null
+  const attempts = [
+    { format: "jpeg", quality: 70 },
+    { format: "png" },
+  ]
+  for (const options of attempts) {
+    try {
+      const dataUrl = await chrome.tabs.captureTab(tabId, options)
+      if (JBSync.isChartScreenshotDataUrl(dataUrl)) return dataUrl
+    } catch {
+      // try next format
+    }
+  }
+  return null
+}
+
 JBSync.captureChartScreenshot = async function captureChartScreenshot(tab) {
-  const target = tab && tab.windowId != null ? tab : await JBSync.getTradingViewTab()
+  const target = tab?.id ? tab : await JBSync.getTradingViewTab()
+  if (!target?.id && !target?.windowId) return null
+
+  if (target.id) {
+    const fromTab = await JBSync.captureTabDataUrl(target.id)
+    if (fromTab) return fromTab
+  }
+
   if (!target?.windowId) return null
 
   try {
     return await JBSync.captureVisibleTabDataUrl(target.windowId)
   } catch {
-    // Popup / unfocused window often fails with a specific windowId.
     try {
       return await JBSync.captureVisibleTabDataUrl()
     } catch {
@@ -899,7 +968,7 @@ JBSync.getConfig = async function getConfig() {
   ])
 
   const pollIntervalSeconds =
-    stored.pollIntervalSeconds === undefined ? 15 : Number(stored.pollIntervalSeconds)
+    stored.pollIntervalSeconds === undefined ? 10 : Number(stored.pollIntervalSeconds)
 
   return {
     apiUrl: (stored.apiUrl || "http://localhost:3000").replace(/\/$/, ""),
@@ -1007,6 +1076,48 @@ JBSync.awaitChartScreenshot = async function awaitChartScreenshot(screenshotProm
   } catch {
     return null
   }
+}
+
+/** Text alert goes in the sync POST; chart photo follows so capture never blocks the signal. */
+JBSync.scheduleChartPhotoFollowUp = function scheduleChartPhotoFollowUp(config, screenshotPromise, options = {}) {
+  if (!config?.syncToken) return
+
+  void (async () => {
+    try {
+      let screenshotJpeg = screenshotPromise
+        ? await JBSync.awaitChartScreenshot(screenshotPromise, options.waitMs ?? 5000)
+        : null
+
+      if (!screenshotJpeg) {
+        screenshotJpeg = await JBSync.captureChartScreenshot(options.tab)
+      }
+      if (!JBSync.isChartScreenshotDataUrl(screenshotJpeg)) return
+
+      await JBSync.sendTelegramScreenshotTest(config, {
+        screenshotJpeg,
+        followUp: true,
+      })
+    } catch (error) {
+      console.warn("chart photo follow-up failed:", error?.message || error)
+    }
+  })()
+}
+
+JBSync.maybeScheduleChartPhotoFollowUp = function maybeScheduleChartPhotoFollowUp(
+  config,
+  screenshotPromise,
+  syncResult,
+  options = {},
+) {
+  if (!screenshotPromise || !syncResult) return
+  const closedStale = syncResult.closedStale || 0
+  const nonStaleUpdated = Math.max(0, (syncResult.updated || 0) - closedStale)
+  const hadFill =
+    (syncResult.imported || 0) > 0 || nonStaleUpdated > 0 || closedStale > 0
+  if (!hadFill) return
+  // POST already had an inline screenshot — server sends the photo with the alert.
+  if (options.inlineScreenshotJpeg) return
+  JBSync.scheduleChartPhotoFollowUp(config, screenshotPromise, options)
 }
 
 JBSync.formatByAccountMessage = function formatByAccountMessage(byAccount) {
@@ -1433,7 +1544,7 @@ JBSync.maybeRunRequestedRefresh = async function maybeRunRequestedRefresh(config
 }
 
 /** Sync trades already captured from TV network hooks — no Strategy Tester scrape needed. */
-JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, chartSymbol) {
+JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, chartSymbol, options = {}) {
   await JBSync.sendHeartbeat(config)
   const screenshotPromise = JBSync.captureChartScreenshot()
 
@@ -1458,7 +1569,23 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
 
   const stamped = list.map((trade) => ({ ...trade, instrument: symbol, strategy: trade.strategy || "TradingView Strategy" }))
   const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: 1500 })
+  const closeHints =
+    options.closeHints instanceof Set
+      ? options.closeHints
+      : new Set(Array.isArray(options.closeHints) ? options.closeHints : [])
+
   const newOrUpdated = stamped.filter((trade) => JBSync.tradeNeedsRefresh(trade, snapshot))
+
+  // Hook fired "closed" — don't wait for the grid to repaint before POSTing the exit.
+  if (closeHints.size && JBSync.snapshotHasOpenForSymbol(snapshot, symbol)) {
+    const seen = new Set(newOrUpdated.map((trade) => trade.tradeNumber))
+    for (const trade of stamped) {
+      if (!closeHints.has(trade.tradeNumber) || seen.has(trade.tradeNumber)) continue
+      if (JBSync.isOpenTrade(trade)) continue
+      newOrUpdated.push(trade)
+      seen.add(trade.tradeNumber)
+    }
+  }
 
   if (!newOrUpdated.length) {
     return {
@@ -1471,14 +1598,18 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     }
   }
 
+  const screenshotJpeg = await JBSync.awaitChartScreenshot(screenshotPromise, 300)
   const syncResult = await JBSync.syncTrades(newOrUpdated, config, symbol, {
     reconcileFromTrades: stamped,
     reconcile: true,
-    screenshotJpeg: await JBSync.awaitChartScreenshot(screenshotPromise, 300),
+    screenshotJpeg,
   })
 
   const closedStale = syncResult.closedStale || 0
   await JBSync.maybeNotifyJournalTabs(syncResult, config)
+  JBSync.maybeScheduleChartPhotoFollowUp(config, screenshotPromise, syncResult, {
+    inlineScreenshotJpeg: screenshotJpeg,
+  })
 
   if (syncResult.imported > 0) {
     syncResult.message = `${syncResult.imported} new trade(s) synced`
@@ -1588,6 +1719,10 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
     }
   }
 
+  if (captured.trades.length) {
+    result.trades = JBSync.mergeCapturedIntoScrape(result.trades || [], captured.trades)
+  }
+
   if (result?.trades?.length) {
     result.trades = JBSync.markLatestPaintedOpens(result.trades)
   }
@@ -1609,18 +1744,25 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
 
   let syncResult = { imported: 0, updated: 0, skipped: 0, deduped: 0, closedStale: 0, byAccount: {} }
 
+  let screenshotJpeg = null
   if (tradesToSync.length) {
     // Reconcile only when the scrape still sees a live Open. Empty open set
     // must not delete journal Opens (missed Type=Open / light scrape).
+    screenshotJpeg = await JBSync.awaitChartScreenshot(screenshotPromise, 300)
     syncResult = await JBSync.syncTrades(tradesToSync, config, chartSymbol, {
       reconcileFromTrades: result.trades,
       reconcile: scrapedOpens.length > 0,
-      screenshotJpeg: await JBSync.awaitChartScreenshot(screenshotPromise, 300),
+      screenshotJpeg,
     })
   }
 
   const closedStale = syncResult.closedStale || 0
   const nonStaleUpdated = Math.max(0, (syncResult.updated || 0) - closedStale)
+
+  JBSync.maybeScheduleChartPhotoFollowUp(config, screenshotPromise, syncResult, {
+    tab,
+    inlineScreenshotJpeg: screenshotJpeg,
+  })
 
   if (syncResult.imported === 0 && nonStaleUpdated === 0 && !closedStale) {
     const latest = result.trades.find((trade) => trade.tradeNumber === latestTradeNumber)

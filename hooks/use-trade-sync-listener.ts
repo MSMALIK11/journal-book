@@ -65,7 +65,7 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
   }, [onConnectionChange])
 
   const handleEvent = useCallback((detail: TradeSyncEventDetail) => {
-    if (detail.type === "accounts_updated") {
+    if (detail.type === "accounts_updated" || detail.type === "alerts_updated") {
       onEventRef.current(detail)
       return
     }
@@ -195,7 +195,7 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
             schedulePoll()
             return
           }
-          if (data.type === "accounts_updated") {
+          if (data.type === "accounts_updated" || data.type === "alerts_updated") {
             handleEvent(data)
             return
           }

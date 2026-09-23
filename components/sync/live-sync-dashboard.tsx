@@ -150,8 +150,7 @@ const fetcher = async (url: string) => {
 
 export function LiveSyncDashboard() {
   const { toast } = useToast()
-  const { activeAccount, activeAccountId, refresh, revalidateSyncedData } =
-    useActiveAccount()
+  const { activeAccount, activeAccountId, revalidateSyncedData } = useActiveAccount()
   const [clearOpen, setClearOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [bridgeReady, setBridgeReady] = useState(false)
@@ -314,9 +313,8 @@ export function LiveSyncDashboard() {
       void mutate()
       void mutateStatus()
       void revalidateSyncedData()
-      void refresh()
     },
-    [mutate, mutateStatus, refresh, revalidateSyncedData, setSize],
+    [mutate, mutateStatus, revalidateSyncedData, setSize],
   )
 
   useTradeSyncEvent(onTradeSync)

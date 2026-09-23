@@ -32,6 +32,7 @@ type ActiveAccountContextValue = {
   activeAccountId?: string
   activeAccount?: TradingAccountSummary
   isLoading: boolean
+  isValidating: boolean
   error: unknown
   switchVersion: number
   switchAccount: (accountId: string) => Promise<unknown>
@@ -56,8 +57,6 @@ function revalidateAccountScopedData() {
         typeof path === "string" &&
         (path.startsWith("/api/trades") ||
           path.startsWith("/api/analytics") ||
-          path.startsWith("/api/accounts") ||
-          path.startsWith("/api/alerts") ||
           path.startsWith("/api/funded-roadmap"))
       )
     },
@@ -66,10 +65,23 @@ function revalidateAccountScopedData() {
   )
 }
 
-export { revalidateAccountScopedData }
+function revalidateAccountsList() {
+  return globalMutate("/api/accounts")
+}
+
+export { revalidateAccountScopedData, revalidateAccountsList }
 
 export function ActiveAccountProvider({ children }: { children: ReactNode }) {
-  const { data, error, isLoading, mutate } = useSWR<AccountsResponse>("/api/accounts", fetcher)
+  const { data, error, isLoading, isValidating, mutate } = useSWR<AccountsResponse>(
+    "/api/accounts",
+    fetcher,
+    {
+      // Trade sync fires often — don't hammer accounts on every fill.
+      dedupingInterval: 60_000,
+      revalidateOnFocus: true,
+      keepPreviousData: true,
+    },
+  )
   const [switchVersion, setSwitchVersion] = useState(0)
 
   const activeAccount =
@@ -124,13 +136,24 @@ export function ActiveAccountProvider({ children }: { children: ReactNode }) {
       activeAccountId: data?.activeAccountId,
       activeAccount,
       isLoading,
+      isValidating,
       error,
       switchVersion,
       switchAccount,
       refresh: mutate,
       revalidateSyncedData,
     }),
-    [data, activeAccount, isLoading, error, switchVersion, switchAccount, mutate, revalidateSyncedData],
+    [
+      data,
+      activeAccount,
+      isLoading,
+      isValidating,
+      error,
+      switchVersion,
+      switchAccount,
+      mutate,
+      revalidateSyncedData,
+    ],
   )
 
   return createElement(ActiveAccountContext.Provider, { value }, children)

@@ -27,7 +27,13 @@ export type AccountsUpdatedEvent = {
   primaryAccountId?: string
 }
 
-export type SyncEvent = TradesUpdatedEvent | AccountsUpdatedEvent
+export type AlertsUpdatedEvent = {
+  type: "alerts_updated"
+  accountId: string
+  at?: string
+}
+
+export type SyncEvent = TradesUpdatedEvent | AccountsUpdatedEvent | AlertsUpdatedEvent
 
 type SyncListener = (event: SyncEvent) => void
 
@@ -83,6 +89,21 @@ export function publishAccountsUpdated(
 ) {
   if (!payload.created.length) return
   const event: AccountsUpdatedEvent = { type: "accounts_updated", ...payload }
+  for (const listener of getListenerMap().get(userListenerKey(userId)) ?? []) {
+    try {
+      listener(event)
+    } catch (error) {
+      console.error("Sync event listener error:", error)
+    }
+  }
+}
+
+export function publishAlertsUpdated(userId: string, accountId: string) {
+  const event: AlertsUpdatedEvent = {
+    type: "alerts_updated",
+    accountId,
+    at: new Date().toISOString(),
+  }
   for (const listener of getListenerMap().get(userListenerKey(userId)) ?? []) {
     try {
       listener(event)

@@ -20,9 +20,13 @@ export async function GET(request: NextRequest) {
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
     await connectDB()
-    await ensureAccountsFromExistingTrades(session.sub)
 
-    const accounts = await getUserAccounts(session.sub)
+    let accounts = await getUserAccounts(session.sub)
+    const forceEnsure = request.nextUrl.searchParams.get("ensure") === "1"
+    if (forceEnsure || accounts.length === 0) {
+      await ensureAccountsFromExistingTrades(session.sub)
+      accounts = await getUserAccounts(session.sub)
+    }
     const { accountId } = await getAccountContext(request, session.sub)
     const tradeCounts = await getAccountTradeCounts(session.sub)
 

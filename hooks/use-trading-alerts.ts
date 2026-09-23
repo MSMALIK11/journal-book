@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from "react"
 import useSWR from "swr"
 import { authFetch } from "@/lib/client-auth"
 import { useActiveAccount } from "@/hooks/use-active-account"
+import { useTradeSyncConnection } from "@/hooks/use-trade-sync-event"
 import { classifySession } from "@/lib/trading/sessions"
 import type { CoachingVerdict } from "@/lib/trading/coaching-verdict"
 import type { AlertItem } from "@/components/notifications/alert-list"
@@ -27,6 +28,8 @@ const fetcher = async (url: string) => {
 }
 
 const DIGEST_STORAGE_KEY = "jb_alert_digest_date"
+const EVALUATE_MIN_MS = 20_000
+const SSE_DOWN_FALLBACK_MS = 5 * 60_000
 
 function todayKey() {
   return new Date().toISOString().slice(0, 10)
@@ -38,8 +41,14 @@ function todayKey() {
  * consumer fires an identical request at once.
  */
 let inFlightEvaluate: Promise<void> | null = null
+let lastEvaluateAt = 0
 
 function postEvaluate(includeDigest: boolean) {
+  const now = Date.now()
+  if (!includeDigest && now - lastEvaluateAt < EVALUATE_MIN_MS) {
+    return inFlightEvaluate ?? Promise.resolve()
+  }
+
   if (inFlightEvaluate) return inFlightEvaluate
 
   inFlightEvaluate = (async () => {
@@ -49,6 +58,7 @@ function postEvaluate(includeDigest: boolean) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ includeDigest }),
       })
+      lastEvaluateAt = Date.now()
     } catch {
       // Coaching evaluate can fail; callers still reload stored new-trade alerts.
     } finally {
@@ -69,6 +79,7 @@ type UseTradingAlertsOptions = {
 
 export function useTradingAlerts(options?: UseTradingAlertsOptions) {
   const poll = options?.poll ?? false
+  const sseConnected = useTradeSyncConnection()
   const { activeAccountId, switchVersion } = useActiveAccount()
   const digestRequested = useRef(false)
   const lastSessionRef = useRef<string | null>(null)
@@ -76,8 +87,9 @@ export function useTradingAlerts(options?: UseTradingAlertsOptions) {
   const swrKey = activeAccountId ? `/api/alerts?limit=50&account=${activeAccountId}&v=${switchVersion}` : null
 
   const { data, error, isLoading, mutate } = useSWR<AlertsResponse>(swrKey, fetcher, {
-    refreshInterval: 60_000,
-    revalidateOnFocus: true,
+    dedupingInterval: 45_000,
+    revalidateOnFocus: false,
+    keepPreviousData: true,
   })
 
   const evaluate = useCallback(
@@ -87,11 +99,19 @@ export function useTradingAlerts(options?: UseTradingAlertsOptions) {
       try {
         await mutate()
       } catch {
-        // silent — next poll retries
+        // silent — SSE / next evaluate retries
       }
     },
     [activeAccountId, mutate],
   )
+
+  const refresh = useCallback(async () => {
+    try {
+      await mutate()
+    } catch {
+      // silent
+    }
+  }, [mutate])
 
   const markRead = useCallback(
     async (options: { ids?: string[]; all?: boolean }) => {
@@ -111,12 +131,15 @@ export function useTradingAlerts(options?: UseTradingAlertsOptions) {
 
     void evaluate(false)
 
+    // SSE pushes alerts_updated after evaluate — only poll when the stream is down.
+    if (sseConnected) return
+
     const interval = setInterval(() => {
       void evaluate(false)
-    }, 60_000)
+    }, SSE_DOWN_FALLBACK_MS)
 
     return () => clearInterval(interval)
-  }, [poll, activeAccountId, switchVersion, evaluate])
+  }, [poll, activeAccountId, switchVersion, sseConnected, evaluate])
 
   useEffect(() => {
     if (!poll || !activeAccountId || digestRequested.current) return
@@ -157,7 +180,7 @@ export function useTradingAlerts(options?: UseTradingAlertsOptions) {
     }
 
     checkSessionChange()
-    const interval = setInterval(checkSessionChange, 30_000)
+    const interval = setInterval(checkSessionChange, 60_000)
     return () => clearInterval(interval)
   }, [poll, activeAccountId, data?.timezone, evaluate])
 
@@ -171,7 +194,7 @@ export function useTradingAlerts(options?: UseTradingAlertsOptions) {
     timezone: data?.timezone ?? null,
     isLoading,
     error,
-    refresh: mutate,
+    refresh,
     markRead,
     evaluate,
   }

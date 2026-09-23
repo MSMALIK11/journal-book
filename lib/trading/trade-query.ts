@@ -10,7 +10,7 @@ export type TradeQueryParams = {
 }
 
 export const ANALYTICS_TRADE_SELECT =
-  "entry_date exit_date net_pnl return_pct commission strategy instrument trade_type signal source"
+  "entry_date exit_date entry_price exit_price net_pnl return_pct commission strategy instrument trade_type signal source"
 
 export const RESEARCH_TRADE_SELECT =
   "entry_date exit_date net_pnl return_pct commission strategy instrument trade_type signal source emotion_tag confidence_rating followed_plan mistake_tag tags stop_loss target quantity"

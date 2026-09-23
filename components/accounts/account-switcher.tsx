@@ -16,8 +16,9 @@ import { useActiveAccount } from "@/hooks/use-active-account"
 
 export function AccountSwitcher({ className }: { className?: string }) {
   const { accounts, activeAccount, isLoading, switchAccount } = useActiveAccount()
+  const showInitialLoad = isLoading && accounts.length === 0
 
-  if (isLoading) {
+  if (showInitialLoad) {
     return (
       <div className={cn("px-3 py-2 text-xs text-muted-foreground", className)}>
         Loading accounts...
