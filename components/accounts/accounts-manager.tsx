@@ -256,7 +256,7 @@ export function AccountsManager() {
     }
   }
 
-  if (isLoading) {
+  if (isLoading && accounts.length === 0) {
     return <p className="text-muted-foreground">Loading accounts...</p>
   }
 

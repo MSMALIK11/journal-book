@@ -19,6 +19,7 @@ import { EquityChart } from "@/components/analytics/equity-chart"
 import { PerformanceSummary } from "@/components/analytics/performance-summary"
 import { PnlDistributionChart } from "@/components/analytics/pnl-distribution-chart"
 import { StreaksRecords } from "@/components/analytics/streaks-records"
+import { TopTradesHighlight } from "@/components/analytics/top-trades-highlight"
 import { TimeAnalysisCharts } from "@/components/analytics/time-analysis-charts"
 import { MonthlyProfitLoss } from "@/components/analytics/monthly-profit-loss"
 import { WeeklyProfitLoss } from "@/components/analytics/weekly-profit-loss"
@@ -257,6 +258,13 @@ export function AnalyticsDashboard() {
           />
 
           <PnlDistributionChart distribution={data.pnlDistribution} />
+
+          <TopTradesHighlight
+            topWinners={data.topWinners}
+            topLosers={data.topLosers}
+            extremes={data.extremes}
+            timezone={data.timezone}
+          />
 
           <StreaksRecords records={data.records} />
         </TabsContent>

@@ -134,7 +134,7 @@ async function tradeStillOpenInDb(
 }
 
 export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
-  const { activeAccountId, switchAccount } = useActiveAccount()
+  const { activeAccountId } = useActiveAccount()
   const [alarm, setAlarm] = useState<NewTradeAlarmState | null>(null)
   const [open, setOpen] = useState(false)
   const seenImportKeysRef = useRef<Set<string>>(readSeenKeys())
@@ -305,10 +305,6 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
 
       void (async () => {
         try {
-          if (targetAccountId && targetAccountId !== activeAccountId) {
-            await switchAccount(targetAccountId)
-          }
-
           const alertsResponse = await authFetch(`/api/alerts?limit=1&account=${targetAccountId}`)
           const alertsData = await alertsResponse.json()
           const zones = alertsData.zones as MomentZoneSnapshot | undefined
@@ -321,7 +317,7 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         }
       })()
     },
-    [activeAccountId, claimKeys, clearRepeatAutoStop, markSeen, releaseKeys, startSound, stopAlarm, switchAccount],
+    [claimKeys, clearRepeatAutoStop, markSeen, releaseKeys, startSound, stopAlarm],
   )
 
   const onSyncEvent = useCallback(

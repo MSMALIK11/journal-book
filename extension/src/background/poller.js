@@ -1,5 +1,5 @@
 /* global JBSync */
-const VERSION = "1.18.15"
+const VERSION = "1.18.18"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CAPTURE_SYNC_DEBOUNCE_MS = 80
@@ -361,12 +361,20 @@ async function syncCapturePayload(payload) {
     (change) => change?.reason === "closed" || change?.isOpen === false,
   )
   const newHint = (payload?.changes || []).some((change) => change?.reason === "new")
+  const closeHints = new Set(
+    (payload?.changes || [])
+      .filter((change) => change?.reason === "closed" || change?.isOpen === false)
+      .map((change) => change?.tradeNumber)
+      .filter((num) => Number.isFinite(num)),
+  )
 
   syncInFlight = true
   try {
     if (trades.length) {
       try {
-        const result = await JBSync.syncCapturedTrades(config, trades, payload?.chartSymbol)
+        const result = await JBSync.syncCapturedTrades(config, trades, payload?.chartSymbol, {
+          closeHints,
+        })
         if (result?.imported > 0 || result?.updated > 0 || result?.closedStale > 0) {
           console.info(
             "instant capture sync:",

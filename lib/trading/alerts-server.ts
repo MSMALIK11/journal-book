@@ -27,6 +27,7 @@ import {
   RESEARCH_TRADE_SELECT,
 } from "@/lib/trading/trade-query"
 import { sendTradePushToUser } from "@/lib/push/web-push"
+import { publishAlertsUpdated } from "@/lib/sync-events"
 import { notifyTelegramTradeEvent } from "@/lib/telegram/send-trade-alert"
 import { buildTelegramCoachCaption } from "@/lib/telegram/coach-caption"
 import { buildTradeMomentAdvice } from "@/lib/trading/trade-moment-advice"
@@ -343,6 +344,8 @@ export async function persistNewTradeAlert(
   } catch (error) {
     console.error("Failed to persist new-trade alert:", error)
   }
+
+  publishAlertsUpdated(userId, accountId)
 }
 
 export async function persistClosedTradeAlert(
@@ -425,6 +428,8 @@ export async function persistClosedTradeAlert(
   } catch (error) {
     console.error("Failed to persist closed-trade alert:", error)
   }
+
+  publishAlertsUpdated(userId, accountId)
 }
 
 export async function evaluateAndPersistAlerts(

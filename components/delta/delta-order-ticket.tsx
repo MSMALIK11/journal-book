@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Bot, ChevronDown, ChevronUp, Loader2, RefreshCw } from "lucide-react"
 import {
   AlertDialog,
@@ -126,7 +126,7 @@ export function DeltaOrderTicket({
   } = useDeltaMarketData(environment, symbol, leverageAccountId, configured)
 
   const product = marketData?.product ?? null
-  const markPrice = marketData?.markPrice ?? marketData?.product.markPrice ?? null
+  const markPrice = marketData?.markPrice ?? marketData?.product?.markPrice ?? null
   const apiLeverage = marketData?.product.leverage ?? marketData?.product.defaultLeverage ?? null
   const orderSizeCap =
     typeof marketData?.maxOrderSize === "number" && marketData.maxOrderSize > 0
@@ -138,14 +138,23 @@ export function DeltaOrderTicket({
     await mutateMarketData()
   }, [mutateMarketData])
 
+  const lastMarketErrorRef = useRef<string | null>(null)
+
   useEffect(() => {
-    if (!marketError) return
+    if (!marketError) {
+      lastMarketErrorRef.current = null
+      return
+    }
+    const message = marketError instanceof Error ? marketError.message : "Unknown error"
+    const key = `${symbol}:${message}`
+    if (lastMarketErrorRef.current === key) return
+    lastMarketErrorRef.current = key
     toast({
       title: "Market data unavailable",
-      description: marketError instanceof Error ? marketError.message : "Unknown error",
+      description: message,
       variant: "destructive",
     })
-  }, [marketError, toast])
+  }, [marketError, symbol, toast])
 
   const autoTrade = useDeltaAutoTradeSync({
     environment,

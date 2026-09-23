@@ -13,26 +13,22 @@ function isBackgroundReconcileEvent(data: TradeSyncEventDetail) {
   return false
 }
 
-/** Refresh accounts + all trade/analytics data when extension syncs (new or closed trades). */
+/** Refresh accounts + trade/analytics data when extension syncs — never auto-switch account. */
 export function SyncAccountAutoSwitch() {
-  const { activeAccountId, switchAccount, refresh, revalidateSyncedData } = useActiveAccount()
+  const { refresh, revalidateSyncedData } = useActiveAccount()
   const { toast } = useToast()
 
   const onSyncEvent = useCallback(
     (data: TradeSyncEventDetail) => {
       if (data.type === "accounts_updated") {
-        const targetId = data.primaryAccountId || data.created?.[data.created.length - 1]?.id
         const targetName =
-          data.created?.find((account) => account.id === targetId)?.name ||
+          data.created?.find((account) => account.id === data.primaryAccountId)?.name ||
           data.created?.[data.created.length - 1]?.name
 
-        void refresh().then(async () => {
-          if (targetId && targetId !== activeAccountId) {
-            await switchAccount(targetId).catch(() => {})
-          }
+        void refresh().then(() => {
           toast({
             title: targetName ? `Portfolio ready: ${targetName}` : "New portfolio added",
-            description: "Switch accounts in the sidebar to test each symbol separately.",
+            description: "Switch accounts in the sidebar when you want to view that portfolio.",
           })
         })
         return
@@ -47,14 +43,7 @@ export function SyncAccountAutoSwitch() {
         const updated = data.updated ?? 0
 
         try {
-          if (data.accountId && data.accountId !== activeAccountId) {
-            await refresh()
-            await switchAccount(data.accountId)
-            await revalidateSyncedData()
-          } else {
-            await revalidateSyncedData()
-            await refresh()
-          }
+          await revalidateSyncedData()
         } catch {
           await revalidateSyncedData().catch(() => {})
         }
@@ -79,7 +68,7 @@ export function SyncAccountAutoSwitch() {
         }
       })()
     },
-    [activeAccountId, refresh, revalidateSyncedData, switchAccount, toast],
+    [refresh, revalidateSyncedData, toast],
   )
 
   useTradeSyncEvent(onSyncEvent)

@@ -1,4 +1,5 @@
 import crypto from "crypto"
+import https from "node:https"
 import type { DeltaEnvironment } from "@/lib/broker/delta-env"
 
 export const DELTA_DEMO_BASE_URL = "https://cdn-ind.testnet.deltaex.org"
@@ -41,6 +42,58 @@ export function getDeltaBaseUrl(environment: DeltaEnvironment = "demo"): string 
   const configured = process.env.DELTA_BASE_URL?.trim()
   if (configured) return configured.replace(/\/$/, "")
   return DELTA_DEMO_BASE_URL
+}
+
+const DELTA_PUBLIC_HEADERS = {
+  Accept: "application/json",
+  // Delta demo CDN rejects Node fetch/undici unless the request looks like curl.
+  "User-Agent": "curl/8.7.1",
+}
+
+type DeltaPublicResponse = {
+  ok: boolean
+  status: number
+  json: unknown
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function deltaPublicGetOnce(url: string): Promise<DeltaPublicResponse> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: DELTA_PUBLIC_HEADERS }, (res) => {
+      let data = ""
+      res.on("data", (chunk) => {
+        data += chunk
+      })
+      res.on("end", () => {
+        let json: unknown = {}
+        try {
+          json = JSON.parse(data)
+        } catch {
+          json = { raw: data }
+        }
+        const status = res.statusCode ?? 0
+        resolve({ ok: status >= 200 && status < 300, status, json })
+      })
+    })
+    req.on("error", reject)
+    req.setTimeout(20_000, () => {
+      req.destroy(new Error(`Delta public request timeout: ${url}`))
+    })
+  })
+}
+
+async function deltaPublicGet(url: string): Promise<DeltaPublicResponse> {
+  const retryable = new Set([429, 500, 502, 503, 504])
+  let last: DeltaPublicResponse = { ok: false, status: 0, json: {} }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    last = await deltaPublicGetOnce(url)
+    if (last.ok || !retryable.has(last.status) || attempt === 2) return last
+    await sleep(250 * (attempt + 1))
+  }
+  return last
 }
 
 async function deltaRequest<T>(
@@ -264,24 +317,224 @@ export async function setProductLeverage(
   )
 }
 
+const productCatalogCache = new Map<
+  string,
+  { fetchedAt: number; bySymbol: Map<string, Record<string, unknown>> }
+>()
+const catalogInflight = new Map<string, Promise<Map<string, Record<string, unknown>>>>()
+const productMetaCache = new Map<string, { fetchedAt: number; meta: { id: number | null; raw: Record<string, unknown> | null } }>()
+const PRODUCT_CATALOG_TTL_MS = 60_000
+const PRODUCT_META_TTL_MS = 5 * 60_000
+
+/** Demo testnet fallbacks when Delta CDN intermittently 500s (notably BTCUSD). */
+const DEMO_PRODUCT_FALLBACKS: Record<string, Record<string, unknown>> = {
+  BTCUSD: {
+    id: 84,
+    symbol: "BTCUSD",
+    contract_value: "0.001",
+    contract_unit_currency: "BTC",
+    default_leverage: "10",
+    max_leverage_notional: "10000",
+  },
+  ETHUSD: {
+    id: 1699,
+    symbol: "ETHUSD",
+    contract_value: "0.01",
+    contract_unit_currency: "ETH",
+    default_leverage: "10",
+    max_leverage_notional: "10000",
+  },
+  SOLUSD: {
+    id: 92572,
+    symbol: "SOLUSD",
+    contract_value: "1",
+    contract_unit_currency: "SOL",
+    default_leverage: "10",
+    max_leverage_notional: "10000",
+  },
+  XAUTUSD: {
+    id: 181689,
+    symbol: "XAUTUSD",
+    contract_value: "0.001",
+    contract_unit_currency: "XAUT",
+    default_leverage: "10",
+    max_leverage_notional: "10000",
+  },
+}
+
+function deltaSymbolCandidates(symbol: string): string[] {
+  const normalized = symbol.toUpperCase().replace(/[^A-Za-z0-9]/g, "")
+  const candidates = [normalized]
+  if (normalized.endsWith("USDT")) {
+    candidates.push(`${normalized.slice(0, -4)}USD`)
+  }
+  if (["XAUUSD", "XAUUSDT", "XAU", "GOLD", "XAUT", "XAUTUSD"].includes(normalized)) {
+    candidates.push("XAUTUSD")
+  }
+  if (normalized === "BTC") candidates.push("BTCUSD")
+  if (normalized === "ETH") candidates.push("ETHUSD")
+  if (normalized === "SOL") candidates.push("SOLUSD")
+  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index)
+}
+
+function productMetaFromRaw(raw: Record<string, unknown> | null | undefined) {
+  if (!raw) return { id: null, raw: null as Record<string, unknown> | null }
+  const id = Number(raw.id)
+  return {
+    id: Number.isFinite(id) && id > 0 ? id : null,
+    raw,
+  }
+}
+
+async function fetchDeltaProductBySymbol(
+  symbol: string,
+  environment: DeltaEnvironment,
+): Promise<{ id: number | null; raw: Record<string, unknown> | null }> {
+  const safeSymbol = symbol.replace(/[^A-Za-z0-9_-]/g, "").toUpperCase()
+  const base = getDeltaBaseUrl(environment)
+  const { ok, json } = await deltaPublicGet(`${base}/v2/products/${encodeURIComponent(safeSymbol)}`)
+  const parsed = json as { result?: Record<string, unknown> & { id?: number | string } }
+  if (!ok || !parsed.result) return { id: null, raw: null }
+  return productMetaFromRaw(parsed.result)
+}
+
+async function loadDeltaProductCatalog(environment: DeltaEnvironment) {
+  const cacheKey = getDeltaBaseUrl(environment)
+  const cached = productCatalogCache.get(cacheKey)
+  if (cached && Date.now() - cached.fetchedAt < PRODUCT_CATALOG_TTL_MS) {
+    return cached.bySymbol
+  }
+
+  const inflight = catalogInflight.get(cacheKey)
+  if (inflight) return inflight
+
+  const promise = (async () => {
+    const base = getDeltaBaseUrl(environment)
+    const { ok, json } = await deltaPublicGet(`${base}/v2/products`)
+    const parsed = json as { result?: Record<string, unknown>[] }
+    const bySymbol = new Map<string, Record<string, unknown>>()
+    if (ok && Array.isArray(parsed.result)) {
+      for (const row of parsed.result) {
+        if (!row || typeof row !== "object") continue
+        const symbol = typeof row.symbol === "string" ? row.symbol.toUpperCase() : ""
+        if (symbol) bySymbol.set(symbol, row)
+      }
+    }
+
+    productCatalogCache.set(cacheKey, { fetchedAt: Date.now(), bySymbol })
+    catalogInflight.delete(cacheKey)
+    return bySymbol
+  })()
+
+  catalogInflight.set(cacheKey, promise)
+  return promise
+}
+
+async function fetchDeltaProductFromCatalog(
+  symbol: string,
+  environment: DeltaEnvironment,
+): Promise<{ id: number | null; raw: Record<string, unknown> | null }> {
+  const catalog = await loadDeltaProductCatalog(environment)
+  for (const candidate of deltaSymbolCandidates(symbol)) {
+    const row = catalog.get(candidate)
+    if (row) return productMetaFromRaw(row)
+  }
+  return { id: null, raw: null }
+}
+
+async function fetchDeltaProductFromTicker(
+  symbol: string,
+  environment: DeltaEnvironment,
+): Promise<{ id: number | null; raw: Record<string, unknown> | null }> {
+  const safeSymbol = symbol.replace(/[^A-Za-z0-9_-]/g, "").toUpperCase()
+  const base = getDeltaBaseUrl(environment)
+  const { ok, json } = await deltaPublicGet(`${base}/v2/tickers/${encodeURIComponent(safeSymbol)}`)
+  const parsed = json as {
+    result?: Record<string, unknown> & {
+      product_id?: number | string
+      contract_value?: string | number
+      underlying_asset_symbol?: string
+      leverage?: string | number
+      max_leverage_notional?: string | number
+      symbol?: string
+    }
+  }
+  if (!ok || !parsed.result) return { id: null, raw: null }
+
+  const result = parsed.result
+  const productId = Number(result.product_id)
+  const contractValue = Number(result.contract_value)
+  if (!Number.isFinite(productId) || productId <= 0 || !Number.isFinite(contractValue) || contractValue <= 0) {
+    return { id: null, raw: null }
+  }
+
+  return productMetaFromRaw({
+    id: productId,
+    symbol: typeof result.symbol === "string" ? result.symbol : safeSymbol,
+    contract_value: contractValue,
+    contract_unit_currency:
+      typeof result.underlying_asset_symbol === "string" ? result.underlying_asset_symbol : "USD",
+    default_leverage: Number(result.leverage) > 0 ? Number(result.leverage) : 10,
+    max_leverage_notional: Number(result.max_leverage_notional) || 0,
+  })
+}
+
+function fetchDemoProductFallback(
+  symbol: string,
+  environment: DeltaEnvironment,
+): { id: number | null; raw: Record<string, unknown> | null } {
+  if (environment !== "demo") return { id: null, raw: null }
+  for (const candidate of deltaSymbolCandidates(symbol)) {
+    const row = DEMO_PRODUCT_FALLBACKS[candidate]
+    if (row) return productMetaFromRaw(row)
+  }
+  return { id: null, raw: null }
+}
+
 export async function getDeltaProductMeta(
   symbol: string,
   environment: DeltaEnvironment = "demo",
 ): Promise<{ id: number | null; raw: Record<string, unknown> | null }> {
-  const safeSymbol = symbol.replace(/[^A-Za-z0-9_-]/g, "").toUpperCase()
-  const base = getDeltaBaseUrl(environment)
-  const res = await fetch(`${base}/v2/products/${encodeURIComponent(safeSymbol)}`, {
-    headers: { Accept: "application/json" },
-  })
-  const json = (await res.json().catch(() => ({}))) as {
-    result?: Record<string, unknown> & { id?: number | string }
+  const cacheKey = `${getDeltaBaseUrl(environment)}:${symbol.toUpperCase()}`
+  const cached = productMetaCache.get(cacheKey)
+  if (cached && Date.now() - cached.fetchedAt < PRODUCT_META_TTL_MS) {
+    return cached.meta
   }
-  if (!res.ok || !json.result) return { id: null, raw: null }
-  const id = Number(json.result.id)
-  return {
-    id: Number.isFinite(id) && id > 0 ? id : null,
-    raw: json.result,
+
+  let meta: { id: number | null; raw: Record<string, unknown> | null } = { id: null, raw: null }
+
+  for (const candidate of deltaSymbolCandidates(symbol)) {
+    const direct = await fetchDeltaProductBySymbol(candidate, environment)
+    if (direct.raw) {
+      meta = direct
+      break
+    }
   }
+
+  if (!meta.raw) {
+    // Full catalog is more reliable than /products/{symbol} or /tickers/BTCUSD on demo CDN.
+    meta = await fetchDeltaProductFromCatalog(symbol, environment)
+  }
+
+  if (!meta.raw) {
+    for (const candidate of deltaSymbolCandidates(symbol)) {
+      const fromTicker = await fetchDeltaProductFromTicker(candidate, environment)
+      if (fromTicker.raw) {
+        meta = fromTicker
+        break
+      }
+    }
+  }
+
+  if (!meta.raw) {
+    meta = fetchDemoProductFallback(symbol, environment)
+  }
+
+  if (meta.raw) {
+    productMetaCache.set(cacheKey, { fetchedAt: Date.now(), meta })
+  }
+
+  return meta
 }
 
 export async function getDeltaProduct(
@@ -303,46 +556,44 @@ export async function getDeltaProductId(
 export async function getDeltaTickerPrice(
   symbol: string,
   environment: DeltaEnvironment = "demo",
-): Promise<{ price: number; productId?: number }> {
-  const safeSymbol = symbol.replace(/[^A-Za-z0-9_-]/g, "").toUpperCase()
-  const base = getDeltaBaseUrl(environment)
-  const res = await fetch(`${base}/v2/tickers/${encodeURIComponent(safeSymbol)}`, {
-    headers: { Accept: "application/json" },
-  })
-  const json = (await res.json().catch(() => ({}))) as {
-    result?: {
-      product_id?: number
-      mark_price?: string | number
-      spot_price?: string | number
-      close?: string | number
-      close_price?: string | number
-      last_price?: string | number
-      price?: string | number
-      quotes?: {
-        best_bid?: string | number
-        best_ask?: string | number
+): Promise<{ price: number | null; productId?: number }> {
+  for (const candidate of deltaSymbolCandidates(symbol)) {
+    const safeSymbol = candidate.replace(/[^A-Za-z0-9_-]/g, "").toUpperCase()
+    const base = getDeltaBaseUrl(environment)
+    const { ok, json } = await deltaPublicGet(`${base}/v2/tickers/${encodeURIComponent(safeSymbol)}`)
+    const parsed = json as {
+      result?: {
+        product_id?: number
+        mark_price?: string | number
+        spot_price?: string | number
+        close?: string | number
+        close_price?: string | number
+        last_price?: string | number
+        price?: string | number
+        quotes?: {
+          best_bid?: string | number
+          best_ask?: string | number
+        }
       }
     }
-    error?: unknown
+    if (!ok || !parsed.result) continue
+
+    const result = parsed.result
+    const rawPrice =
+      result.mark_price ??
+      result.last_price ??
+      result.spot_price ??
+      result.close ??
+      result.close_price ??
+      result.price ??
+      result.quotes?.best_ask ??
+      result.quotes?.best_bid
+    const price = Number(rawPrice)
+    if (!Number.isFinite(price) || price <= 0) continue
+    return { price, productId: result.product_id }
   }
-  if (!res.ok) {
-    throw new Error(json.error ? String(json.error) : `Delta ticker ${res.status}`)
-  }
-  const result = json.result
-  const rawPrice =
-    result?.mark_price ??
-    result?.last_price ??
-    result?.spot_price ??
-    result?.close ??
-    result?.close_price ??
-    result?.price ??
-    result?.quotes?.best_ask ??
-    result?.quotes?.best_bid
-  const price = Number(rawPrice)
-  if (!Number.isFinite(price) || price <= 0) {
-    throw new Error(`Delta ticker did not return a valid price for ${safeSymbol}`)
-  }
-  return { price, productId: result?.product_id }
+
+  return { price: null }
 }
 
 export async function testDeltaConnection(

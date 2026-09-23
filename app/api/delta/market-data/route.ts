@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import connectDB from "@/app/api/db/mongoose"
 import { getDeltaEnvironmentFromRequest } from "@/lib/broker/delta-api-params"
-import { getDeltaProduct, getDeltaTickerPrice, getPositions } from "@/lib/broker/delta-exchange"
+import { getDeltaProductMeta, getDeltaTickerPrice, getPositions } from "@/lib/broker/delta-exchange"
 import { getDeltaCredentialsByAccountId, getDeltaCredentialsForUser } from "@/lib/broker/delta-credentials"
 import { normalizeDeltaProduct } from "@/lib/broker/delta-product"
 import { getDeltaOrderMaxSize } from "@/lib/broker/delta-orders"
@@ -16,10 +16,11 @@ export async function GET(request: NextRequest) {
       .replace(/[^A-Za-z0-9_-]/g, "")
       .toUpperCase()
 
-    const [productRaw, ticker] = await Promise.all([
-      getDeltaProduct(symbol, environment),
+    const [meta, ticker] = await Promise.all([
+      getDeltaProductMeta(symbol, environment),
       getDeltaTickerPrice(symbol, environment).catch(() => null),
     ])
+    const productRaw = meta.raw
 
     if (!productRaw) {
       return NextResponse.json({ error: `Product not found: ${symbol}` }, { status: 404 })

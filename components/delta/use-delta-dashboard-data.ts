@@ -36,10 +36,25 @@ export type DeltaMarketDataResponse = {
   maxOrderSize?: number
 }
 
+class DeltaApiError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = "DeltaApiError"
+    this.status = status
+  }
+}
+
 const fetcher = async (url: string) => {
   const response = await authFetch(url)
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.error || "Request failed")
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new DeltaApiError(
+      typeof data.error === "string" ? data.error : "Request failed",
+      response.status,
+    )
+  }
   return data
 }
 
@@ -99,7 +114,12 @@ export function useDeltaMarketData(
   return useSWR<DeltaMarketDataResponse>(
     enabled && symbol ? deltaMarketDataKey(environment, symbol, accountId) : null,
     fetcher,
-    { revalidateOnFocus: false, dedupingInterval: MARKET_DATA_DEDUPE_MS },
+    {
+      revalidateOnFocus: false,
+      dedupingInterval: MARKET_DATA_DEDUPE_MS,
+      shouldRetryOnError: false,
+      keepPreviousData: true,
+    },
   )
 }
 

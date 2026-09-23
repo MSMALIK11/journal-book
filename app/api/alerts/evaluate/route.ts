@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getAccountContext } from "@/lib/active-account"
 import { getSession } from "@/lib/session"
+import { publishAlertsUpdated } from "@/lib/sync-events"
 import {
   digestExistsForToday,
   evaluateAndPersistAlerts,
@@ -31,6 +32,8 @@ export async function POST(request: NextRequest) {
     const result = await evaluateAndPersistAlerts(session.sub, accountId, {
       includeDigest: shouldIncludeDigest,
     })
+
+    publishAlertsUpdated(session.sub, accountId)
 
     return NextResponse.json({
       created: result.persisted.length,

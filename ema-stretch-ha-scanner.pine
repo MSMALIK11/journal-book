@@ -20,6 +20,12 @@ tradeCooldownBars = input.int(
      group=strategyGroup,
      tooltip="After TP/SL close, skip new entries for this many bars. 0 = off. Reversals while in a trade still work.")
 
+enablePullbackEntries = input.bool(
+     true,
+     "Enable Pullback-to-EMA Entries",
+     group=strategyGroup,
+     tooltip="Also enter when price pulls back to the EMA from the other side (support/resistance rejection), not only when fully stretched away from EMA.")
+
 //────────────────────────────────────────────
 // HEIKIN ASHI ENTRY FILTERS
 //────────────────────────────────────────────
@@ -91,12 +97,19 @@ f_pairKey(_ticker) =>
 // LONG SIGNAL
 //────────────────────────────────────────────
 getLongSignal(_ema) =>
-    // Previous HA candle fully below EMA.
-    candleANoTouch = high[1] < _ema[1]
+    // Path A: previous HA candle fully below EMA (stretch).
+    stretchSetup = high[1] < _ema[1]
+
+    // Path B: pullback down to EMA from above, then bullish break.
+    touchFromAbove =
+         (low[1] <= _ema[1] and high[1] >= _ema[1]) or
+         (low[1] <= _ema[1] and close[1] >= _ema[1])
+    wasAboveBefore = close[2] > _ema[2] or low[2] > _ema[2]
+    pullbackSetup = enablePullbackEntries and touchFromAbove and wasAboveBefore
 
     // Current HA candle breaks previous high.
     bullishBreak = high > high[1] and close > high[1]
-    rawLongSignal = candleANoTouch and bullishBreak
+    rawLongSignal = bullishBreak and (stretchSetup or pullbackSetup)
 
     bodyValid = isBodyValid()
 
@@ -130,12 +143,19 @@ getLongSignal(_ema) =>
 // SHORT SIGNAL
 //────────────────────────────────────────────
 getShortSignal(_ema) =>
-    // Previous HA candle fully above EMA.
-    candleANoTouch = low[1] > _ema[1]
+    // Path A: previous HA candle fully above EMA (stretch).
+    stretchSetup = low[1] > _ema[1]
+
+    // Path B: pullback rally to EMA from below, then bearish break.
+    touchFromBelow =
+         (low[1] <= _ema[1] and high[1] >= _ema[1]) or
+         (high[1] >= _ema[1] and close[1] <= _ema[1])
+    wasBelowBefore = close[2] < _ema[2] or high[2] < _ema[2]
+    pullbackSetup = enablePullbackEntries and touchFromBelow and wasBelowBefore
 
     // Current HA candle breaks previous low.
     bearishBreak = low < low[1] and close < low[1]
-    rawShortSignal = candleANoTouch and bearishBreak
+    rawShortSignal = bearishBreak and (stretchSetup or pullbackSetup)
 
     bodyValid = isBodyValid()
 

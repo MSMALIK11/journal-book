@@ -148,7 +148,7 @@ export function AccountsSettings() {
           add or rename portfolios from the accounts page.
         </SettingsHint>
 
-        {isLoading ? (
+        {isLoading && accounts.length === 0 ? (
           <p className="text-sm text-muted-foreground py-2">Loading accounts...</p>
         ) : accounts.length === 0 ? (
           <p className="text-sm text-muted-foreground py-2">No accounts yet. Sync trades from TradingView.</p>

@@ -8,8 +8,11 @@ import {
 export const MIN_BUCKET_TRADES = 5
 
 export type AnalyticsTrade = {
+  _id?: unknown
   entry_date: Date | string
   exit_date?: Date | string | null
+  entry_price?: number | null
+  exit_price?: number | null
   net_pnl?: number | null
   return_pct?: number | null
   commission?: number | null
@@ -18,6 +21,25 @@ export type AnalyticsTrade = {
   trade_type?: "Buy" | "Sell" | string
   signal?: string | null
   source?: "manual" | "tradingview" | string
+}
+
+export type TopTradeEntry = {
+  id: string
+  instrument: string
+  trade_type: string
+  signal?: string | null
+  strategy?: string | null
+  entry_date: string
+  exit_date: string | null
+  entry_price?: number | null
+  exit_price?: number | null
+  net_pnl: number
+  return_pct?: number | null
+}
+
+export type TradeExtremes = {
+  maxWin: number
+  maxLoss: number
 }
 
 export type BucketStats = {
@@ -161,6 +183,9 @@ export type AnalyticsResult = {
   records: AnalyticsRecords
   pnlDistribution: PnlDistributionBucket[]
   comparison: PeriodComparison | null
+  topWinners: TopTradeEntry[]
+  topLosers: TopTradeEntry[]
+  extremes: TradeExtremes
 }
 
 function toDate(value: Date | string | null | undefined): Date | null {
@@ -410,6 +435,45 @@ function buildBucket(key: string, label: string, pnls: number[]): BucketStats {
 }
 
 
+const TOP_TRADES_LIMIT = 10
+
+function toTopTradeEntry(trade: AnalyticsTrade & { net_pnl: number }): TopTradeEntry {
+  const entry = toDate(trade.entry_date)
+  const exit = toDate(trade.exit_date)
+  return {
+    id: trade._id != null ? String(trade._id) : "",
+    instrument: trade.instrument?.trim() || "Unknown",
+    trade_type: trade.trade_type || "Buy",
+    signal: trade.signal ?? null,
+    strategy: trade.strategy ?? null,
+    entry_date: entry?.toISOString() ?? String(trade.entry_date),
+    exit_date: exit?.toISOString() ?? null,
+    entry_price: trade.entry_price ?? null,
+    exit_price: trade.exit_price ?? null,
+    net_pnl: trade.net_pnl,
+    return_pct: trade.return_pct ?? null,
+  }
+}
+
+function computeTopTrades(closed: Array<AnalyticsTrade & { net_pnl: number }>) {
+  const winners = closed
+    .filter((trade) => trade.net_pnl > 0)
+    .sort((a, b) => b.net_pnl - a.net_pnl)
+    .slice(0, TOP_TRADES_LIMIT)
+    .map(toTopTradeEntry)
+
+  const losers = closed
+    .filter((trade) => trade.net_pnl < 0)
+    .sort((a, b) => a.net_pnl - b.net_pnl)
+    .slice(0, TOP_TRADES_LIMIT)
+    .map(toTopTradeEntry)
+
+  const maxWin = winners[0]?.net_pnl ?? 0
+  const maxLoss = losers[0]?.net_pnl ?? 0
+
+  return { topWinners: winners, topLosers: losers, extremes: { maxWin, maxLoss } }
+}
+
 function computeEquityCurve(
   closed: Array<AnalyticsTrade & { net_pnl: number }>,
 ): EquityPoint[] {
@@ -591,6 +655,7 @@ export function computeAnalytics(
     .filter((ms): ms is number => ms !== null)
 
   const streaks = computeStreaks(closed)
+  const { topWinners, topLosers, extremes } = computeTopTrades(closed)
   const bestDayPnl = bestDayEntry ? bestDayEntry[1].reduce((s, p) => s + p, 0) : 0
   const worstDayPnl = worstDayEntry ? worstDayEntry[1].reduce((s, p) => s + p, 0) : 0
 
@@ -706,5 +771,8 @@ export function computeAnalytics(
     },
     pnlDistribution: computePnlDistribution(closed),
     comparison: null,
+    topWinners,
+    topLosers,
+    extremes,
   }
 }
