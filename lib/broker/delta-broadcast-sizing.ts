@@ -140,6 +140,17 @@ export async function classifyAccountMargins(input: {
   return { eligible, ineligible }
 }
 
+function resolveMarkPrice(input: {
+  tickerPrice?: number | null
+  productMarkPrice?: number | null
+  priceFallback?: number | null
+}): number {
+  if (input.tickerPrice != null && input.tickerPrice > 0) return input.tickerPrice
+  if (input.productMarkPrice != null && input.productMarkPrice > 0) return input.productMarkPrice
+  if (input.priceFallback != null && input.priceFallback > 0) return input.priceFallback
+  return 0
+}
+
 export async function resolveAutoTradeSizing(input: {
   userId: string
   environment: DeltaEnvironment
@@ -147,17 +158,23 @@ export async function resolveAutoTradeSizing(input: {
   symbol: string
   marginPct: number
   config: DeltaAutoTradeConfig
+  /** TV fill entry when Delta demo ticker is down (common for XAUTUSD/BTCUSD). */
+  priceFallback?: number | null
 }): Promise<BroadcastSizingResult> {
   const [productRaw, ticker] = await Promise.all([
     getDeltaProduct(input.symbol, input.environment),
     getDeltaTickerPrice(input.symbol, input.environment).catch(() => null),
   ])
-  const product = normalizeDeltaProduct(productRaw, ticker?.price)
+  const product = normalizeDeltaProduct(productRaw, ticker?.price ?? input.priceFallback ?? undefined)
   if (!product) {
     return { ok: false, error: `Delta product not found for ${input.symbol}`, eligible: [], ineligible: [] }
   }
 
-  const markPrice = ticker?.price ?? product.markPrice ?? 0
+  const markPrice = resolveMarkPrice({
+    tickerPrice: ticker?.price,
+    productMarkPrice: product.markPrice,
+    priceFallback: input.priceFallback,
+  })
   if (markPrice <= 0) {
     return { ok: false, error: "Mark price unavailable", eligible: [], ineligible: [] }
   }
