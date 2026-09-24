@@ -60,8 +60,9 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function deltaPublicGetOnce(url: string): Promise<DeltaPublicResponse> {
-  return new Promise((resolve, reject) => {
+async function deltaPublicGetOnce(url: string, timeoutMs: number): Promise<DeltaPublicResponse> {
+  return new Promise((resolve) => {
+    const fail = (status: number) => resolve({ ok: false, status, json: {} })
     const req = https.get(url, { headers: DELTA_PUBLIC_HEADERS }, (res) => {
       let data = ""
       res.on("data", (chunk) => {
@@ -78,20 +79,21 @@ async function deltaPublicGetOnce(url: string): Promise<DeltaPublicResponse> {
         resolve({ ok: status >= 200 && status < 300, status, json })
       })
     })
-    req.on("error", reject)
-    req.setTimeout(20_000, () => {
-      req.destroy(new Error(`Delta public request timeout: ${url}`))
+    req.on("error", () => fail(0))
+    req.setTimeout(timeoutMs, () => {
+      req.destroy()
+      fail(504)
     })
   })
 }
 
-async function deltaPublicGet(url: string): Promise<DeltaPublicResponse> {
+async function deltaPublicGet(url: string, timeoutMs = 8_000): Promise<DeltaPublicResponse> {
   const retryable = new Set([429, 500, 502, 503, 504])
   let last: DeltaPublicResponse = { ok: false, status: 0, json: {} }
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    last = await deltaPublicGetOnce(url)
-    if (last.ok || !retryable.has(last.status) || attempt === 2) return last
-    await sleep(250 * (attempt + 1))
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    last = await deltaPublicGetOnce(url, timeoutMs)
+    if (last.ok || !retryable.has(last.status) || attempt === 1) return last
+    await sleep(200 * (attempt + 1))
   }
   return last
 }
@@ -410,7 +412,7 @@ async function loadDeltaProductCatalog(environment: DeltaEnvironment) {
 
   const promise = (async () => {
     const base = getDeltaBaseUrl(environment)
-    const { ok, json } = await deltaPublicGet(`${base}/v2/products`)
+    const { ok, json } = await deltaPublicGet(`${base}/v2/products`, 15_000)
     const parsed = json as { result?: Record<string, unknown>[] }
     const bySymbol = new Map<string, Record<string, unknown>>()
     if (ok && Array.isArray(parsed.result)) {
@@ -503,16 +505,20 @@ export async function getDeltaProductMeta(
 
   let meta: { id: number | null; raw: Record<string, unknown> | null } = { id: null, raw: null }
 
-  for (const candidate of deltaSymbolCandidates(symbol)) {
-    const direct = await fetchDeltaProductBySymbol(candidate, environment)
-    if (direct.raw) {
-      meta = direct
-      break
+  if (environment === "demo") {
+    // Demo CDN often 500s or hangs on /v2/products/{symbol} — use instant local map first.
+    meta = fetchDemoProductFallback(symbol, environment)
+  } else {
+    for (const candidate of deltaSymbolCandidates(symbol)) {
+      const direct = await fetchDeltaProductBySymbol(candidate, environment)
+      if (direct.raw) {
+        meta = direct
+        break
+      }
     }
   }
 
   if (!meta.raw) {
-    // Full catalog is more reliable than /products/{symbol} or /tickers/BTCUSD on demo CDN.
     meta = await fetchDeltaProductFromCatalog(symbol, environment)
   }
 
