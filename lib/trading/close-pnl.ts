@@ -37,6 +37,30 @@ function isMetalFill(trade: { instrument?: string }) {
   return spec?.assetType === "metal"
 }
 
+/** TV Strategy Tester USDJPY — Profit column is quote (JPY), size is base units (usually 100). */
+function isUsdJpyFill(trade: { instrument?: string }) {
+  return canonicalInstrumentSymbol(String(trade.instrument || "")) === "USDJPY"
+}
+
+function usdJpyTesterSize(trade: Pick<ClosedTradeInput, "quantity">) {
+  const raw = Number(trade.quantity)
+  if (Number.isFinite(raw) && raw > 0) return raw
+  return 100
+}
+
+function usdJpyQuotePnl(trade: ClosedTradeInput) {
+  const quantity = usdJpyTesterSize(trade)
+  return Math.round(unitFillMove(trade) * quantity * 100) / 100
+}
+
+function shouldTrustUsdJpyTvProfit(trade: ClosedTradeInput, incoming: number, fill: number) {
+  if (!Number.isFinite(incoming)) return false
+  const slack = Math.max(1, Math.abs(fill) * 0.08)
+  if (Math.abs(incoming - fill) <= slack) return true
+  if (returnPctMatchesFill(trade, 0.25)) return true
+  return false
+}
+
 function isCryptoFill(trade: ClosedTradeInput) {
   if (isMetalFill(trade)) return false
   const symbol = canonicalInstrumentSymbol(String(trade.instrument || ""))
@@ -107,6 +131,7 @@ function goldTesterSize(trade: ClosedTradeInput) {
 function sizeForFill(trade: ClosedTradeInput) {
   if (isMetalFill(trade)) return goldTesterSize(trade)
   if (isCryptoFill(trade)) return cryptoTesterSize(trade)
+  if (isUsdJpyFill(trade)) return usdJpyTesterSize(trade)
   const raw = lotAndContract(trade).quantity
   return raw > 20 ? 1 : raw
 }
@@ -287,6 +312,19 @@ export function resolveClosedTradeMetrics(trade: ClosedTradeInput) {
   const return_pct = trustedReturnPct(trade)
   const unit = unitFillMove(trade)
 
+  if (isUsdJpyFill(trade)) {
+    const quantity = usdJpyTesterSize(trade)
+    const fill = usdJpyQuotePnl({ ...trade, quantity })
+    const tvProfit = Number(trade.tv_scraped_profit ?? incoming)
+    if (shouldTrustUsdJpyTvProfit(trade, tvProfit, fill)) {
+      return {
+        net_pnl: Math.round(tvProfit * 100) / 100,
+        return_pct: pickReturnPct(trade, true),
+      }
+    }
+    return { net_pnl: fill, return_pct: trustedReturnPct(trade) }
+  }
+
   if (isCryptoFill(trade)) {
     const quantity = sizeForFill(trade)
     const fill = Math.round(unit * quantity * 100) / 100
@@ -386,6 +424,17 @@ export function sanitizeTvClosedEconomics(
   const quantity = sizeForFill(aligned)
   const unit = unitFillMove(aligned)
   const fill = Math.round(unit * quantity * 100) / 100
+
+  if (isUsdJpyFill(aligned)) {
+    const jpyFill = usdJpyQuotePnl({ ...aligned, quantity })
+    const tvProfit = Number(aligned.tv_scraped_profit ?? aligned.net_pnl)
+    const trustTv = shouldTrustUsdJpyTvProfit(aligned, tvProfit, jpyFill)
+    return {
+      net_pnl: trustTv ? Math.round(tvProfit * 100) / 100 : jpyFill,
+      return_pct: pickReturnPct(aligned, trustTv),
+      quantity,
+    }
+  }
 
   if (isCryptoFill(aligned)) {
     if (isLegacyCryptoSize10Poison(aligned)) {

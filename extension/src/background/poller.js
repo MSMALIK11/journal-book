@@ -1,8 +1,9 @@
 /* global JBSync */
-const VERSION = "1.18.18"
+const VERSION = "1.18.19"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
-const CAPTURE_SYNC_DEBOUNCE_MS = 80
+const CAPTURE_SYNC_DEBOUNCE_MS = 40
+const SYNC_ALARM_BACKUP_SEC = 5
 const LOCAL_JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
 const JOURNAL_SCRIPT_ID = "jb-journal-bridge-dynamic"
 const IMPORT_ALL_MAX_MS = 15 * 60 * 1000
@@ -10,6 +11,7 @@ const IMPORT_ALL_MAX_MS = 15 * 60 * 1000
 importScripts("../lib/symbol-utils.js", "../lib/sync-client.js")
 
 let syncInFlight = false
+let captureSyncInFlight = false
 let importAllInFlight = false
 let importAllWatchdog = null
 let userSyncHoldCount = 0
@@ -20,8 +22,8 @@ let pendingCapturePayload = null
 let lastJournalSyncAt = 0
 let lastTableSyncAt = 0
 let lastRefreshCheckAt = 0
-const JOURNAL_SYNC_MIN_MS = 3_000
-const TABLE_SYNC_MIN_MS = 120
+const JOURNAL_SYNC_MIN_MS = 800
+const TABLE_SYNC_MIN_MS = 40
 const REFRESH_CHECK_MIN_MS = 5_000
 
 function sleep(ms) {
@@ -281,6 +283,8 @@ async function sendHeartbeatIfConfigured() {
 }
 
 async function runAutoSync(source) {
+  const fastSource = source === "capture" || source === "table"
+
   if (await isBackgroundSyncPaused()) {
     if (
       source === "capture" ||
@@ -305,6 +309,18 @@ async function runAutoSync(source) {
     return null
   }
 
+  // Instant capture must not wait on a slow poll/alarm scrape.
+  if (fastSource && captureSyncInFlight) {
+    captureSyncPending = true
+    return null
+  }
+
+  if (fastSource) {
+    while (captureSyncInFlight) {
+      await sleep(25)
+    }
+  }
+
   syncInFlight = true
   try {
     const config = await JBSync.getConfig()
@@ -314,8 +330,11 @@ async function runAutoSync(source) {
     const forceSync = source !== "poll"
     if (!forceSync && !config.autoSyncTrades) return null
 
-    await JBSync.sendHeartbeat(config)
-    await JBSync.maybeRunRequestedRefresh(config).catch(() => {})
+    void JBSync.sendHeartbeat(config).catch(() => {})
+
+    if (!fastSource) {
+      await JBSync.maybeRunRequestedRefresh(config).catch(() => {})
+    }
 
     const tab = await JBSync.getTradingViewTab()
     if (!tab?.id) {
@@ -323,7 +342,9 @@ async function runAutoSync(source) {
       return null
     }
 
-    const result = await JBSync.refreshNewTrades(config)
+    const result = fastSource
+      ? await JBSync.syncFromCaptureOrScrape(config)
+      : await JBSync.refreshNewTrades(config)
     if (result?.imported > 0 || result?.updated > 0) {
       console.info(`${source} sync ok:`, result.imported, "imported,", result.updated, "updated")
     }
@@ -345,7 +366,7 @@ async function syncCapturePayload(payload) {
     return null
   }
 
-  if (syncInFlight) {
+  if (captureSyncInFlight) {
     pendingCapturePayload = payload
     captureSyncPending = true
     return null
@@ -368,12 +389,14 @@ async function syncCapturePayload(payload) {
       .filter((num) => Number.isFinite(num)),
   )
 
-  syncInFlight = true
+  captureSyncInFlight = true
   try {
     if (trades.length) {
       try {
         const result = await JBSync.syncCapturedTrades(config, trades, payload?.chartSymbol, {
           closeHints,
+          skipHeartbeat: true,
+          skipScreenshot: true,
         })
         if (result?.imported > 0 || result?.updated > 0 || result?.closedStale > 0) {
           console.info(
@@ -392,7 +415,7 @@ async function syncCapturePayload(payload) {
       }
     }
   } finally {
-    syncInFlight = false
+    captureSyncInFlight = false
     if (pendingCapturePayload) {
       const pending = pendingCapturePayload
       pendingCapturePayload = null
@@ -470,6 +493,12 @@ setInterval(() => {
   void injectHooksOnOpenTvTabs()
 }, 30_000)
 
+function scheduleSyncBackupAlarm(seconds = SYNC_ALARM_BACKUP_SEC) {
+  const delayInMinutes = Math.max(seconds / 60, 0.05)
+  void chrome.alarms.clear(SYNC_ALARM)
+  void chrome.alarms.create(SYNC_ALARM, { delayInMinutes })
+}
+
 async function syncAlarmFromSettings() {
   const stored = await chrome.storage.sync.get(["pollIntervalSeconds", "syncToken", "autoSyncTrades"])
   const seconds = Number(stored.pollIntervalSeconds) || 0
@@ -484,9 +513,11 @@ async function syncAlarmFromSettings() {
   const periodInMinutes = seconds > 0 ? Math.max(1, Math.ceil(seconds / 60)) : 1
   chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes })
 
-  // MV3 content-script timers throttle when TV is in background — alarm keeps syncing.
+  // MV3 throttles content-script timers in background tabs — chain short one-shot alarms.
   if (autoSync) {
-    chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 1 })
+    const backupSec =
+      seconds > 0 ? Math.min(Math.max(seconds, 5), 30) : SYNC_ALARM_BACKUP_SEC
+    scheduleSyncBackupAlarm(backupSec)
   }
 }
 
@@ -507,7 +538,21 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     return
   }
   if (alarm.name === SYNC_ALARM) {
-    void runAutoSync("alarm")
+    void (async () => {
+      try {
+        const stored = await chrome.storage.sync.get(["pollIntervalSeconds", "syncToken", "autoSyncTrades"])
+        const autoSync = stored.autoSyncTrades === undefined ? true : Boolean(stored.autoSyncTrades)
+        const seconds = Number(stored.pollIntervalSeconds) || 0
+        await runAutoSync("alarm")
+        if (autoSync && (stored.syncToken || "").trim()) {
+          const backupSec =
+            seconds > 0 ? Math.min(Math.max(seconds, 5), 30) : SYNC_ALARM_BACKUP_SEC
+          scheduleSyncBackupAlarm(backupSec)
+        }
+      } catch {
+        scheduleSyncBackupAlarm(SYNC_ALARM_BACKUP_SEC)
+      }
+    })()
   }
 })
 

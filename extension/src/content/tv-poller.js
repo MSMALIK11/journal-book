@@ -13,7 +13,7 @@
       "autoSyncTrades",
     ])
     const pollIntervalSeconds =
-      stored.pollIntervalSeconds === undefined ? 10 : Number(stored.pollIntervalSeconds)
+      stored.pollIntervalSeconds === undefined ? 5 : Number(stored.pollIntervalSeconds)
     return {
       configured: Boolean((stored.syncToken || "").trim()),
       pollIntervalSeconds: Number.isFinite(pollIntervalSeconds) ? pollIntervalSeconds : 30,
