@@ -36,10 +36,22 @@ async function jbMainScrape() {
     return Number.isFinite(num) && num > 0 ? num : 1
   }
 
-  function trustedFillPnl(direction, entryPrice, exitPrice, size) {
+  function testerPnlQuantity(instrument, size) {
+    const sym = String(instrument || "")
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase()
+    const qty = size > 0 ? size : 1
+    // USDJPY tester: size 100 base units → P&L in JPY = move × 100 (match TV Profit column).
+    if (sym === "USDJPY") return qty
+    // Gold / legacy — oversized scrape defaults to 10 oz tester lot (BTC/Gold unchanged).
+    if (qty > 20) return 10
+    return qty
+  }
+
+  function trustedFillPnl(direction, entryPrice, exitPrice, size, instrument) {
     if (entryPrice == null || exitPrice == null) return undefined
     const signed = direction === "long" ? exitPrice - entryPrice : entryPrice - exitPrice
-    const qty = size > 20 ? 10 : size > 0 ? size : 1
+    const qty = testerPnlQuantity(instrument, size)
     return Math.round(signed * qty * 100) / 100
   }
 
@@ -47,15 +59,15 @@ async function jbMainScrape() {
     return Math.max(2, Math.abs(fill) * 0.35, Math.abs(reference) * 0.06)
   }
 
-  function alignPricesFromTvPnl(direction, entryPrice, exitPrice, size, netPnl) {
+  function alignPricesFromTvPnl(direction, entryPrice, exitPrice, size, netPnl, instrument) {
     if (entryPrice == null || exitPrice == null || typeof netPnl !== "number") {
       return { entryPrice, exitPrice, netPnl }
     }
-    const fill = trustedFillPnl(direction, entryPrice, exitPrice, size)
+    const fill = trustedFillPnl(direction, entryPrice, exitPrice, size, instrument)
     if (typeof fill !== "number") return { entryPrice, exitPrice, netPnl }
     const slack = fillSlack(netPnl, fill)
     if (Math.abs(netPnl - fill) <= slack) return { entryPrice, exitPrice, netPnl }
-    const swappedFill = trustedFillPnl(direction, exitPrice, entryPrice, size)
+    const swappedFill = trustedFillPnl(direction, exitPrice, entryPrice, size, instrument)
     if (
       typeof swappedFill === "number" &&
       Math.abs(netPnl - swappedFill) <= slack
@@ -71,10 +83,10 @@ async function jbMainScrape() {
     return { entryPrice, exitPrice, netPnl }
   }
 
-  function clampScrapedPnl(direction, entryPrice, exitPrice, size, netPnl) {
+  function clampScrapedPnl(direction, entryPrice, exitPrice, size, netPnl, instrument) {
     if (typeof netPnl !== "number") return netPnl
-    const aligned = alignPricesFromTvPnl(direction, entryPrice, exitPrice, size, netPnl)
-    const fill = trustedFillPnl(direction, aligned.entryPrice, aligned.exitPrice, size)
+    const aligned = alignPricesFromTvPnl(direction, entryPrice, exitPrice, size, netPnl, instrument)
+    const fill = trustedFillPnl(direction, aligned.entryPrice, aligned.exitPrice, size, instrument)
     if (typeof fill !== "number") return netPnl
     const slack = fillSlack(netPnl, fill)
     if (Math.abs(netPnl - fill) <= slack) return netPnl
@@ -547,6 +559,7 @@ async function jbMainScrape() {
             exitPrice,
             parseSize(entrySizeText),
             netPnl,
+            instrument,
           )
           entryPrice = aligned.entryPrice
           exitPrice = aligned.exitPrice
@@ -581,6 +594,7 @@ async function jbMainScrape() {
               exitPrice,
               trade.entry.size,
               netPnl,
+              instrument,
             )
           }
           if (returnPct != null) trade.returnPct = returnPct

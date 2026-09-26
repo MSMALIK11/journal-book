@@ -290,6 +290,7 @@ async function executeAutoTradeOpen(input: {
     symbol: input.symbol,
     marginPct: input.config.marginPct,
     config: input.config,
+    priceFallback: input.fill.trade.entry_price,
   })
 
   if (!sizing.ok) {

@@ -23,7 +23,7 @@ async function loadOptions() {
     if (stored[field] !== undefined) {
       el.value = String(stored[field])
     } else if (field === "pollIntervalSeconds") {
-      el.value = "15"
+      el.value = "5"
     }
   }
 }

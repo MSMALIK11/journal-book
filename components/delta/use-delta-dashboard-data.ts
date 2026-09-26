@@ -129,9 +129,16 @@ export function prefetchDeltaMarketData(
   symbols: readonly string[],
   accountId?: string | null,
 ) {
-  for (const symbol of symbols) {
-    void preload(deltaMarketDataKey(environment, symbol, accountId), fetcher)
-  }
+  // Prefetch sequentially — parallel hits to Delta demo CDN often timeout together.
+  void (async () => {
+    for (const symbol of symbols) {
+      try {
+        await preload(deltaMarketDataKey(environment, symbol, accountId), fetcher)
+      } catch {
+        // best-effort warm cache
+      }
+    }
+  })()
 }
 
 export async function refreshDeltaDashboard(
