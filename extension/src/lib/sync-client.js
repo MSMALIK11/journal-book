@@ -2,6 +2,8 @@
 var JBSync = (globalThis.JBSync = globalThis.JBSync || {})
 
 JBSync.IMPORT_ALL_LOCK_MS = 15 * 60 * 1000
+/** Newest slice is enough for open/exit dedupe — smaller = faster GET on every sync. */
+JBSync.FAST_SNAPSHOT_LIMIT = 300
 
 JBSync.markImportAllLock = async function markImportAllLock(active, ttlMs) {
   const until = active ? Date.now() + (Number(ttlMs) > 0 ? Number(ttlMs) : JBSync.IMPORT_ALL_LOCK_MS) : 0
@@ -968,7 +970,7 @@ JBSync.getConfig = async function getConfig() {
   ])
 
   const pollIntervalSeconds =
-    stored.pollIntervalSeconds === undefined ? 10 : Number(stored.pollIntervalSeconds)
+    stored.pollIntervalSeconds === undefined ? 5 : Number(stored.pollIntervalSeconds)
 
   return {
     apiUrl: (stored.apiUrl || "http://localhost:3000").replace(/\/$/, ""),
@@ -1545,8 +1547,8 @@ JBSync.maybeRunRequestedRefresh = async function maybeRunRequestedRefresh(config
 
 /** Sync trades already captured from TV network hooks — no Strategy Tester scrape needed. */
 JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, chartSymbol, options = {}) {
-  await JBSync.sendHeartbeat(config)
-  const screenshotPromise = JBSync.captureChartScreenshot()
+  const skipScreenshot = options.skipScreenshot === true
+  const screenshotPromise = skipScreenshot ? null : JBSync.captureChartScreenshot()
 
   const list = (trades || []).filter((trade) => trade?.entry?.price && trade?.entry?.datetime)
   if (!list.length) {
@@ -1558,8 +1560,16 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     JBSync.normalizeChartSymbol(list[0]?.instrument) ||
     ""
 
+  const tabPromise =
+    !symbol || symbol === "UNKNOWN" ? JBSync.getTradingViewTab() : Promise.resolve(null)
+
+  const [, snapshot, tab] = await Promise.all([
+    options.skipHeartbeat ? Promise.resolve() : JBSync.sendHeartbeat(config).catch(() => {}),
+    JBSync.fetchKnownTradeSnapshot(config, { limit: JBSync.FAST_SNAPSHOT_LIMIT }),
+    tabPromise,
+  ])
+
   if (!symbol || symbol === "UNKNOWN") {
-    const tab = await JBSync.getTradingViewTab()
     symbol = JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
   }
 
@@ -1568,7 +1578,6 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
   }
 
   const stamped = list.map((trade) => ({ ...trade, instrument: symbol, strategy: trade.strategy || "TradingView Strategy" }))
-  const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: 1500 })
   const closeHints =
     options.closeHints instanceof Set
       ? options.closeHints
@@ -1598,18 +1607,17 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     }
   }
 
-  const screenshotJpeg = await JBSync.awaitChartScreenshot(screenshotPromise, 300)
   const syncResult = await JBSync.syncTrades(newOrUpdated, config, symbol, {
     reconcileFromTrades: stamped,
     reconcile: true,
-    screenshotJpeg,
+    screenshotJpeg: null,
   })
 
   const closedStale = syncResult.closedStale || 0
   await JBSync.maybeNotifyJournalTabs(syncResult, config)
-  JBSync.maybeScheduleChartPhotoFollowUp(config, screenshotPromise, syncResult, {
-    inlineScreenshotJpeg: screenshotJpeg,
-  })
+  if (!skipScreenshot) {
+    JBSync.maybeScheduleChartPhotoFollowUp(config, screenshotPromise, syncResult, { tab })
+  }
 
   if (syncResult.imported > 0) {
     syncResult.message = `${syncResult.imported} new trade(s) synced`
@@ -1645,12 +1653,79 @@ JBSync.readCapturedTradesFromTab = async function readCapturedTradesFromTab(tab)
   }
 }
 
-/** Scrape latest TV trades and sync only new / open ones — then drop stale Open rows. */
-JBSync.refreshNewTrades = async function refreshNewTrades(config) {
-  await JBSync.sendHeartbeat(config)
+/**
+ * Fast open/exit path — network capture first, light scrape only when capture didn't POST.
+ * Used by table watcher + instant capture fallback (avoids full scrape when hook already has the row).
+ */
+JBSync.syncFromCaptureOrScrape = async function syncFromCaptureOrScrape(config, options = {}) {
+  const fast = {
+    skipHeartbeat: true,
+    skipScreenshot: true,
+    screenshotTimeout: 0,
+    ...options,
+  }
 
   const tab = await JBSync.getTradingViewTab()
-  const screenshotPromise = JBSync.captureChartScreenshot(tab)
+  if (!tab?.id) {
+    return {
+      imported: 0,
+      updated: 0,
+      skipped: 0,
+      closedStale: 0,
+      byAccount: {},
+      message: "No TradingView chart tab",
+    }
+  }
+
+  if (!fast.skipHeartbeat) {
+    void JBSync.sendHeartbeat(config).catch(() => {})
+  }
+
+  const captured = await JBSync.readCapturedTradesFromTab(tab)
+  const symbol =
+    JBSync.normalizeChartSymbol(captured.chartSymbol) ||
+    JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+
+  if (captured.trades.length && symbol) {
+    const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: JBSync.FAST_SNAPSHOT_LIMIT }).catch(
+      () => ({
+        ids: new Set(),
+        openIds: new Set(),
+        fps: new Set(),
+        openFps: new Set(),
+      }),
+    )
+
+    const needsSync = captured.trades.some((trade) => JBSync.tradeNeedsRefresh(trade, snapshot))
+    const journalHasOpen = JBSync.snapshotHasOpenForSymbol(snapshot, symbol)
+    const captureHasClose = captured.trades.some((trade) => !JBSync.isOpenTrade(trade))
+
+    if (needsSync || (journalHasOpen && captureHasClose)) {
+      const result = await JBSync.syncCapturedTrades(config, captured.trades, symbol, {
+        closeHints: new Set(
+          captured.trades.filter((trade) => !JBSync.isOpenTrade(trade)).map((trade) => trade.tradeNumber),
+        ),
+        skipHeartbeat: true,
+        skipScreenshot: true,
+      })
+      if ((result.imported || 0) > 0 || (result.updated || 0) > 0 || (result.closedStale || 0) > 0) {
+        return result
+      }
+    }
+  }
+
+  return JBSync.refreshNewTrades(config, fast)
+}
+
+/** Scrape latest TV trades and sync only new / open ones — then drop stale Open rows. */
+JBSync.refreshNewTrades = async function refreshNewTrades(config, options = {}) {
+  if (!options.skipHeartbeat) {
+    void JBSync.sendHeartbeat(config).catch(() => {})
+  }
+
+  const tab = await JBSync.getTradingViewTab()
+  const skipScreenshot = options.skipScreenshot === true
+  const screenshotPromise = skipScreenshot ? null : JBSync.captureChartScreenshot(tab)
 
   const [resultRaw, captured, snapshot] = await Promise.all([
     JBSync.scrapeFromActiveTab(false, { mode: "light" }).catch((error) => ({
@@ -1658,7 +1733,7 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
       error: error?.message || "Scrape failed",
     })),
     JBSync.readCapturedTradesFromTab(tab),
-    JBSync.fetchKnownTradeSnapshot(config, { limit: 1500 }).catch(() => ({
+    JBSync.fetchKnownTradeSnapshot(config, { limit: JBSync.FAST_SNAPSHOT_LIMIT }).catch(() => ({
       ids: new Set(),
       openIds: new Set(),
       fps: new Set(),
@@ -1748,7 +1823,9 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
   if (tradesToSync.length) {
     // Reconcile only when the scrape still sees a live Open. Empty open set
     // must not delete journal Opens (missed Type=Open / light scrape).
-    screenshotJpeg = await JBSync.awaitChartScreenshot(screenshotPromise, 300)
+    if (!skipScreenshot && screenshotPromise) {
+      screenshotJpeg = await JBSync.awaitChartScreenshot(screenshotPromise, options.screenshotTimeout ?? 300)
+    }
     syncResult = await JBSync.syncTrades(tradesToSync, config, chartSymbol, {
       reconcileFromTrades: result.trades,
       reconcile: scrapedOpens.length > 0,
@@ -1759,10 +1836,12 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config) {
   const closedStale = syncResult.closedStale || 0
   const nonStaleUpdated = Math.max(0, (syncResult.updated || 0) - closedStale)
 
-  JBSync.maybeScheduleChartPhotoFollowUp(config, screenshotPromise, syncResult, {
-    tab,
-    inlineScreenshotJpeg: screenshotJpeg,
-  })
+  if (!skipScreenshot) {
+    JBSync.maybeScheduleChartPhotoFollowUp(config, screenshotPromise, syncResult, {
+      tab,
+      inlineScreenshotJpeg: screenshotJpeg,
+    })
+  }
 
   if (syncResult.imported === 0 && nonStaleUpdated === 0 && !closedStale) {
     const latest = result.trades.find((trade) => trade.tradeNumber === latestTradeNumber)
