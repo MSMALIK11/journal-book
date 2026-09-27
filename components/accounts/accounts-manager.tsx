@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button"
 import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { useActiveAccount, revalidateAccountScopedData, type TradingAccountSummary } from "@/hooks/use-active-account"
 import { authFetch } from "@/lib/client-auth"
 import { useToast } from "@/hooks/use-toast"
@@ -33,6 +34,7 @@ function AccountRow({ account, onChanged }: { account: TradingAccountSummary; on
   const { toast } = useToast()
   const [name, setName] = useState(account.name)
   const [symbolsText, setSymbolsText] = useState(account.symbols.join(", "))
+  const [useTvPnl, setUseTvPnl] = useState((account.pnlSource ?? "tv") === "tv")
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
@@ -42,7 +44,11 @@ function AccountRow({ account, onChanged }: { account: TradingAccountSummary; on
       const response = await authFetch(`/api/accounts/${account.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, symbols: parseSymbols(symbolsText) }),
+        body: JSON.stringify({
+          name,
+          symbols: parseSymbols(symbolsText),
+          pnlSource: useTvPnl ? "tv" : "calculated",
+        }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Unable to save")
@@ -177,6 +183,23 @@ function AccountRow({ account, onChanged }: { account: TradingAccountSummary; on
             onChange={(e) => setSymbolsText(e.target.value)}
             placeholder="BTCUSDT, BTCUSD, XAUUSD"
             className="border-cyan-400/20 bg-transparent"
+          />
+        </div>
+        <div className="flex items-start justify-between gap-4 rounded-lg border border-cyan-400/10 px-4 py-3">
+          <div className="space-y-1">
+            <Label htmlFor={`tv-pnl-${account.id}`} className="text-sm font-medium">
+              Use TradingView P&L on import
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              ON (default): save Strategy Tester Profit as-is. OFF: calculate from entry, exit, and size.
+              BTC and Gold keep their existing logic either way.
+            </p>
+          </div>
+          <Switch
+            id={`tv-pnl-${account.id}`}
+            checked={useTvPnl}
+            onCheckedChange={setUseTvPnl}
+            aria-label="Use TradingView P&L on import"
           />
         </div>
         <Button onClick={() => void save()} disabled={saving}>

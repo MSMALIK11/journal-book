@@ -1,6 +1,7 @@
 import mongoose, { type Model } from "mongoose"
+import type { AccountPnlSettings } from "@/lib/trading/account-pnl-config"
 
-export interface ITradingAccount {
+export interface ITradingAccount extends AccountPnlSettings {
   _id?: string
   userId: string
   name: string
@@ -35,6 +36,11 @@ const TradingAccountSchema = new mongoose.Schema<ITradingAccount>(
     color: {
       type: String,
       maxlength: 20,
+    },
+    pnlSource: {
+      type: String,
+      enum: ["tv", "calculated"],
+      default: "tv",
     },
   },
   { timestamps: true },

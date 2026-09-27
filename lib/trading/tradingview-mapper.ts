@@ -1,5 +1,6 @@
 import type { AssetType } from "@/lib/instruments"
 import { ASSET_TYPE_DEFAULTS, getQuantityMode, INSTRUMENTS } from "@/lib/instruments"
+import type { AccountPnlSource } from "@/lib/trading/account-pnl-config"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
 import { alignClosedFillPrices, clampTvCryptoQuantity, sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 import { normalizeSignalLabel, parseSignalLevels } from "@/lib/trading/signal-levels"
@@ -55,7 +56,12 @@ function pickStoredSignal(trade: TradingViewTradeInput, open: boolean) {
   return exit || entry || undefined
 }
 
-export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string, accountId: string) {
+export function mapTradingViewTrade(
+  trade: TradingViewTradeInput,
+  userId: string,
+  accountId: string,
+  options?: { pnlSource?: AccountPnlSource },
+) {
   const instrument = resolveInstrumentSpec(trade.instrument, trade.assetType)
   const external_id = buildExternalId(
     trade.strategy,
@@ -110,18 +116,21 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
 
   const closedMetrics =
     !open && exit_price != null
-      ? sanitizeTvClosedEconomics({
-          trade_type: tradeType,
-          entry_price,
-          exit_price,
-          quantity: quantityRaw,
-          contract_size: instrument.contractSize,
-          instrument: instrument.symbol,
-          net_pnl: trade.netPnl,
-          return_pct: trade.returnPct,
-          tv_scraped_profit: trade.netPnl,
-          tv_scraped_return_pct: trade.returnPct,
-        })
+      ? sanitizeTvClosedEconomics(
+          {
+            trade_type: tradeType,
+            entry_price,
+            exit_price,
+            quantity: quantityRaw,
+            contract_size: instrument.contractSize,
+            instrument: instrument.symbol,
+            net_pnl: trade.netPnl,
+            return_pct: trade.returnPct,
+            tv_scraped_profit: trade.netPnl,
+            tv_scraped_return_pct: trade.returnPct,
+          },
+          { pnlSource: options?.pnlSource },
+        )
       : null
   const quantity = closedMetrics?.quantity ?? clampTvCryptoQuantity({
     instrument: instrument.symbol,
@@ -155,6 +164,14 @@ export function mapTradingViewTrade(trade: TradingViewTradeInput, userId: string
     lot_step: instrument.lotStep,
     net_pnl: closedMetrics?.net_pnl ?? trade.netPnl,
     return_pct: closedMetrics?.return_pct ?? trade.returnPct,
+    tv_scraped_profit:
+      !open && typeof trade.netPnl === "number" && Number.isFinite(trade.netPnl)
+        ? trade.netPnl
+        : undefined,
+    tv_scraped_return_pct:
+      !open && typeof trade.returnPct === "number" && Number.isFinite(trade.returnPct)
+        ? trade.returnPct
+        : undefined,
     commission: trade.commission,
     signal: normalizeSignalLabel(storedSignal) || levels.label || undefined,
     stop_loss: levels.stopLoss,

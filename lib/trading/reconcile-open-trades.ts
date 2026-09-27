@@ -1,6 +1,8 @@
 import "server-only"
 
 import Trade from "@/app/api/models/Trade"
+import TradingAccount from "@/app/api/models/TradingAccount"
+import { normalizePnlSource } from "@/lib/trading/account-pnl-config"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
 import { sanitizeTvClosedEconomics, shouldTrustTvScrapedProfit } from "@/lib/trading/close-pnl"
 import { extractTradeLevelFields } from "@/lib/trading/signal-levels"
@@ -550,7 +552,15 @@ export async function healNotionalTvPnls(userId: string, accountId?: string) {
   if (accountId) query.accountId = accountId
 
   const closed = await Trade.find(query).select(
-    "_id accountId instrument trade_type entry_price exit_price quantity contract_size net_pnl return_pct",
+    "_id accountId instrument trade_type entry_price exit_price quantity contract_size net_pnl return_pct tv_scraped_profit tv_scraped_return_pct",
+  )
+
+  const accountIds = [...new Set(closed.map((trade) => String(trade.accountId)).filter(Boolean))]
+  const accountRows = accountIds.length
+    ? await TradingAccount.find({ userId, _id: { $in: accountIds } }).select("_id pnlSource").lean()
+    : []
+  const pnlSourceByAccount = new Map(
+    accountRows.map((account) => [String(account._id), normalizePnlSource(account.pnlSource)]),
   )
 
   const ops: Array<{
@@ -560,54 +570,82 @@ export async function healNotionalTvPnls(userId: string, accountId?: string) {
   for (const trade of closed) {
     if (trade.exit_price == null) continue
 
-    const fromFill = sanitizeTvClosedEconomics(
-      {
-        trade_type: trade.trade_type,
-        entry_price: trade.entry_price,
-        exit_price: trade.exit_price,
-        quantity: trade.quantity,
-        contract_size: trade.contract_size,
-        instrument: trade.instrument,
-        net_pnl: trade.net_pnl,
-        return_pct: trade.return_pct,
-      },
-      { fillOnly: true },
-    )
-
-    const hybrid =
-      typeof trade.net_pnl === "number"
-        ? sanitizeTvClosedEconomics({
-            trade_type: trade.trade_type,
-            entry_price: trade.entry_price,
-            exit_price: trade.exit_price,
-            quantity: trade.quantity,
-            contract_size: trade.contract_size,
-            instrument: trade.instrument,
-            net_pnl: trade.net_pnl,
-            return_pct: trade.return_pct,
-            tv_scraped_profit: trade.net_pnl,
-            tv_scraped_return_pct: trade.return_pct,
-          })
-        : fromFill
+    const pnlSource = pnlSourceByAccount.get(String(trade.accountId)) ?? "tv"
+    const tvProfit =
+      typeof trade.tv_scraped_profit === "number" && Number.isFinite(trade.tv_scraped_profit)
+        ? trade.tv_scraped_profit
+        : trade.net_pnl
+    const tvReturn =
+      typeof trade.tv_scraped_return_pct === "number" && Number.isFinite(trade.tv_scraped_return_pct)
+        ? trade.tv_scraped_return_pct
+        : trade.return_pct
 
     const metrics =
-      typeof trade.net_pnl === "number" &&
-      shouldTrustTvScrapedProfit(
-        {
-          trade_type: trade.trade_type,
-          entry_price: trade.entry_price,
-          exit_price: trade.exit_price,
-          quantity: trade.quantity,
-          contract_size: trade.contract_size,
-          instrument: trade.instrument,
-          net_pnl: trade.net_pnl,
-          return_pct: trade.return_pct,
-        },
-        trade.net_pnl,
-        fromFill.net_pnl,
-      )
-        ? hybrid
-        : fromFill
+      pnlSource === "tv" && typeof tvProfit === "number"
+        ? sanitizeTvClosedEconomics(
+            {
+              trade_type: trade.trade_type,
+              entry_price: trade.entry_price,
+              exit_price: trade.exit_price,
+              quantity: trade.quantity,
+              contract_size: trade.contract_size,
+              instrument: trade.instrument,
+              net_pnl: trade.net_pnl,
+              return_pct: trade.return_pct,
+              tv_scraped_profit: tvProfit,
+              tv_scraped_return_pct: tvReturn,
+            },
+            { pnlSource: "tv" },
+          )
+        : (() => {
+            const fromFill = sanitizeTvClosedEconomics(
+              {
+                trade_type: trade.trade_type,
+                entry_price: trade.entry_price,
+                exit_price: trade.exit_price,
+                quantity: trade.quantity,
+                contract_size: trade.contract_size,
+                instrument: trade.instrument,
+                net_pnl: trade.net_pnl,
+                return_pct: trade.return_pct,
+              },
+              { fillOnly: true, pnlSource: "calculated" },
+            )
+
+            const hybrid =
+              typeof trade.net_pnl === "number"
+                ? sanitizeTvClosedEconomics({
+                    trade_type: trade.trade_type,
+                    entry_price: trade.entry_price,
+                    exit_price: trade.exit_price,
+                    quantity: trade.quantity,
+                    contract_size: trade.contract_size,
+                    instrument: trade.instrument,
+                    net_pnl: trade.net_pnl,
+                    return_pct: trade.return_pct,
+                    tv_scraped_profit: tvProfit,
+                    tv_scraped_return_pct: tvReturn,
+                  }, { pnlSource: "calculated" })
+                : fromFill
+
+            return typeof trade.net_pnl === "number" &&
+              shouldTrustTvScrapedProfit(
+                {
+                  trade_type: trade.trade_type,
+                  entry_price: trade.entry_price,
+                  exit_price: trade.exit_price,
+                  quantity: trade.quantity,
+                  contract_size: trade.contract_size,
+                  instrument: trade.instrument,
+                  net_pnl: trade.net_pnl,
+                  return_pct: trade.return_pct,
+                },
+                trade.net_pnl,
+                fromFill.net_pnl,
+              )
+              ? hybrid
+              : fromFill
+          })()
 
     const pnlChanged = Math.abs(metrics.net_pnl - (trade.net_pnl ?? 0)) >= 0.02
     const qtyChanged = metrics.quantity !== trade.quantity

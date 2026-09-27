@@ -43,6 +43,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       account.symbols = await normalizeAccountSymbols(parsed.data.symbols)
     }
     if (parsed.data.color !== undefined) account.color = parsed.data.color
+    if (parsed.data.pnlSource !== undefined) account.pnlSource = parsed.data.pnlSource
 
     if (parsed.data.isDefault === true && !account.isDefault) {
       await TradingAccount.updateMany({ userId: session.sub }, { $set: { isDefault: false } })

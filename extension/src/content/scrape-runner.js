@@ -41,18 +41,31 @@ async function jbScrapeTrades() {
     return Number.isFinite(num) && num > 0 ? num : 1
   }
 
+  function isTvPointTimesSizeSymbol(sym) {
+    return (
+      sym === "USDJPY" ||
+      /^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX|NIFTY|SENSEX|BANKNIFTY|NSEI|BANKNIF)/.test(
+        sym,
+      )
+    )
+  }
+
   function testerPnlQuantity(instrument, size) {
     const sym = String(instrument || "")
       .replace(/[^A-Za-z0-9]/g, "")
       .toUpperCase()
     const qty = size > 0 ? size : 1
-    if (sym === "USDJPY") return qty
+    if (isTvPointTimesSizeSymbol(sym)) return qty
     if (qty > 20) return 10
     return qty
   }
 
   function clampScrapedPnl(direction, entryPrice, exitPrice, size, netPnl, instrument) {
     if (typeof netPnl !== "number" || entryPrice == null || exitPrice == null) return netPnl
+    const sym = String(instrument || "")
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase()
+    if (isTvPointTimesSizeSymbol(sym)) return netPnl
     const signed = direction === "long" ? exitPrice - entryPrice : entryPrice - exitPrice
     const qty = testerPnlQuantity(instrument, size)
     const fill = Math.round(signed * qty * 100) / 100

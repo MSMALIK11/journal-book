@@ -1,4 +1,5 @@
 import { INSTRUMENTS } from "@/lib/instruments"
+import type { AccountPnlSource } from "@/lib/trading/account-pnl-config"
 import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
 
 type ClosedTradeInput = {
@@ -18,6 +19,8 @@ type ClosedTradeInput = {
 export type SanitizeClosedEconomicsOptions = {
   /** DB heal / synthetic close — derive from fills, do not reuse poisoned stored P&L. */
   fillOnly?: boolean
+  /** Account import setting — default `tv` keeps Strategy Tester Profit on sync. */
+  pnlSource?: AccountPnlSource
 }
 
 function lotAndContract(trade: Pick<ClosedTradeInput, "quantity" | "contract_size" | "instrument">) {
@@ -38,6 +41,16 @@ function isMetalFill(trade: { instrument?: string }) {
 }
 
 /** TV Strategy Tester USDJPY — Profit column is quote (JPY), size is base units (usually 100). */
+const INDEX_SYMBOL_RE =
+  /^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX|NIFTY|SENSEX|BANKNIFTY|NSEI|BANKNIF)/
+
+function isIndexFill(trade: { instrument?: string }) {
+  const symbol = canonicalInstrumentSymbol(String(trade.instrument || ""))
+  if (INDEX_SYMBOL_RE.test(symbol)) return true
+  const spec = symbol ? INSTRUMENTS[symbol] : undefined
+  return spec?.assetType === "index"
+}
+
 function isUsdJpyFill(trade: { instrument?: string }) {
   return canonicalInstrumentSymbol(String(trade.instrument || "")) === "USDJPY"
 }
@@ -53,16 +66,45 @@ function usdJpyQuotePnl(trade: ClosedTradeInput) {
   return Math.round(unitFillMove(trade) * quantity * 100) / 100
 }
 
-function shouldTrustUsdJpyTvProfit(trade: ClosedTradeInput, incoming: number, fill: number) {
+/** TV Strategy Tester indices — Profit = point move × size (usually 10). */
+function indexTesterSize(trade: Pick<ClosedTradeInput, "quantity">) {
+  const raw = Number(trade.quantity)
+  if (Number.isFinite(raw) && raw > 0) return raw
+  return 10
+}
+
+function indexQuotePnl(trade: ClosedTradeInput) {
+  const quantity = indexTesterSize(trade)
+  return Math.round(unitFillMove(trade) * quantity * 100) / 100
+}
+
+/** Reject position-notional Profit cells — still allow real TV fill P&L. */
+function basicTvProfitSane(trade: ClosedTradeInput, incoming: number) {
   if (!Number.isFinite(incoming)) return false
-  const slack = Math.max(1, Math.abs(fill) * 0.08)
-  if (Math.abs(incoming - fill) <= slack) return true
-  if (returnPctMatchesFill(trade, 0.25)) return true
-  return false
+  if (isLegacyCryptoSize10Poison(trade)) return false
+  if (isCryptoGoldLotScrapedPnl(trade, incoming)) return false
+  const unit = unitFillMove(trade)
+  if (isAbsurdIncoming(incoming, unit, trade)) return false
+  if (looksLikeNotionalProfit(incoming, trade)) return false
+  return true
+}
+
+function calculatedClosedEconomics(trade: ClosedTradeInput, quantity: number) {
+  const net_pnl = isUsdJpyFill(trade)
+    ? usdJpyQuotePnl({ ...trade, quantity })
+    : isIndexFill(trade)
+      ? indexQuotePnl({ ...trade, quantity })
+      : trustedTvFillPnl({ ...trade, quantity })
+  return {
+    net_pnl,
+    return_pct: trustedReturnPct(trade),
+    quantity,
+  }
 }
 
 function isCryptoFill(trade: ClosedTradeInput) {
   if (isMetalFill(trade)) return false
+  if (isIndexFill(trade)) return false
   const symbol = canonicalInstrumentSymbol(String(trade.instrument || ""))
   if (/BTC|ETH|SOL/.test(symbol)) return true
   const spec = symbol ? INSTRUMENTS[symbol] : undefined
@@ -132,6 +174,7 @@ function sizeForFill(trade: ClosedTradeInput) {
   if (isMetalFill(trade)) return goldTesterSize(trade)
   if (isCryptoFill(trade)) return cryptoTesterSize(trade)
   if (isUsdJpyFill(trade)) return usdJpyTesterSize(trade)
+  if (isIndexFill(trade)) return indexTesterSize(trade)
   const raw = lotAndContract(trade).quantity
   return raw > 20 ? 1 : raw
 }
@@ -316,7 +359,20 @@ export function resolveClosedTradeMetrics(trade: ClosedTradeInput) {
     const quantity = usdJpyTesterSize(trade)
     const fill = usdJpyQuotePnl({ ...trade, quantity })
     const tvProfit = Number(trade.tv_scraped_profit ?? incoming)
-    if (shouldTrustUsdJpyTvProfit(trade, tvProfit, fill)) {
+    if (basicTvProfitSane(trade, tvProfit)) {
+      return {
+        net_pnl: Math.round(tvProfit * 100) / 100,
+        return_pct: pickReturnPct(trade, true),
+      }
+    }
+    return { net_pnl: fill, return_pct: trustedReturnPct(trade) }
+  }
+
+  if (isIndexFill(trade)) {
+    const quantity = indexTesterSize(trade)
+    const fill = indexQuotePnl({ ...trade, quantity })
+    const tvProfit = Number(trade.tv_scraped_profit ?? incoming)
+    if (basicTvProfitSane(trade, tvProfit)) {
       return {
         net_pnl: Math.round(tvProfit * 100) / 100,
         return_pct: pickReturnPct(trade, true),
@@ -421,19 +477,40 @@ export function sanitizeTvClosedEconomics(
     return fillOnlyClosedEconomics(aligned)
   }
 
+  const pnlSource = options?.pnlSource ?? "tv"
   const quantity = sizeForFill(aligned)
   const unit = unitFillMove(aligned)
   const fill = Math.round(unit * quantity * 100) / 100
 
   if (isUsdJpyFill(aligned)) {
-    const jpyFill = usdJpyQuotePnl({ ...aligned, quantity })
-    const tvProfit = Number(aligned.tv_scraped_profit ?? aligned.net_pnl)
-    const trustTv = shouldTrustUsdJpyTvProfit(aligned, tvProfit, jpyFill)
-    return {
-      net_pnl: trustTv ? Math.round(tvProfit * 100) / 100 : jpyFill,
-      return_pct: pickReturnPct(aligned, trustTv),
-      quantity,
+    if (pnlSource === "calculated") {
+      return calculatedClosedEconomics(aligned, quantity)
     }
+    const tvProfit = Number(aligned.tv_scraped_profit ?? aligned.net_pnl)
+    if (basicTvProfitSane(aligned, tvProfit)) {
+      return {
+        net_pnl: Math.round(tvProfit * 100) / 100,
+        return_pct: pickReturnPct(aligned, true),
+        quantity,
+      }
+    }
+    return calculatedClosedEconomics(aligned, quantity)
+  }
+
+  if (isIndexFill(aligned)) {
+    const indexQty = indexTesterSize(aligned)
+    if (pnlSource === "calculated") {
+      return calculatedClosedEconomics({ ...aligned, quantity: indexQty }, indexQty)
+    }
+    const tvProfit = Number(aligned.tv_scraped_profit ?? aligned.net_pnl)
+    if (basicTvProfitSane(aligned, tvProfit)) {
+      return {
+        net_pnl: Math.round(tvProfit * 100) / 100,
+        return_pct: pickReturnPct(aligned, true),
+        quantity: indexQty,
+      }
+    }
+    return calculatedClosedEconomics({ ...aligned, quantity: indexQty }, indexQty)
   }
 
   if (isCryptoFill(aligned)) {
@@ -455,12 +532,30 @@ export function sanitizeTvClosedEconomics(
 
   const fillPnl = trustedTvFillPnl({ ...aligned, quantity })
   const tvProfit = Number(aligned.tv_scraped_profit ?? aligned.net_pnl)
+
+  if (isMetalFill(aligned)) {
+    const trustTv = shouldTrustTvScrapedProfit(aligned, tvProfit, fillPnl)
+    return {
+      net_pnl: trustTv ? Math.round(tvProfit * 100) / 100 : fillPnl,
+      return_pct: pickReturnPct(aligned, trustTv),
+      quantity,
+    }
+  }
+
+  if (pnlSource === "calculated") {
+    return calculatedClosedEconomics(aligned, quantity)
+  }
+
+  if (basicTvProfitSane(aligned, tvProfit)) {
+    return {
+      net_pnl: Math.round(tvProfit * 100) / 100,
+      return_pct: pickReturnPct(aligned, true),
+      quantity,
+    }
+  }
+
   const trustTv = shouldTrustTvScrapedProfit(aligned, tvProfit, fillPnl)
-  const net_pnl = isMetalFill(aligned)
-    ? trustTv
-      ? Math.round(tvProfit * 100) / 100
-      : fillPnl
-    : resolveClosedTradeMetrics({ ...aligned, quantity }).net_pnl
+  const net_pnl = resolveClosedTradeMetrics({ ...aligned, quantity }).net_pnl
 
   return {
     net_pnl,

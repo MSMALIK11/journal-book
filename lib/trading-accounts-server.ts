@@ -11,6 +11,7 @@ import {
   accountNameForInstrument,
   findAccountForInstrument,
 } from "@/lib/trading/account-match"
+import { normalizePnlSource, type AccountPnlSource } from "@/lib/trading/account-pnl-config"
 
 export async function createDefaultTradingAccount(userId: string) {
   await connectDB()
@@ -68,6 +69,7 @@ export function formatAccount(account: {
   symbols: string[]
   isDefault: boolean
   color?: string
+  pnlSource?: AccountPnlSource
   createdAt?: Date
   updatedAt?: Date
   tradeCount?: number
@@ -79,6 +81,7 @@ export function formatAccount(account: {
     symbols: account.symbols,
     isDefault: account.isDefault,
     color: account.color,
+    pnlSource: normalizePnlSource(account.pnlSource),
     tradeCount: account.tradeCount ?? 0,
     createdAt: account.createdAt?.toISOString(),
     updatedAt: account.updatedAt?.toISOString(),

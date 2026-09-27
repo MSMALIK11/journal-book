@@ -75,6 +75,7 @@ export async function POST(request: NextRequest) {
           : [parsed.data.name],
       ),
       color: parsed.data.color,
+      pnlSource: parsed.data.pnlSource,
       isDefault: false,
     })
 

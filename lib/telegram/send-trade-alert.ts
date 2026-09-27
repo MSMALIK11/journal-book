@@ -310,6 +310,8 @@ export type TelegramTradeEvent = {
   exitPrice?: number
   netPnl?: number
   returnPct?: number
+  stopLoss?: number
+  takeProfit?: number
   accountName?: string
   demo?: boolean
 }
@@ -324,6 +326,15 @@ export function buildTelegramTradeMessage(event: TelegramTradeEvent) {
   } else {
     lines.push(`${event.instrument} @ ${formatPrice(event.price)}`)
   }
+
+  const levelParts: string[] = []
+  if (typeof event.stopLoss === "number" && Number.isFinite(event.stopLoss)) {
+    levelParts.push(`SL: ${formatPrice(event.stopLoss)}`)
+  }
+  if (typeof event.takeProfit === "number" && Number.isFinite(event.takeProfit)) {
+    levelParts.push(`TP: ${formatPrice(event.takeProfit)}`)
+  }
+  if (levelParts.length) lines.push(levelParts.join(" · "))
 
   if (event.kind === "close" && typeof event.netPnl === "number" && Number.isFinite(event.netPnl)) {
     const pnl = formatTelegramPnl(event.netPnl)

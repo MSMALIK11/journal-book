@@ -1,4 +1,6 @@
 import mongoose from "mongoose"
+import TradingAccount from "@/app/api/models/TradingAccount"
+import { normalizePnlSource } from "@/lib/trading/account-pnl-config"
 import { clampTvCryptoQuantity, sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 
 export interface ITrade {
@@ -29,6 +31,9 @@ export interface ITrade {
   stop_loss?: number
   target?: number
   net_pnl?: number
+  /** Raw Strategy Tester Profit at last TV import — used when account P&L source is TV. */
+  tv_scraped_profit?: number
+  tv_scraped_return_pct?: number
   strategy?: string
   emotion_tag?: string
   confidence_rating?: number
@@ -153,6 +158,12 @@ const TradeSchema = new mongoose.Schema<ITrade>(
     net_pnl: {
       type: Number,
     },
+    tv_scraped_profit: {
+      type: Number,
+    },
+    tv_scraped_return_pct: {
+      type: Number,
+    },
     strategy: {
       type: String,
     },
@@ -219,7 +230,7 @@ TradeSchema.index({ userId: 1, accountId: 1 })
 // the newest-slice lookup scans the user's whole history and sorts in memory.
 TradeSchema.index({ userId: 1, source: 1, entry_date: -1 })
 
-TradeSchema.pre("validate", function () {
+TradeSchema.pre("validate", async function () {
   if (this.source !== "tradingview") return
 
   this.quantity = clampTvCryptoQuantity({
@@ -230,16 +241,36 @@ TradeSchema.pre("validate", function () {
   })
 
   if (this.exit_date && this.exit_price != null && this.entry_price > 0) {
-    const nextFields = sanitizeTvClosedEconomics({
-      trade_type: this.trade_type,
-      entry_price: this.entry_price,
-      exit_price: this.exit_price,
-      quantity: this.quantity,
-      contract_size: this.contract_size,
-      instrument: this.instrument,
-      net_pnl: this.net_pnl,
-      return_pct: this.return_pct,
-    })
+    let pnlSource = normalizePnlSource("tv")
+    if (this.accountId) {
+      const account = await TradingAccount.findById(this.accountId).select("pnlSource").lean()
+      pnlSource = normalizePnlSource(account?.pnlSource)
+    }
+
+    const tvProfit =
+      typeof this.tv_scraped_profit === "number" && Number.isFinite(this.tv_scraped_profit)
+        ? this.tv_scraped_profit
+        : this.net_pnl
+    const tvReturn =
+      typeof this.tv_scraped_return_pct === "number" && Number.isFinite(this.tv_scraped_return_pct)
+        ? this.tv_scraped_return_pct
+        : this.return_pct
+
+    const nextFields = sanitizeTvClosedEconomics(
+      {
+        trade_type: this.trade_type,
+        entry_price: this.entry_price,
+        exit_price: this.exit_price,
+        quantity: this.quantity,
+        contract_size: this.contract_size,
+        instrument: this.instrument,
+        net_pnl: this.net_pnl,
+        return_pct: this.return_pct,
+        tv_scraped_profit: tvProfit,
+        tv_scraped_return_pct: tvReturn,
+      },
+      { pnlSource },
+    )
     this.net_pnl = nextFields.net_pnl
     this.return_pct = nextFields.return_pct
     this.quantity = nextFields.quantity

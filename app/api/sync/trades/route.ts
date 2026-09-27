@@ -8,6 +8,7 @@ import { closeDuplicateLiveOpens, enforceOneLiveOpenPerInstrument, healIncomplet
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isFlatMtmOpen, isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades, pickTvActiveOpens, type TvActiveOpenHint } from "@/lib/trading/tradingview-open"
 import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, isOpenCoveredByLaterClose, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
+import { normalizePnlSource } from "@/lib/trading/account-pnl-config"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
 import { publishAccountsUpdated, publishTradesUpdated } from "@/lib/sync-events"
 import { recordTradeSyncEvent } from "@/lib/sync-last-event"
@@ -86,6 +87,10 @@ function mergeSyncedTrade(
   if (typeof mapped.quantity === "number") existing.quantity = mapped.quantity
   if (typeof mapped.net_pnl === "number") existing.net_pnl = mapped.net_pnl
   if (typeof mapped.return_pct === "number") existing.return_pct = mapped.return_pct
+  if (typeof mapped.tv_scraped_profit === "number") existing.tv_scraped_profit = mapped.tv_scraped_profit
+  if (typeof mapped.tv_scraped_return_pct === "number") {
+    existing.tv_scraped_return_pct = mapped.tv_scraped_return_pct
+  }
   if (typeof mapped.commission === "number") existing.commission = mapped.commission
   persistExtractedLevels(existing, mapped)
   if (mapped.tags?.length) existing.tags = mapped.tags
@@ -460,7 +465,10 @@ export async function POST(request: NextRequest) {
 
       const targetAccount = resolved.account
       const accountId = String(targetAccount._id)
-      const mapped = mapTradingViewTrade({ ...tvTrade, instrument: symbol }, auth.userId, accountId)
+      const pnlSource = normalizePnlSource(targetAccount.pnlSource)
+      const mapped = mapTradingViewTrade({ ...tvTrade, instrument: symbol }, auth.userId, accountId, {
+        pnlSource,
+      })
       const existing = await findExistingSyncedTrade(
         auth.userId,
         accountId,

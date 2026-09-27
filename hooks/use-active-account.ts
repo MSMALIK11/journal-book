@@ -19,6 +19,8 @@ export type TradingAccountSummary = {
   symbols: string[]
   isDefault: boolean
   color?: string
+  /** Default `tv` — Strategy Tester Profit on import. */
+  pnlSource?: "tv" | "calculated"
   tradeCount?: number
 }
 

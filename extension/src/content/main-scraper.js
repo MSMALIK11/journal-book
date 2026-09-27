@@ -36,13 +36,22 @@ async function jbMainScrape() {
     return Number.isFinite(num) && num > 0 ? num : 1
   }
 
+  function isTvPointTimesSizeSymbol(sym) {
+    return (
+      sym === "USDJPY" ||
+      /^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX|NIFTY|SENSEX|BANKNIFTY|NSEI|BANKNIF)/.test(
+        sym,
+      )
+    )
+  }
+
   function testerPnlQuantity(instrument, size) {
     const sym = String(instrument || "")
       .replace(/[^A-Za-z0-9]/g, "")
       .toUpperCase()
     const qty = size > 0 ? size : 1
-    // USDJPY tester: size 100 base units → P&L in JPY = move × 100 (match TV Profit column).
-    if (sym === "USDJPY") return qty
+    // Forex/index tester: P&L = point move × TV size (match Profit column).
+    if (isTvPointTimesSizeSymbol(sym)) return qty
     // Gold / legacy — oversized scrape defaults to 10 oz tester lot (BTC/Gold unchanged).
     if (qty > 20) return 10
     return qty
@@ -85,6 +94,11 @@ async function jbMainScrape() {
 
   function clampScrapedPnl(direction, entryPrice, exitPrice, size, netPnl, instrument) {
     if (typeof netPnl !== "number") return netPnl
+    const sym = String(instrument || "")
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase()
+    // Keep Strategy Tester Profit verbatim — server applies account P&L policy.
+    if (isTvPointTimesSizeSymbol(sym)) return netPnl
     const aligned = alignPricesFromTvPnl(direction, entryPrice, exitPrice, size, netPnl, instrument)
     const fill = trustedFillPnl(direction, aligned.entryPrice, aligned.exitPrice, size, instrument)
     if (typeof fill !== "number") return netPnl

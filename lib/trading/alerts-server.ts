@@ -32,6 +32,7 @@ import { notifyTelegramTradeEvent } from "@/lib/telegram/send-trade-alert"
 import { buildTelegramCoachCaption } from "@/lib/telegram/coach-caption"
 import { buildTradeMomentAdvice } from "@/lib/trading/trade-moment-advice"
 import { FRESH_FILL_MS } from "@/lib/trading/live-fill-alerts"
+import { resolveTradeLevels } from "@/lib/trading/signal-levels"
 
 export const ALERT_RETENTION_DAYS = 2
 
@@ -196,6 +197,8 @@ export async function buildTelegramCaptionForAccount(
     exitPrice?: number
     netPnl?: number
     returnPct?: number
+    stopLoss?: number
+    takeProfit?: number
     accountName?: string
     demo?: boolean
   },
@@ -283,6 +286,9 @@ export async function persistNewTradeAlert(
     trade_type: string
     entry_price: number
     entry_date?: string
+    signal?: string | null
+    stop_loss?: number
+    target?: number
     is_open?: boolean
   },
   accountName?: string,
@@ -303,11 +309,18 @@ export async function persistNewTradeAlert(
     return
   }
 
+  const levels = resolveTradeLevels({
+    signal: trade.signal,
+    stop_loss: trade.stop_loss,
+    target: trade.target,
+  })
   const event = {
     kind: "open" as const,
     side,
     instrument: trade.instrument,
     price,
+    stopLoss: levels.stopLoss,
+    takeProfit: levels.takeProfit,
     accountName,
   }
   let sentAt: string | undefined
@@ -357,6 +370,9 @@ export async function persistClosedTradeAlert(
     trade_type: string
     entry_price: number
     entry_date?: string
+    signal?: string | null
+    stop_loss?: number
+    target?: number
     exit_date?: string
     exit_price?: number
     net_pnl?: number
@@ -379,6 +395,11 @@ export async function persistClosedTradeAlert(
     return
   }
 
+  const levels = resolveTradeLevels({
+    signal: trade.signal,
+    stop_loss: trade.stop_loss,
+    target: trade.target,
+  })
   const closeEvent = {
     kind: "close" as const,
     side,
@@ -388,6 +409,8 @@ export async function persistClosedTradeAlert(
     netPnl: typeof trade.net_pnl === "number" && Number.isFinite(trade.net_pnl) ? trade.net_pnl : undefined,
     returnPct:
       typeof trade.return_pct === "number" && Number.isFinite(trade.return_pct) ? trade.return_pct : undefined,
+    stopLoss: levels.stopLoss,
+    takeProfit: levels.takeProfit,
     accountName,
   }
   let sentAt: string | undefined
