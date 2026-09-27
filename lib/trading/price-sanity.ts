@@ -32,6 +32,7 @@ export function priceMatchesInstrument(price: number | null | undefined, instrum
   const s = instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
 
   if (/^(XAU|GOLD)/.test(s)) return price >= 500 && price <= 15000
+  if (/PAXG/.test(s)) return price >= 500 && price <= 15000
   if (/^(XAG|SILVER)/.test(s)) return price >= 5 && price <= 200
   if (/BTC/.test(s)) return price >= 5000 && price <= 500000
   if (/ETH/.test(s)) return price >= 50 && price <= 50000

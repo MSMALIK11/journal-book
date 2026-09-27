@@ -138,6 +138,12 @@ export const INSTRUMENTS: Record<string, InstrumentSpecification> = {
     pipSize: 0.01, tickSize: 0.01, tickValue: 50, decimalPlaces: 3,
     minLot: 0.01, maxLot: 100, lotStep: 0.01, isDefault: true,
   },
+  PAXGUSD: {
+    symbol: "PAXGUSD", name: "PAX Gold", assetType: "metal",
+    baseCurrency: "PAXG", quoteCurrency: "USD", contractSize: 100,
+    pipSize: 0.01, tickSize: 0.01, tickValue: 1, decimalPlaces: 2,
+    minLot: 0.01, maxLot: 100, lotStep: 0.01, isDefault: false,
+  },
   BTCUSD: {
     symbol: "BTCUSD", name: "Bitcoin", assetType: "crypto",
     baseCurrency: "BTC", quoteCurrency: "USD", contractSize: 1,

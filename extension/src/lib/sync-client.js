@@ -989,7 +989,7 @@ JBSync.normalizeDatetime = function normalizeDatetime(value) {
 
 JBSync.inferAssetType = function inferAssetType(symbol, fallback) {
   const normalized = (symbol || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase()
-  if (/^(XAU|XAG|GOLD|SILVER)/.test(normalized)) return "metal"
+  if (/^(XAU|XAG|GOLD|SILVER|PAXG)/.test(normalized)) return "metal"
   if (/^(USOIL|UKOIL|WTI|CRUDE|CRUDEOIL|OIL|CL)/.test(normalized)) return "commodity"
   if (/NIFTY|SENSEX|BANKNIF|NSEI|US30|US100|US500|NAS100|SPX|GER40|DE40|UK100|JP225|DAX|NDX|SPX500/.test(normalized)) {
     return "index"

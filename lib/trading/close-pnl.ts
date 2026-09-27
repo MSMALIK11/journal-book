@@ -35,7 +35,8 @@ function lotAndContract(trade: Pick<ClosedTradeInput, "quantity" | "contract_siz
 
 function isMetalFill(trade: { instrument?: string }) {
   const symbol = canonicalInstrumentSymbol(String(trade.instrument || ""))
-  if (/XAU|GOLD|XAG/.test(symbol)) return true
+  // PAXGUSD — tokenized gold on TV; Size 10 × $ move (not crypto 0.2 lot).
+  if (/XAU|GOLD|XAG|PAXG/.test(symbol)) return true
   const spec = symbol ? INSTRUMENTS[symbol] : undefined
   return spec?.assetType === "metal"
 }

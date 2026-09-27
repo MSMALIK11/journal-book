@@ -19,7 +19,7 @@ export function normalizeSymbol(instrument: string): string {
   if (encodedColon) return encodedColon[1]
 
   const suffix = normalized.match(
-    /(XAUUSD|XAGUSD|BTCUSDT|BTCUSD|ETHUSDT|ETHUSD|SOLUSDT|USOIL|UKOIL|EURUSD|GBPUSD|USDJPY)$/i,
+    /(XAUUSD|XAGUSD|PAXGUSD|BTCUSDT|BTCUSD|ETHUSDT|ETHUSD|SOLUSDT|USOIL|UKOIL|EURUSD|GBPUSD|USDJPY)$/i,
   )
   if (suffix && normalized.length > suffix[1].length + 2) {
     return suffix[1]
