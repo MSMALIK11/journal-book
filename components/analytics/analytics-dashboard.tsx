@@ -81,6 +81,7 @@ const KPI_TOOLTIPS: Record<string, string> = {
   Commission: "Total fees paid across closed trades.",
   "Avg Return": "Average return percentage per trade when return data exists.",
   "Avg Trades / Day": "Average number of closed trades on days you traded.",
+  "Avg Profit / Day": "Average net P&L on days you had at least one closed trade.",
   "Avg Hold Time": "Average time between entry and exit.",
 }
 
@@ -502,6 +503,18 @@ function MoreMetricsAccordion({ overview }: { overview: AnalyticsResult["overvie
                   : "No trading days yet"
               }
               icon={BarChart3}
+            />
+            <KpiCard
+              title="Avg Profit / Day"
+              value={currency.format(overview.avgProfitPerDay)}
+              subtitle={
+                overview.tradingDays > 0
+                  ? `${overview.tradingDays} active trading days`
+                  : "No trading days yet"
+              }
+              positive={overview.avgProfitPerDay >= 0}
+              negative={overview.avgProfitPerDay < 0}
+              icon={overview.avgProfitPerDay >= 0 ? TrendingUp : TrendingDown}
             />
             <KpiCard
               title="Avg Hold Time"

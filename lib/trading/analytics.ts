@@ -104,10 +104,18 @@ export type DayRecord = {
   pnl: number
 }
 
+export type StreakEpisode = {
+  count: number
+  totalPnl: number
+  trades: TopTradeEntry[]
+}
+
 export type AnalyticsRecords = {
   currentStreak: StreakInfo
   bestWinStreak: number
   worstLossStreak: number
+  bestWinStreakEpisode: StreakEpisode | null
+  worstLossStreakEpisode: StreakEpisode | null
   bestDay: DayRecord | null
   worstDay: DayRecord | null
   backtestTimeMs: number | null
@@ -165,6 +173,8 @@ export type AnalyticsResult = {
     holdTimeTrades: number
     tradingDays: number
     avgTradesPerDay: number
+    /** Net P&L divided by days with at least one closed trade. */
+    avgProfitPerDay: number
     medianTradesPerDay: number
     minTradesPerDay: number
     maxTradesPerDay: number
@@ -385,10 +395,27 @@ function sortByExitDate(closed: Array<AnalyticsTrade & { net_pnl: number }>) {
   })
 }
 
+function buildStreakEpisode(
+  sorted: Array<AnalyticsTrade & { net_pnl: number }>,
+  startIdx: number,
+  endIdx: number,
+): StreakEpisode | null {
+  if (startIdx < 0 || endIdx < startIdx) return null
+  const slice = sorted.slice(startIdx, endIdx + 1)
+  if (!slice.length) return null
+  return {
+    count: slice.length,
+    totalPnl: slice.reduce((sum, trade) => sum + trade.net_pnl, 0),
+    trades: slice.map(toTopTradeEntry),
+  }
+}
+
 function computeStreaks(closed: Array<AnalyticsTrade & { net_pnl: number }>): {
   currentStreak: StreakInfo
   bestWinStreak: number
   worstLossStreak: number
+  bestWinStreakEpisode: StreakEpisode | null
+  worstLossStreakEpisode: StreakEpisode | null
 } {
   const sorted = sortByExitDate(closed)
 
@@ -396,16 +423,33 @@ function computeStreaks(closed: Array<AnalyticsTrade & { net_pnl: number }>): {
   let worstLossStreak = 0
   let runWin = 0
   let runLoss = 0
+  let runWinStart = 0
+  let runLossStart = 0
+  let bestWinStart = -1
+  let bestWinEnd = -1
+  let worstLossStart = -1
+  let worstLossEnd = -1
 
-  for (const trade of sorted) {
+  for (let i = 0; i < sorted.length; i++) {
+    const trade = sorted[i]
     if (trade.net_pnl > 0) {
+      if (runWin === 0) runWinStart = i
       runWin += 1
       runLoss = 0
-      bestWinStreak = Math.max(bestWinStreak, runWin)
+      if (runWin >= bestWinStreak) {
+        bestWinStreak = runWin
+        bestWinStart = runWinStart
+        bestWinEnd = i
+      }
     } else if (trade.net_pnl < 0) {
+      if (runLoss === 0) runLossStart = i
       runLoss += 1
       runWin = 0
-      worstLossStreak = Math.max(worstLossStreak, runLoss)
+      if (runLoss >= worstLossStreak) {
+        worstLossStreak = runLoss
+        worstLossStart = runLossStart
+        worstLossEnd = i
+      }
     } else {
       runWin = 0
       runLoss = 0
@@ -426,7 +470,13 @@ function computeStreaks(closed: Array<AnalyticsTrade & { net_pnl: number }>): {
     else break
   }
 
-  return { currentStreak, bestWinStreak, worstLossStreak }
+  return {
+    currentStreak,
+    bestWinStreak,
+    worstLossStreak,
+    bestWinStreakEpisode: buildStreakEpisode(sorted, bestWinStart, bestWinEnd),
+    worstLossStreakEpisode: buildStreakEpisode(sorted, worstLossStart, worstLossEnd),
+  }
 }
 
 function buildBucket(key: string, label: string, pnls: number[]): BucketStats {
@@ -778,6 +828,7 @@ export function computeAnalytics(
   const datedTrades = tradesPerDayCounts.reduce((sum, count) => sum + count, 0)
   const tradingDays = tradesPerDayCounts.length
   const avgTradesPerDay = tradingDays ? datedTrades / tradingDays : 0
+  const avgProfitPerDay = tradingDays ? netPnl / tradingDays : 0
   const medianTradesPerDay = median(tradesPerDayCounts)
   const minTradesPerDay = tradingDays ? Math.min(...tradesPerDayCounts) : 0
   const maxTradesPerDay = tradingDays ? Math.max(...tradesPerDayCounts) : 0
@@ -834,6 +885,7 @@ export function computeAnalytics(
       holdTimeTrades: holdTimes.length,
       tradingDays,
       avgTradesPerDay,
+      avgProfitPerDay,
       medianTradesPerDay,
       minTradesPerDay,
       maxTradesPerDay,
@@ -864,6 +916,8 @@ export function computeAnalytics(
       currentStreak: streaks.currentStreak,
       bestWinStreak: streaks.bestWinStreak,
       worstLossStreak: streaks.worstLossStreak,
+      bestWinStreakEpisode: streaks.bestWinStreakEpisode,
+      worstLossStreakEpisode: streaks.worstLossStreakEpisode,
       bestDay: bestDayEntry
         ? {
             date: bestDayEntry[0],
