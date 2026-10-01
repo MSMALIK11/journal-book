@@ -1082,6 +1082,48 @@ JBSync.awaitChartScreenshot = async function awaitChartScreenshot(screenshotProm
   }
 }
 
+JBSync.CHART_PHOTO_FOLLOWUP_MS = 90_000
+
+JBSync.fillPhotoContextFromSyncResult = function fillPhotoContextFromSyncResult(syncResult, fallbackSymbol) {
+  let instrument = JBSync.normalizeChartSymbol(fallbackSymbol) || "CHART"
+  let kind = "fill"
+  let alertKey = ""
+  for (const stats of Object.values(syncResult?.byAccount || {})) {
+    const latest = stats?.latestTrade
+    if (latest?.instrument) {
+      instrument = JBSync.normalizeChartSymbol(latest.instrument) || latest.instrument
+    }
+    if (latest && typeof latest.is_open === "boolean") {
+      kind = latest.is_open ? "open" : "close"
+    }
+    if (latest?.id) {
+      alertKey = kind === "close" ? `trade-closed:${latest.id}` : `new-trade:${latest.id}`
+    }
+    break
+  }
+  return { instrument, kind, alertKey }
+}
+
+JBSync.claimChartPhotoFollowUpSync = function claimChartPhotoFollowUpSync(alertKey) {
+  if (!alertKey) return false
+  if (!JBSync._chartPhotoClaims) JBSync._chartPhotoClaims = new Set()
+  if (JBSync._chartPhotoClaims.has(alertKey)) return false
+  JBSync._chartPhotoClaims.add(alertKey)
+  return true
+}
+
+JBSync.claimChartPhotoFollowUpStorage = async function claimChartPhotoFollowUpStorage(alertKey) {
+  if (!alertKey) return false
+  const storageKey = `jbChartPhoto:${alertKey}`
+  const stored = await chrome.storage.local.get(storageKey)
+  const prev = stored[storageKey]
+  if (typeof prev === "number" && Date.now() - prev < JBSync.CHART_PHOTO_FOLLOWUP_MS) {
+    return false
+  }
+  await chrome.storage.local.set({ [storageKey]: Date.now() })
+  return true
+}
+
 /** Text alert goes in the sync POST; chart photo follows so capture never blocks the signal. */
 JBSync.scheduleChartPhotoFollowUp = function scheduleChartPhotoFollowUp(config, screenshotPromise, options = {}) {
   if (!config?.syncToken) return
@@ -1100,6 +1142,8 @@ JBSync.scheduleChartPhotoFollowUp = function scheduleChartPhotoFollowUp(config, 
       await JBSync.sendTelegramScreenshotTest(config, {
         screenshotJpeg,
         followUp: true,
+        dedupeKey: options.dedupeKey,
+        alertKey: options.alertKey,
       })
     } catch (error) {
       console.warn("chart photo follow-up failed:", error?.message || error)
@@ -1113,15 +1157,26 @@ JBSync.maybeScheduleChartPhotoFollowUp = function maybeScheduleChartPhotoFollowU
   syncResult,
   options = {},
 ) {
-  if (!screenshotPromise || !syncResult) return
-  const closedStale = syncResult.closedStale || 0
-  const nonStaleUpdated = Math.max(0, (syncResult.updated || 0) - closedStale)
-  const hadFill =
-    (syncResult.imported || 0) > 0 || nonStaleUpdated > 0 || closedStale > 0
-  if (!hadFill) return
-  // POST already had an inline screenshot — server sends the photo with the alert.
-  if (options.inlineScreenshotJpeg) return
-  JBSync.scheduleChartPhotoFollowUp(config, screenshotPromise, options)
+  const alertKeys = Array.isArray(syncResult?.chartPhotoAlertKeys)
+    ? syncResult.chartPhotoAlertKeys.filter(Boolean)
+    : []
+  if (!screenshotPromise || !alertKeys.length) return
+
+  const alertKey = alertKeys[alertKeys.length - 1]
+  if (!JBSync.claimChartPhotoFollowUpSync(alertKey)) return
+
+  void (async () => {
+    if (!(await JBSync.claimChartPhotoFollowUpStorage(alertKey))) return
+
+    const { instrument, kind } = JBSync.fillPhotoContextFromSyncResult(syncResult, options.symbol)
+    JBSync.scheduleChartPhotoFollowUp(config, screenshotPromise, {
+      ...options,
+      dedupeKey: `${instrument}:${kind}`,
+      alertKey,
+    })
+  })().catch((error) => {
+    console.warn("chart photo follow-up scheduling failed:", error?.message || error)
+  })
 }
 
 JBSync.formatByAccountMessage = function formatByAccountMessage(byAccount) {
@@ -1218,6 +1273,7 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
   let skipped = 0
   let deduped = 0
   let eventId = ""
+  let chartPhotoAlertKeys = []
   const byAccount = {}
   const accountsCreated = new Set()
 
@@ -1236,6 +1292,9 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
     skipped += result.skipped || 0
     deduped += result.deduped || 0
     if (result.eventId) eventId = result.eventId
+    if (Array.isArray(result.chartPhotoAlertKeys) && result.chartPhotoAlertKeys.length) {
+      chartPhotoAlertKeys = result.chartPhotoAlertKeys
+    }
 
     for (const name of result.accountsCreated || []) {
       accountsCreated.add(name)
@@ -1268,6 +1327,7 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
     deduped,
     closedStale,
     eventId,
+    chartPhotoAlertKeys,
     byAccount,
     accountsCreated: [...accountsCreated],
   }
@@ -1550,7 +1610,7 @@ JBSync.maybeRunRequestedRefresh = async function maybeRunRequestedRefresh(config
 /** Sync trades already captured from TV network hooks — no Strategy Tester scrape needed. */
 JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, chartSymbol, options = {}) {
   const skipScreenshot = options.skipScreenshot === true
-  const screenshotPromise = skipScreenshot ? null : JBSync.captureChartScreenshot()
+  const tvTab = options.tab?.id ? options.tab : await JBSync.getTradingViewTab()
 
   const list = (trades || []).filter((trade) => trade?.entry?.price && trade?.entry?.datetime)
   if (!list.length) {
@@ -1562,17 +1622,13 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     JBSync.normalizeChartSymbol(list[0]?.instrument) ||
     ""
 
-  const tabPromise =
-    !symbol || symbol === "UNKNOWN" ? JBSync.getTradingViewTab() : Promise.resolve(null)
-
-  const [, snapshot, tab] = await Promise.all([
+  const [, snapshot] = await Promise.all([
     options.skipHeartbeat ? Promise.resolve() : JBSync.sendHeartbeat(config).catch(() => {}),
     JBSync.fetchKnownTradeSnapshot(config, { limit: JBSync.FAST_SNAPSHOT_LIMIT }),
-    tabPromise,
   ])
 
   if (!symbol || symbol === "UNKNOWN") {
-    symbol = JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+    symbol = JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tvTab))
   }
 
   if (!symbol) {
@@ -1617,8 +1673,13 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
 
   const closedStale = syncResult.closedStale || 0
   await JBSync.maybeNotifyJournalTabs(syncResult, config)
-  if (!skipScreenshot) {
-    JBSync.maybeScheduleChartPhotoFollowUp(config, screenshotPromise, syncResult, { tab })
+  if (!skipScreenshot && syncResult.chartPhotoAlertKeys?.length) {
+    JBSync.maybeScheduleChartPhotoFollowUp(
+      config,
+      JBSync.captureChartScreenshot(tvTab),
+      syncResult,
+      { tab: tvTab, symbol },
+    )
   }
 
   if (syncResult.imported > 0) {
@@ -1662,8 +1723,6 @@ JBSync.readCapturedTradesFromTab = async function readCapturedTradesFromTab(tab)
 JBSync.syncFromCaptureOrScrape = async function syncFromCaptureOrScrape(config, options = {}) {
   const fast = {
     skipHeartbeat: true,
-    skipScreenshot: true,
-    screenshotTimeout: 0,
     ...options,
   }
 
@@ -1708,7 +1767,8 @@ JBSync.syncFromCaptureOrScrape = async function syncFromCaptureOrScrape(config, 
           captured.trades.filter((trade) => !JBSync.isOpenTrade(trade)).map((trade) => trade.tradeNumber),
         ),
         skipHeartbeat: true,
-        skipScreenshot: true,
+        skipScreenshot: fast.skipScreenshot === true,
+        tab,
       })
       if ((result.imported || 0) > 0 || (result.updated || 0) > 0 || (result.closedStale || 0) > 0) {
         return result
@@ -1727,7 +1787,6 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config, options = {}) 
 
   const tab = await JBSync.getTradingViewTab()
   const skipScreenshot = options.skipScreenshot === true
-  const screenshotPromise = skipScreenshot ? null : JBSync.captureChartScreenshot(tab)
 
   const [resultRaw, captured, snapshot] = await Promise.all([
     JBSync.scrapeFromActiveTab(false, { mode: "light" }).catch((error) => ({
@@ -1821,28 +1880,26 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config, options = {}) 
 
   let syncResult = { imported: 0, updated: 0, skipped: 0, deduped: 0, closedStale: 0, byAccount: {} }
 
-  let screenshotJpeg = null
   if (tradesToSync.length) {
     // Reconcile only when the scrape still sees a live Open. Empty open set
     // must not delete journal Opens (missed Type=Open / light scrape).
-    if (!skipScreenshot && screenshotPromise) {
-      screenshotJpeg = await JBSync.awaitChartScreenshot(screenshotPromise, options.screenshotTimeout ?? 300)
-    }
     syncResult = await JBSync.syncTrades(tradesToSync, config, chartSymbol, {
       reconcileFromTrades: result.trades,
       reconcile: scrapedOpens.length > 0,
-      screenshotJpeg,
+      screenshotJpeg: null,
     })
   }
 
   const closedStale = syncResult.closedStale || 0
   const nonStaleUpdated = Math.max(0, (syncResult.updated || 0) - closedStale)
 
-  if (!skipScreenshot) {
-    JBSync.maybeScheduleChartPhotoFollowUp(config, screenshotPromise, syncResult, {
-      tab,
-      inlineScreenshotJpeg: screenshotJpeg,
-    })
+  if (!skipScreenshot && syncResult.chartPhotoAlertKeys?.length) {
+    JBSync.maybeScheduleChartPhotoFollowUp(
+      config,
+      JBSync.captureChartScreenshot(tab),
+      syncResult,
+      { tab, symbol: chartSymbol },
+    )
   }
 
   if (syncResult.imported === 0 && nonStaleUpdated === 0 && !closedStale) {

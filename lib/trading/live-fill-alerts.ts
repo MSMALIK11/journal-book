@@ -112,16 +112,32 @@ export function partitionFreshFillEvents(events: LiveFillEvent[], nowMs = Date.n
 
 export async function flushLiveFillAlerts(events: LiveFillEvent[], photo?: Buffer | null) {
   const { fresh } = partitionFreshFillEvents(events)
-  if (!fresh.length) return
+  if (!fresh.length) return []
 
+  const chartPhotoAlertKeys: string[] = []
   const lastIndex = fresh.length - 1
   for (let index = 0; index < fresh.length; index++) {
     const event = fresh[index]
     const eventPhoto = index === lastIndex ? photo : null
     if (event.kind === "open") {
-      await persistNewTradeAlert(event.userId, event.accountId, event.trade, event.accountName, eventPhoto)
+      const alertKey = await persistNewTradeAlert(
+        event.userId,
+        event.accountId,
+        event.trade,
+        event.accountName,
+        eventPhoto,
+      )
+      if (alertKey) chartPhotoAlertKeys.push(alertKey)
       continue
     }
-    await persistClosedTradeAlert(event.userId, event.accountId, event.trade, event.accountName, eventPhoto)
+    const alertKey = await persistClosedTradeAlert(
+      event.userId,
+      event.accountId,
+      event.trade,
+      event.accountName,
+      eventPhoto,
+    )
+    if (alertKey) chartPhotoAlertKeys.push(alertKey)
   }
+  return chartPhotoAlertKeys
 }

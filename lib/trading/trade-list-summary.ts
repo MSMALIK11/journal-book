@@ -3,6 +3,7 @@ import Trade from "@/app/api/models/Trade"
 
 export type TradeListSummary = {
   total: number
+  closed: number
   wins: number
   losses: number
   winRate: number
@@ -81,7 +82,7 @@ export async function buildTradeListSummary(
   ])
 
   const overall = facet?.overall?.[0] ?? {}
-  const closed = Number(overall.closed || 0)
+  const closedCount = Number(overall.closed || 0)
   const wins = Number(overall.wins || 0)
   const dayMap = new Map<string, number>(
     (facet?.days ?? []).map((row: { _id: string; count: number }) => [row._id, row.count]),
@@ -99,9 +100,10 @@ export async function buildTradeListSummary(
 
   return {
     total: Number(overall.total || 0),
+    closed: closedCount,
     wins,
     losses: Number(overall.losses || 0),
-    winRate: closed ? (wins / closed) * 100 : 0,
+    winRate: closedCount ? (wins / closedCount) * 100 : 0,
     todayPnl: Number(facet?.today?.[0]?.todayPnl || 0),
     totalPnl: Number(overall.totalPnl || 0),
     bestTrade: Number(overall.bestTrade || 0),

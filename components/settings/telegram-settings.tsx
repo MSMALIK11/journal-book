@@ -70,6 +70,8 @@ export function TelegramSettings() {
           chatId: normalized.chatId,
           notifyOpen: normalized.notifyOpen,
           notifyClose: normalized.notifyClose,
+          chartPhotoOnOpen: normalized.chartPhotoOnOpen,
+          chartPhotoOnClose: normalized.chartPhotoOnClose,
           dailySummaryEnabled: normalized.dailySummaryEnabled,
           dailySummaryTime: normalized.dailySummaryTime,
         }),
@@ -205,6 +207,36 @@ export function TelegramSettings() {
             disabled={busy || !preferences.enabled}
             onCheckedChange={(checked) =>
               void savePreferences({ ...preferences, notifyClose: checked }, "notifyClose")
+            }
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Chart photo on open"
+          description="Screenshot after open alert. Off by default — text stays instant with TV."
+          htmlFor="telegram-chart-photo-open"
+        >
+          <Switch
+            id="telegram-chart-photo-open"
+            checked={preferences.chartPhotoOnOpen}
+            disabled={busy || !preferences.enabled || !preferences.notifyOpen}
+            onCheckedChange={(checked) =>
+              void savePreferences({ ...preferences, chartPhotoOnOpen: checked }, "chartPhotoOnOpen")
+            }
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Chart photo on close"
+          description="Screenshot after close alert. Sent after the text message."
+          htmlFor="telegram-chart-photo-close"
+        >
+          <Switch
+            id="telegram-chart-photo-close"
+            checked={preferences.chartPhotoOnClose}
+            disabled={busy || !preferences.enabled || !preferences.notifyClose}
+            onCheckedChange={(checked) =>
+              void savePreferences({ ...preferences, chartPhotoOnClose: checked }, "chartPhotoOnClose")
             }
           />
         </SettingsRow>

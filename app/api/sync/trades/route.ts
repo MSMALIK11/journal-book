@@ -25,7 +25,9 @@ import {
 } from "@/lib/trading/live-fill-alerts"
 import { withUserSyncLock } from "@/lib/trading/sync-lock"
 import { tradingViewSyncSchema } from "@/lib/validations/tradingview-sync"
+import { getTelegramPrefs } from "@/lib/telegram/send-trade-alert"
 import { decodeScreenshotJpeg } from "@/lib/telegram/screenshot"
+import { filterChartPhotoAlertKeys } from "@/lib/telegram/settings"
 import {
   runDeltaAutoTradeForFills,
   runDeltaBracketUpdatesForOpenTrades,
@@ -224,10 +226,13 @@ async function dispatchFillSideEffects(
   fillEvents: LiveFillEvent[],
   bracketLevelUpdates: DeltaBracketLevelUpdate[],
   chartPhoto: Buffer | null,
-): Promise<string | undefined> {
-  if (fillEvents.length === 0 && bracketLevelUpdates.length === 0) return undefined
+): Promise<{ eventId?: string; chartPhotoAlertKeys: string[] }> {
+  if (fillEvents.length === 0 && bracketLevelUpdates.length === 0) {
+    return { chartPhotoAlertKeys: [] }
+  }
 
   let lastEventId: string | undefined
+  let chartPhotoAlertKeys: string[] = []
   const freshFills = fillEvents.filter((fill) => isFreshFillEvent(fill))
   for (const fill of fillEvents) {
     const isOpenFill = fill.kind === "open"
@@ -265,7 +270,7 @@ async function dispatchFillSideEffects(
   }
 
   if (freshFills.length > 0) {
-    await flushLiveFillAlerts(freshFills, chartPhoto)
+    chartPhotoAlertKeys = await flushLiveFillAlerts(freshFills, chartPhoto)
     void runDeltaAutoTradeForFills(userId, freshFills).catch((error) => {
       console.error("Delta auto-trade failed:", error)
     })
@@ -281,7 +286,7 @@ async function dispatchFillSideEffects(
     })
   }
 
-  return lastEventId
+  return { eventId: lastEventId, chartPhotoAlertKeys }
 }
 
 /** Close-only DB updates don't always enter fillEvents — still push SSE so the journal refreshes. */
@@ -418,6 +423,7 @@ export async function POST(request: NextRequest) {
           deduped: 0,
           reassigned: 0,
           closedStale,
+          chartPhotoAlertKeys: [],
           accountsCreated: newAccounts.map((account) => account.name),
           newAccounts,
           byAccount: {},
@@ -695,11 +701,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    let lastEventId = await dispatchFillSideEffects(
+    const fillSideEffects = await dispatchFillSideEffects(
       auth.userId,
       fillEvents,
       bracketLevelUpdates,
       chartPhoto,
+    )
+    let lastEventId = fillSideEffects.eventId
+    const telegramPrefs = await getTelegramPrefs(auth.userId)
+    const chartPhotoAlertKeys = filterChartPhotoAlertKeys(
+      fillSideEffects.chartPhotoAlertKeys,
+      telegramPrefs,
     )
 
     const deduped = await dedupeSyncedTradesByExternalId(auth.userId)
@@ -863,6 +875,7 @@ export async function POST(request: NextRequest) {
         reassigned,
         closedStale,
         eventId: lastEventId,
+        chartPhotoAlertKeys,
         accountsCreated: newAccounts.map((account) => account.name),
         newAccounts,
         switchToAccountId:

@@ -1,7 +1,9 @@
 import { setDefaultResultOrder } from "node:dns"
 import connectDB from "@/app/api/db/mongoose"
+import TradingAlert from "@/app/api/models/TradingAlert"
 import User from "@/app/api/models/User"
 import {
+  filterChartPhotoAlertKeys,
   normalizeTelegramPreferences,
   type TelegramPreferences,
 } from "@/lib/telegram/settings"
@@ -350,9 +352,36 @@ export function buildTelegramTradeMessage(event: TelegramTradeEvent) {
   return lines.join("\n")
 }
 
+async function reserveChartPhotoAlertSlot(userId: string, alertKey?: string) {
+  const key = alertKey?.trim()
+  if (!key) {
+    console.info("[telegram] skip chart photo — missing alert key")
+    return false
+  }
+
+  await connectDB()
+  const reserved = await TradingAlert.findOneAndUpdate(
+    {
+      userId,
+      key,
+      "context.chartPhotoSentAt": { $exists: false },
+    },
+    { $set: { "context.chartPhotoSentAt": new Date().toISOString() } },
+    { new: false },
+  )
+    .select("_id")
+    .lean()
+
+  if (reserved) return true
+
+  console.info(`[telegram] skip duplicate chart photo ${key}`)
+  return false
+}
+
 export async function sendTelegramChartFollowUp(
   userId: string,
   photo: Buffer,
+  options?: { dedupeKey?: string; alertKey?: string },
 ): Promise<TelegramApiResult> {
   if (!photo?.length) return { ok: false, error: "Screenshot is empty" }
   if (!isTelegramBotConfigured()) {
@@ -363,9 +392,24 @@ export async function sendTelegramChartFollowUp(
   const chatId = resolveTelegramChatId(prefs.chatId)
   if (!chatId) return { ok: false, error: "Telegram chat ID is missing" }
   if (!prefs.enabled) return { ok: false, error: "Telegram alerts are disabled" }
-  if (!claimTradePhotoSlot(userId, { kind: "followup", instrument: "CHART", side: "ANY" })) {
+
+  const alertKey = options?.alertKey?.trim()
+  if (alertKey && !filterChartPhotoAlertKeys([alertKey], prefs).length) {
     return { ok: true }
   }
+
+  const dedupeEvent = {
+    kind: "followup",
+    instrument: options?.dedupeKey?.trim() || options?.alertKey?.trim() || "CHART",
+    side: "ANY",
+  }
+  if (!claimTradePhotoSlot(userId, dedupeEvent)) {
+    console.info(`[telegram] skip duplicate chart photo ${dedupeEvent.instrument}`)
+    return { ok: true }
+  }
+
+  const reserved = await reserveChartPhotoAlertSlot(userId, options?.alertKey)
+  if (!reserved) return { ok: true }
 
   return sendTelegramPhoto(chatId, photo, "")
 }
@@ -422,7 +466,14 @@ export async function notifyTelegramTradeEvent(
       return result
     }
 
-    if (!options?.force && options?.photo?.length && claimTradePhotoSlot(userId, event)) {
+    const chartPhotoAllowed =
+      event.kind === "open" ? prefs.chartPhotoOnOpen : prefs.chartPhotoOnClose
+    if (
+      !options?.force &&
+      chartPhotoAllowed &&
+      options?.photo?.length &&
+      claimTradePhotoSlot(userId, event)
+    ) {
       void sendTelegramPhoto(chatId, options.photo, "").catch((error) => {
         console.warn("[telegram] follow-up photo failed:", error)
       })

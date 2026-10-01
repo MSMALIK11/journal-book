@@ -42,6 +42,17 @@ export type TradeExtremes = {
   maxLoss: number
 }
 
+export type MaxDrawdownEpisode = {
+  amount: number
+  amountPct: number
+  peakDate: string | null
+  troughDate: string
+  peakEquity: number
+  troughEquity: number
+  reason: string
+  trades: TopTradeEntry[]
+}
+
 export type BucketStats = {
   key: string
   label: string
@@ -186,6 +197,7 @@ export type AnalyticsResult = {
   topWinners: TopTradeEntry[]
   topLosers: TopTradeEntry[]
   extremes: TradeExtremes
+  maxDrawdownEpisode: MaxDrawdownEpisode | null
 }
 
 function toDate(value: Date | string | null | undefined): Date | null {
@@ -474,6 +486,108 @@ function computeTopTrades(closed: Array<AnalyticsTrade & { net_pnl: number }>) {
   return { topWinners: winners, topLosers: losers, extremes: { maxWin, maxLoss } }
 }
 
+function buildMaxDrawdownReason(
+  trades: TopTradeEntry[],
+  amount: number,
+  losses: TopTradeEntry[],
+  lossSum: number,
+): string {
+  if (!trades.length) {
+    return "Equity fell from its prior peak — no individual closed trades were recorded in this stretch."
+  }
+
+  const wins = trades.filter((trade) => trade.net_pnl > 0)
+  const parts: string[] = [
+    `${trades.length} closed trade${trades.length === 1 ? "" : "s"} ran while equity dropped ${amount.toFixed(2)} from the prior peak.`,
+  ]
+
+  if (losses.length) {
+    parts.push(
+      `${losses.length} loser${losses.length === 1 ? "" : "s"} accounted for ${Math.abs(lossSum).toFixed(2)} of that slide.`,
+    )
+  }
+  if (wins.length) {
+    parts.push(`${wins.length} winner${wins.length === 1 ? "" : "s"} partially offset the drop but could not restore the peak.`)
+  }
+
+  const worst = losses.reduce<TopTradeEntry | null>(
+    (best, trade) => (!best || trade.net_pnl < best.net_pnl ? trade : best),
+    null,
+  )
+  if (worst) {
+    parts.push(`Biggest single hit: ${worst.instrument} at ${worst.net_pnl.toFixed(2)}.`)
+  }
+
+  return parts.join(" ")
+}
+
+function computeMaxDrawdownEpisode(
+  closed: Array<AnalyticsTrade & { net_pnl: number }>,
+): MaxDrawdownEpisode | null {
+  if (!closed.length) return null
+
+  const sorted = [...closed].sort((a, b) => {
+    const da = toDate(a.exit_date) ?? toDate(a.entry_date)!
+    const db = toDate(b.exit_date) ?? toDate(b.entry_date)!
+    return da.getTime() - db.getTime()
+  })
+
+  let equity = 0
+  let peakEquity = 0
+  let peakTradeIdx = -1
+  let maxDd = 0
+  let maxDdPct = 0
+  let troughIdx = 0
+  let episodePeakTradeIdx = -1
+  let episodePeakEquity = 0
+  let episodeTroughEquity = 0
+
+  for (let i = 0; i < sorted.length; i++) {
+    equity += sorted[i].net_pnl
+    if (equity > peakEquity) {
+      peakEquity = equity
+      peakTradeIdx = i
+    }
+
+    const drawdown = peakEquity - equity
+    const drawdownPct = peakEquity > 0 ? (drawdown / peakEquity) * 100 : peakEquity < 0 ? 100 : 0
+    if (drawdown > maxDd) {
+      maxDd = drawdown
+      maxDdPct = drawdownPct
+      troughIdx = i
+      episodePeakTradeIdx = peakTradeIdx
+      episodePeakEquity = peakEquity
+      episodeTroughEquity = equity
+    }
+  }
+
+  if (maxDd <= 0) return null
+
+  const episodeRaw = sorted.slice(episodePeakTradeIdx + 1, troughIdx + 1)
+  const episodeTrades = episodeRaw.map(toTopTradeEntry)
+  const losses = episodeTrades.filter((trade) => trade.net_pnl < 0)
+  const lossSum = losses.reduce((sum, trade) => sum + trade.net_pnl, 0)
+
+  const peakDate =
+    episodePeakTradeIdx >= 0
+      ? (toDate(sorted[episodePeakTradeIdx].exit_date) ??
+          toDate(sorted[episodePeakTradeIdx].entry_date))!.toISOString()
+      : null
+  const troughDate = (toDate(sorted[troughIdx].exit_date) ??
+    toDate(sorted[troughIdx].entry_date))!.toISOString()
+
+  return {
+    amount: maxDd,
+    amountPct: maxDdPct,
+    peakDate,
+    troughDate,
+    peakEquity: episodePeakEquity,
+    troughEquity: episodeTroughEquity,
+    reason: buildMaxDrawdownReason(episodeTrades, maxDd, losses, lossSum),
+    trades: episodeTrades,
+  }
+}
+
 function computeEquityCurve(
   closed: Array<AnalyticsTrade & { net_pnl: number }>,
 ): EquityPoint[] {
@@ -523,8 +637,9 @@ export function computeAnalytics(
     : 0
 
   const equityCurve = computeEquityCurve(closed)
-  const maxDrawdown = equityCurve.reduce((max, p) => Math.max(max, p.drawdown), 0)
-  const maxDrawdownPct = equityCurve.reduce((max, p) => Math.max(max, p.drawdownPct), 0)
+  const maxDrawdownEpisode = computeMaxDrawdownEpisode(closed)
+  const maxDrawdown = maxDrawdownEpisode?.amount ?? 0
+  const maxDrawdownPct = maxDrawdownEpisode?.amountPct ?? 0
 
   const hourMap = new Map<number, number[]>()
   const weekdayMap = new Map<string, number[]>()
@@ -774,5 +889,6 @@ export function computeAnalytics(
     topWinners,
     topLosers,
     extremes,
+    maxDrawdownEpisode,
   }
 }

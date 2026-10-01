@@ -29,6 +29,8 @@ const telegramSchema = z.object({
   chatId: z.string().max(32).optional(),
   notifyOpen: z.boolean().optional(),
   notifyClose: z.boolean().optional(),
+  chartPhotoOnOpen: z.boolean().optional(),
+  chartPhotoOnClose: z.boolean().optional(),
   dailySummaryEnabled: z.boolean().optional(),
   dailySummaryTime: z
     .string()

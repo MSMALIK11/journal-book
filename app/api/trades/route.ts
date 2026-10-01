@@ -41,6 +41,7 @@ export async function GET(request: NextRequest) {
 
     const search = searchParams.get("search")
     const type = searchParams.get("type") || "all"
+    const direction = searchParams.get("direction")
     const strategy = searchParams.get("strategy")
     const source = searchParams.get("source")
     const startDate = searchParams.get("startDate")
@@ -53,15 +54,23 @@ export async function GET(request: NextRequest) {
       : DEFAULT_TRADE_LIMIT
     const includeSummary = searchParams.get("summary") === "1"
 
+    const andClauses: Record<string, unknown>[] = []
     if (search) {
-      query.$or = [
-        { instrument: { $regex: search, $options: "i" } },
-        { strategy: { $regex: search, $options: "i" } },
-      ]
+      andClauses.push({
+        $or: [
+          { instrument: { $regex: search, $options: "i" } },
+          { strategy: { $regex: search, $options: "i" } },
+        ],
+      })
     }
 
     if (type === "profit") query.net_pnl = { $gt: 0 }
     if (type === "loss") query.net_pnl = { $lt: 0 }
+    if (type === "open") {
+      andClauses.push({ $or: [{ net_pnl: null }, { net_pnl: { $exists: false } }] })
+    }
+    if (andClauses.length) query.$and = andClauses
+    if (direction === "Buy" || direction === "Sell") query.trade_type = direction
     if (strategy && strategy !== "all") query.strategy = strategy
     if (source === "tradingview" || source === "manual") query.source = source
     if (startDate || endDate) {

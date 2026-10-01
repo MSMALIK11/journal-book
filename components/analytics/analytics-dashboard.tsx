@@ -16,6 +16,7 @@ import {
 import { AnalyticsDashboardSkeleton } from "@/components/analytics/analytics-dashboard-skeleton"
 import { AvoidInsights } from "@/components/analytics/avoid-insights"
 import { EquityChart } from "@/components/analytics/equity-chart"
+import { MaxDrawdownInsight } from "@/components/analytics/max-drawdown-insight"
 import { PerformanceSummary } from "@/components/analytics/performance-summary"
 import { PnlDistributionChart } from "@/components/analytics/pnl-distribution-chart"
 import { StreaksRecords } from "@/components/analytics/streaks-records"
@@ -73,7 +74,8 @@ const KPI_TOOLTIPS: Record<string, string> = {
   "Net P&L": "Total profit or loss from all closed trades in this filter.",
   "Win Rate": "Percentage of closed trades that ended profitable.",
   "Profit Factor": "Gross profit divided by gross loss. Above 1.0 means overall profitable.",
-  "Max Drawdown": "Largest peak-to-trough drop in cumulative equity.",
+  "Max Drawdown":
+    "Largest peak-to-trough drop in cumulative equity. See the breakdown below for the trades that caused it.",
   "Avg Win": "Average profit on winning trades.",
   "Avg Loss": "Average loss on losing trades (absolute value).",
   Commission: "Total fees paid across closed trades.",
@@ -253,6 +255,12 @@ export function AnalyticsDashboard() {
 
           <EquityChart
             equityCurve={data.equityCurve}
+            maxDrawdown={overview.maxDrawdown}
+            maxDrawdownPct={overview.maxDrawdownPct}
+          />
+
+          <MaxDrawdownInsight
+            episode={data.maxDrawdownEpisode}
             maxDrawdown={overview.maxDrawdown}
             maxDrawdownPct={overview.maxDrawdownPct}
           />

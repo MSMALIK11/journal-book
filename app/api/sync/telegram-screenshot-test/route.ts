@@ -13,6 +13,8 @@ const testSchema = z.object({
   price: z.number().finite().optional(),
   exitPrice: z.number().finite().optional(),
   followUp: z.boolean().optional(),
+  dedupeKey: z.string().trim().min(1).max(120).optional(),
+  alertKey: z.string().trim().min(1).max(120).optional(),
 })
 
 export async function OPTIONS(request: NextRequest) {
@@ -44,7 +46,10 @@ export async function POST(request: NextRequest) {
     }
 
     const result = parsed.data.followUp
-      ? await sendTelegramChartFollowUp(auth.userId, photo)
+      ? await sendTelegramChartFollowUp(auth.userId, photo, {
+          dedupeKey: parsed.data.dedupeKey,
+          alertKey: parsed.data.alertKey,
+        })
       : await notifyTelegramTradeEvent(
           auth.userId,
           {

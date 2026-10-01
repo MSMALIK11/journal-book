@@ -20,11 +20,17 @@ tradeCooldownBars = input.int(
      group=strategyGroup,
      tooltip="After TP/SL close, skip new entries for this many bars. 0 = off. Reversals while in a trade still work.")
 
-enablePullbackEntries = input.bool(
+enableEmaPullbackEntries = input.bool(
      true,
      "Enable Pullback-to-EMA Entries",
      group=strategyGroup,
-     tooltip="Also enter when price pulls back to the EMA from the other side (support/resistance rejection), not only when fully stretched away from EMA.")
+     tooltip="Enter when price pulls back to the EMA and rejects (support/resistance), then breaks the prior HA candle.")
+
+enableContinuationPullback = input.bool(
+     true,
+     "Enable Continuation Pullback Entries",
+     group=strategyGroup,
+     tooltip="Enter on a pause/flag in the trend without EMA touch — e.g. higher low in a downtrend below EMA, then break down. Stretch entries unchanged.")
 
 //────────────────────────────────────────────
 // HEIKIN ASHI ENTRY FILTERS
@@ -104,8 +110,18 @@ getLongSignal(_ema) =>
     touchFromAbove =
          (low[1] <= _ema[1] and high[1] >= _ema[1]) or
          (low[1] <= _ema[1] and close[1] >= _ema[1])
-    wasAboveBefore = close[2] > _ema[2] or low[2] > _ema[2]
-    pullbackSetup = enablePullbackEntries and touchFromAbove and wasAboveBefore
+    // Bar [2] or [3] was above EMA — avoids blocking when [2] is the last dip into EMA.
+    wasAboveBefore = close[2] > _ema[2] or low[2] > _ema[2] or close[3] > _ema[3]
+    // Path B1: rally down to EMA from above, then break up.
+    emaPullbackSetup = touchFromAbove and wasAboveBefore
+    // Path B2: uptrend pause above EMA (no EMA touch needed), then break up.
+    trendAboveEma = close[2] > _ema[2] and close[3] > _ema[3]
+    pauseAboveEma = low[1] > _ema[1] and high[1] > _ema[1]
+    pauseInTrend = low[1] <= low[2] or high[1] <= high[2]
+    continuationPullback = trendAboveEma and pauseAboveEma and pauseInTrend
+    pullbackSetup =
+         (enableEmaPullbackEntries and emaPullbackSetup) or
+         (enableContinuationPullback and continuationPullback)
 
     // Current HA candle breaks previous high.
     bullishBreak = high > high[1] and close > high[1]
@@ -150,8 +166,18 @@ getShortSignal(_ema) =>
     touchFromBelow =
          (low[1] <= _ema[1] and high[1] >= _ema[1]) or
          (high[1] >= _ema[1] and close[1] <= _ema[1])
-    wasBelowBefore = close[2] < _ema[2] or high[2] < _ema[2]
-    pullbackSetup = enablePullbackEntries and touchFromBelow and wasBelowBefore
+    // Bar [2] or [3] was below EMA — avoids blocking when [2] is the rally into EMA.
+    wasBelowBefore = close[2] < _ema[2] or high[2] < _ema[2] or close[3] < _ema[3]
+    // Path B1: rally up to EMA from below, then break down.
+    emaPullbackSetup = touchFromBelow and wasBelowBefore
+    // Path B2: downtrend pause below EMA (no EMA touch needed), then break down.
+    trendBelowEma = close[2] < _ema[2] and close[3] < _ema[3]
+    pauseBelowEma = high[1] < _ema[1] and low[1] < _ema[1]
+    pauseInTrend = low[1] >= low[2] or high[1] >= high[2]
+    continuationPullback = trendBelowEma and pauseBelowEma and pauseInTrend
+    pullbackSetup =
+         (enableEmaPullbackEntries and emaPullbackSetup) or
+         (enableContinuationPullback and continuationPullback)
 
     // Current HA candle breaks previous low.
     bearishBreak = low < low[1] and close < low[1]

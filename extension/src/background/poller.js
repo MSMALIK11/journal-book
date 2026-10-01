@@ -396,7 +396,6 @@ async function syncCapturePayload(payload) {
         const result = await JBSync.syncCapturedTrades(config, trades, payload?.chartSymbol, {
           closeHints,
           skipHeartbeat: true,
-          skipScreenshot: true,
         })
         if (result?.imported > 0 || result?.updated > 0 || result?.closedStale > 0) {
           console.info(

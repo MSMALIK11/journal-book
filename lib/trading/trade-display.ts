@@ -1,3 +1,4 @@
+import { format } from "date-fns"
 import { classifySession, getSessionDef, getZonedParts, normalizeWeekday } from "@/lib/trading/sessions"
 import { normalizeSignalLabel } from "@/lib/trading/signal-levels"
 
@@ -54,6 +55,15 @@ export function formatTradeStartTime(
   if (Number.isNaN(parsed.getTime())) return null
   const { hour, minute } = getZonedParts(parsed, timezone)
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`
+}
+
+/** e.g. Mon 11 Mar 2026, 14:30 — date-only rows show midnight. */
+export function formatTradeEntryDateTime(entryDate: string): string {
+  const raw = entryDate?.trim()
+  if (!raw) return "—"
+  const parsed = new Date(raw.includes("T") ? raw : `${raw.slice(0, 10)}T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) return "—"
+  return format(parsed, "EEE d MMM yyyy, HH:mm")
 }
 
 export type TradeWindowFlags = {

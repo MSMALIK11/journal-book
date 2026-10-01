@@ -293,11 +293,11 @@ export async function persistNewTradeAlert(
   },
   accountName?: string,
   photo?: Buffer | null,
-) {
-  if (trade.is_open === false) return
+): Promise<string | null> {
+  if (trade.is_open === false) return null
   if (!isFreshTradeAlertTime(trade.entry_date)) {
     console.info(`[alerts] skip stale open ${trade.instrument} entry=${trade.entry_date}`)
-    return
+    return null
   }
 
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
@@ -306,7 +306,7 @@ export async function persistNewTradeAlert(
   const recent = await TradingAlert.findOne({ userId, accountId, key: alertKey }).select("context")
   if (telegramAlreadySent(recent)) {
     console.info(`[telegram] skip already sent ${alertKey}`)
-    return
+    return null
   }
 
   const levels = resolveTradeLevels({
@@ -359,6 +359,7 @@ export async function persistNewTradeAlert(
   }
 
   publishAlertsUpdated(userId, accountId)
+  return sentAt ? alertKey : null
 }
 
 export async function persistClosedTradeAlert(
@@ -380,10 +381,10 @@ export async function persistClosedTradeAlert(
   },
   accountName?: string,
   photo?: Buffer | null,
-) {
+): Promise<string | null> {
   if (!isFreshTradeAlertTime(trade.exit_date ?? trade.entry_date)) {
     console.info(`[alerts] skip stale close ${trade.instrument} exit=${trade.exit_date ?? trade.entry_date}`)
-    return
+    return null
   }
 
   const side = trade.trade_type === "Buy" ? "Long" : "Short"
@@ -392,7 +393,7 @@ export async function persistClosedTradeAlert(
   const recent = await TradingAlert.findOne({ userId, accountId, key: alertKey }).select("context")
   if (telegramAlreadySent(recent)) {
     console.info(`[telegram] skip already sent ${alertKey}`)
-    return
+    return null
   }
 
   const levels = resolveTradeLevels({
@@ -453,6 +454,7 @@ export async function persistClosedTradeAlert(
   }
 
   publishAlertsUpdated(userId, accountId)
+  return sentAt ? alertKey : null
 }
 
 export async function evaluateAndPersistAlerts(

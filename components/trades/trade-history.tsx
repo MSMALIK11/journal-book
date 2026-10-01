@@ -1,7 +1,8 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { format, subDays } from "date-fns"
+import useSWRInfinite from "swr/infinite"
 import { Loader2, Search, Trash2 } from "lucide-react"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
@@ -12,7 +13,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast"
 import { authFetch } from "@/lib/client-auth"
 import { useActiveAccount } from "@/hooks/use-active-account"
-import { resolveTradeLegs, tradeSideLabel } from "@/lib/trading/trade-display"
+import {
+  formatTradeEntryDateTime,
+  resolveTradeLegs,
+  tradeSideLabel,
+} from "@/lib/trading/trade-display"
+import type { TradeListSummary } from "@/lib/trading/trade-list-summary"
 import { cn } from "@/lib/utils"
 
 type Trade = {
@@ -29,7 +35,16 @@ type Trade = {
   emotion_tag?: string
 }
 
+type TradesPage = {
+  trades: Trade[]
+  total: number
+  hasMore: boolean
+  summary?: TradeListSummary
+}
+
 type ResultFilter = "all" | "profit" | "loss" | "open"
+
+const TRADES_PAGE_SIZE = 30
 
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -37,105 +52,165 @@ const currency = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
 })
 
+const tradesFetcher = async (url: string) => {
+  const response = await authFetch(url)
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.error || "Unable to load trade history")
+  return data as TradesPage
+}
+
+function buildTradesQuery(options: {
+  page: number
+  searchTerm: string
+  filterType: ResultFilter
+  filterDirection: string
+  filterStrategy: string
+  periodFilter: string
+  includeSummary: boolean
+}) {
+  const params = new URLSearchParams()
+  params.set("page", String(options.page))
+  params.set("limit", String(TRADES_PAGE_SIZE))
+
+  const search = options.searchTerm.trim()
+  if (search) params.set("search", search)
+  if (options.filterType !== "all") params.set("type", options.filterType)
+  if (options.filterDirection !== "all") params.set("direction", options.filterDirection)
+  if (options.filterStrategy !== "all") params.set("strategy", options.filterStrategy)
+  if (options.periodFilter === "7d") {
+    params.set("startDate", format(subDays(new Date(), 7), "yyyy-MM-dd"))
+  }
+  if (options.periodFilter === "30d") {
+    params.set("startDate", format(subDays(new Date(), 30), "yyyy-MM-dd"))
+  }
+  if (options.includeSummary) params.set("summary", "1")
+
+  return `/api/trades?${params.toString()}`
+}
+
+function computeMetricsFromTrades(trades: Trade[]) {
+  const closed = trades.filter((t) => typeof t.net_pnl === "number")
+  const wins = closed.filter((t) => (t.net_pnl ?? 0) > 0)
+  const netPnl = closed.reduce((sum, t) => sum + (t.net_pnl ?? 0), 0)
+
+  return {
+    total: trades.length,
+    closed: closed.length,
+    netPnl,
+    winRate: closed.length ? (wins.length / closed.length) * 100 : 0,
+    wins: wins.length,
+    losses: closed.length - wins.length,
+  }
+}
+
 export function TradeHistory() {
   const { toast } = useToast()
   const { activeAccountId, switchVersion } = useActiveAccount()
-  const [trades, setTrades] = useState<Trade[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [filterType, setFilterType] = useState<ResultFilter>("all")
   const [filterDirection, setFilterDirection] = useState("all")
   const [filterStrategy, setFilterStrategy] = useState("all")
   const [periodFilter, setPeriodFilter] = useState("all")
-  const [currentPage, setCurrentPage] = useState(1)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState("")
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const tableScrollRef = useRef<HTMLDivElement>(null)
+  const sentinelRef = useRef<HTMLDivElement>(null)
 
-  const tradesPerPage = 15
+  const filterSignature = useMemo(
+    () =>
+      JSON.stringify({
+        searchTerm,
+        filterType,
+        filterDirection,
+        filterStrategy,
+        periodFilter,
+        activeAccountId,
+        switchVersion,
+      }),
+    [searchTerm, filterType, filterDirection, filterStrategy, periodFilter, activeAccountId, switchVersion],
+  )
+
+  const getTradesKey = useCallback(
+    (pageIndex: number, previousPage: TradesPage | null) => {
+      if (!activeAccountId) return null
+      if (previousPage && !previousPage.hasMore) return null
+      return buildTradesQuery({
+        page: pageIndex + 1,
+        searchTerm,
+        filterType,
+        filterDirection,
+        filterStrategy,
+        periodFilter,
+        includeSummary: pageIndex === 0,
+      })
+    },
+    [activeAccountId, searchTerm, filterType, filterDirection, filterStrategy, periodFilter],
+  )
+
+  const {
+    data: tradePages,
+    error,
+    isLoading,
+    isValidating,
+    mutate,
+    size,
+    setSize,
+  } = useSWRInfinite<TradesPage>(getTradesKey, tradesFetcher, {
+    revalidateFirstPage: true,
+    revalidateAll: false,
+  })
 
   useEffect(() => {
-    if (!activeAccountId) return
-    const controller = new AbortController()
+    void setSize(1)
+  }, [filterSignature, setSize])
 
-    async function loadTrades() {
-      try {
-        setLoading(true)
-        setError("")
-        const response = await authFetch("/api/trades?limit=1000", {
-          signal: controller.signal,
-        })
-        const data = await response.json()
-        if (!response.ok) throw new Error(data.error || "Unable to load trade history")
-        setTrades(data.trades ?? [])
-      } catch (requestError) {
-        if (controller.signal.aborted) return
-        setError(
-          requestError instanceof Error
-            ? requestError.message
-            : "Unable to load trade history",
-        )
-      } finally {
-        if (!controller.signal.aborted) setLoading(false)
+  const trades = useMemo(() => {
+    const seen = new Set<string>()
+    const list: Trade[] = []
+    for (const page of tradePages ?? []) {
+      for (const trade of page.trades ?? []) {
+        if (seen.has(trade.id)) continue
+        seen.add(trade.id)
+        list.push(trade)
       }
     }
+    return list
+  }, [tradePages])
 
-    loadTrades()
-    return () => controller.abort()
-  }, [activeAccountId, switchVersion])
-
-  const filteredTrades = useMemo(() => {
-    const today = format(new Date(), "yyyy-MM-dd")
-    let startDate: string | null = null
-    if (periodFilter === "7d") startDate = format(subDays(new Date(), 7), "yyyy-MM-dd")
-    if (periodFilter === "30d") startDate = format(subDays(new Date(), 30), "yyyy-MM-dd")
-
-    return trades.filter((trade) => {
-      const tradeDate = trade.entry_date.slice(0, 10)
-      if (startDate && tradeDate < startDate) return false
-      if (startDate && tradeDate > today) return false
-
-      if (searchTerm) {
-        const query = searchTerm.toLowerCase()
-        const matchesSearch =
-          trade.instrument.toLowerCase().includes(query) ||
-          trade.strategy?.toLowerCase().includes(query)
-        if (!matchesSearch) return false
-      }
-
-      if (filterDirection !== "all" && trade.trade_type !== filterDirection) return false
-
-      if (filterType === "profit" && !(typeof trade.net_pnl === "number" && trade.net_pnl > 0)) {
-        return false
-      }
-      if (filterType === "loss" && !(typeof trade.net_pnl === "number" && trade.net_pnl < 0)) {
-        return false
-      }
-      if (filterType === "open" && typeof trade.net_pnl === "number") return false
-
-      if (filterStrategy !== "all" && trade.strategy !== filterStrategy) return false
-
-      return true
-    })
-  }, [trades, searchTerm, filterType, filterDirection, filterStrategy, periodFilter])
+  const summary = tradePages?.[0]?.summary
+  const totalCount = tradePages?.[0]?.total ?? trades.length
+  const hasMore = Boolean(tradePages?.[tradePages.length - 1]?.hasMore)
 
   const metrics = useMemo(() => {
-    const closed = filteredTrades.filter((t) => typeof t.net_pnl === "number")
-    const wins = closed.filter((t) => (t.net_pnl ?? 0) > 0)
-    const netPnl = closed.reduce((sum, t) => sum + (t.net_pnl ?? 0), 0)
-
-    return {
-      total: filteredTrades.length,
-      closed: closed.length,
-      netPnl,
-      winRate: closed.length ? (wins.length / closed.length) * 100 : 0,
-      wins: wins.length,
-      losses: closed.length - wins.length,
+    if (summary) {
+      return {
+        total: summary.total,
+        closed: summary.closed,
+        netPnl: summary.totalPnl,
+        winRate: summary.winRate,
+        wins: summary.wins,
+        losses: summary.losses,
+      }
     }
-  }, [filteredTrades])
+    return computeMetricsFromTrades(trades)
+  }, [summary, trades])
 
   useEffect(() => {
-    setCurrentPage(1)
-  }, [searchTerm, filterType, filterDirection, filterStrategy, periodFilter])
+    const root = tableScrollRef.current
+    const target = sentinelRef.current
+    if (!root || !target) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries[0]?.isIntersecting) return
+        if (!hasMore || isValidating) return
+        void setSize((current) => current + 1)
+      },
+      { root, rootMargin: "120px" },
+    )
+
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [hasMore, isValidating, setSize, size, trades.length])
 
   const deleteTrade = async (tradeId: string) => {
     if (!confirm("Are you sure you want to delete this trade?")) return
@@ -148,7 +223,16 @@ export function TradeHistory() {
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Unable to delete trade")
 
-      setTrades((current) => current.filter((trade) => trade.id !== tradeId))
+      await mutate(
+        (pages) =>
+          pages?.map((page) => ({
+            ...page,
+            trades: page.trades.filter((trade) => trade.id !== tradeId),
+            total: Math.max(0, page.total - 1),
+          })),
+        { revalidate: true },
+      )
+
       toast({
         title: "Trade deleted",
         description: "The trade was permanently removed from your journal.",
@@ -165,11 +249,6 @@ export function TradeHistory() {
     }
   }
 
-  const paginatedTrades = filteredTrades.slice(
-    (currentPage - 1) * tradesPerPage,
-    currentPage * tradesPerPage,
-  )
-  const totalPages = Math.max(1, Math.ceil(filteredTrades.length / tradesPerPage))
   const strategies = Array.from(
     new Set(trades.map((trade) => trade.strategy).filter((strategy): strategy is string => Boolean(strategy))),
   )
@@ -186,11 +265,14 @@ export function TradeHistory() {
     { label: "W / L", value: `${metrics.wins} / ${metrics.losses}` },
   ]
 
+  const loading = isLoading && !tradePages
+  const errorMessage = error instanceof Error ? error.message : error ? "Unable to load trade history" : ""
+
   return (
     <div className="space-y-6">
-      {error && (
+      {errorMessage && (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-500">
-          {error}
+          {errorMessage}
         </div>
       )}
 
@@ -281,122 +363,116 @@ export function TradeHistory() {
           title="Trades"
           action={
             !loading ? (
-              <span className="text-sm font-normal text-muted-foreground">({filteredTrades.length})</span>
+              <span className="text-sm font-normal text-muted-foreground">({totalCount})</span>
             ) : null
           }
         />
-        <div className="overflow-x-auto p-4">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-cyan-400/10 hover:bg-transparent">
-                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Date</TableHead>
-                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Symbol</TableHead>
-                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Side</TableHead>
-                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Entry</TableHead>
-                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Exit</TableHead>
-                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Size</TableHead>
-                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">P&L</TableHead>
-                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Strategy</TableHead>
-                  <TableHead className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Emotion</TableHead>
-                  <TableHead className="w-12" />
+        <div
+          ref={tableScrollRef}
+          className="max-h-[min(60vh,38rem)] overflow-auto px-4 pb-4 [&_[data-slot=table-container]]:overflow-visible"
+        >
+          <Table>
+            <TableHeader className="sticky top-0 z-10 bg-card">
+              <TableRow className="border-cyan-400/10 hover:bg-transparent">
+                <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Date</TableHead>
+                <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Symbol</TableHead>
+                <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Side</TableHead>
+                <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Entry</TableHead>
+                <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Exit</TableHead>
+                <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Size</TableHead>
+                <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">P&L</TableHead>
+                <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Strategy</TableHead>
+                <TableHead className="bg-card text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Emotion</TableHead>
+                <TableHead className="w-12 bg-card" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={10} className="h-32 text-center">
+                    <Loader2 className="mx-auto h-5 w-5 animate-spin text-primary" />
+                    <p className="mt-2 text-sm text-muted-foreground">Loading your trades...</p>
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {loading ? (
-                  <TableRow>
-                    <TableCell colSpan={10} className="h-32 text-center">
-                      <Loader2 className="mx-auto h-5 w-5 animate-spin text-primary" />
-                      <p className="mt-2 text-sm text-muted-foreground">Loading your trades...</p>
-                    </TableCell>
-                  </TableRow>
-                ) : paginatedTrades.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={10} className="h-32 text-center text-muted-foreground">
-                      {trades.length === 0
-                        ? "No trades recorded yet."
-                        : "No trades match these filters."}
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  paginatedTrades.map((trade) => {
-                    const legs = resolveTradeLegs(trade)
-                    return (
-                      <TableRow key={trade.id} className="border-cyan-400/10 hover:bg-cyan-400/5">
-                        <TableCell>
-                          {format(new Date(`${trade.entry_date.slice(0, 10)}T00:00:00`), "dd/MM/yyyy")}
-                        </TableCell>
-                        <TableCell className="font-medium">{trade.instrument}</TableCell>
-                        <TableCell>
-                          <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>
-                            {tradeSideLabel(trade.trade_type)}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="tabular-nums">{currency.format(legs.entryPrice)}</TableCell>
-                        <TableCell className="tabular-nums">
-                          {legs.exitPrice != null ? currency.format(legs.exitPrice) : "—"}
-                        </TableCell>
-                        <TableCell>
-                          {trade.quantity} {trade.quantity_mode === "lots" ? "lots" : "units"}
-                        </TableCell>
-                        <TableCell>
-                          {typeof trade.net_pnl === "number" ? (
-                            <span className={trade.net_pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
-                              {currency.format(trade.net_pnl)}
-                            </span>
+              ) : trades.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={10} className="h-32 text-center text-muted-foreground">
+                    {totalCount === 0 ? "No trades recorded yet." : "No trades match these filters."}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                trades.map((trade) => {
+                  const legs = resolveTradeLegs(trade)
+                  return (
+                    <TableRow key={trade.id} className="border-cyan-400/10 hover:bg-cyan-400/5">
+                      <TableCell className="whitespace-nowrap text-sm">
+                        {formatTradeEntryDateTime(trade.entry_date)}
+                      </TableCell>
+                      <TableCell className="font-medium">{trade.instrument}</TableCell>
+                      <TableCell>
+                        <Badge variant={trade.trade_type === "Buy" ? "default" : "secondary"}>
+                          {tradeSideLabel(trade.trade_type)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="tabular-nums">{currency.format(legs.entryPrice)}</TableCell>
+                      <TableCell className="tabular-nums">
+                        {legs.exitPrice != null ? currency.format(legs.exitPrice) : "—"}
+                      </TableCell>
+                      <TableCell>
+                        {trade.quantity} {trade.quantity_mode === "lots" ? "lots" : "units"}
+                      </TableCell>
+                      <TableCell>
+                        {typeof trade.net_pnl === "number" ? (
+                          <span className={trade.net_pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                            {currency.format(trade.net_pnl)}
+                          </span>
+                        ) : (
+                          <Badge variant="outline">Open</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell>{trade.strategy && <Badge variant="outline">{trade.strategy}</Badge>}</TableCell>
+                      <TableCell>{trade.emotion_tag && <Badge variant="outline">{trade.emotion_tag}</Badge>}</TableCell>
+                      <TableCell>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => deleteTrade(trade.id)}
+                          disabled={deletingId === trade.id}
+                          aria-label={`Delete ${trade.instrument} trade`}
+                        >
+                          {deletingId === trade.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
-                            <Badge variant="outline">Open</Badge>
+                            <Trash2 className="h-4 w-4" />
                           )}
-                        </TableCell>
-                        <TableCell>{trade.strategy && <Badge variant="outline">{trade.strategy}</Badge>}</TableCell>
-                        <TableCell>{trade.emotion_tag && <Badge variant="outline">{trade.emotion_tag}</Badge>}</TableCell>
-                        <TableCell>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => deleteTrade(trade.id)}
-                            disabled={deletingId === trade.id}
-                            aria-label={`Delete ${trade.instrument} trade`}
-                          >
-                            {deletingId === trade.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Trash2 className="h-4 w-4" />
-                            )}
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })
-                )}
-              </TableBody>
-            </Table>
-          </div>
-
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-4 pt-4 border-t border-cyan-400/10">
-              <p className="text-sm text-muted-foreground">
-                Page {currentPage} of {totalPages}
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
-                  disabled={currentPage === 1}
-                >
-                  Previous
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
-                  disabled={currentPage === totalPages}
-                >
-                  Next
-                </Button>
-              </div>
-            </div>
-          )}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })
+              )}
+              {trades.length > 0 && (
+                <TableRow className="border-cyan-400/10 hover:bg-transparent">
+                  <TableCell colSpan={10} className="py-3 text-center text-xs text-muted-foreground">
+                    <div ref={sentinelRef} className="h-1" />
+                    {hasMore ? (
+                      isValidating ? (
+                        <span className="inline-flex items-center gap-2">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Loading more trades...
+                        </span>
+                      ) : (
+                        "Scroll for more"
+                      )
+                    ) : (
+                      `Showing all ${trades.length} trade${trades.length === 1 ? "" : "s"}`
+                    )}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
       </HudPanel>
     </div>
   )

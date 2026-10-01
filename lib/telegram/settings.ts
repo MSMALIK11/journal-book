@@ -3,6 +3,10 @@ export type TelegramPreferences = {
   chatId: string
   notifyOpen: boolean
   notifyClose: boolean
+  /** Chart screenshot after open text alert — off by default so alerts stay instant. */
+  chartPhotoOnOpen: boolean
+  /** Chart screenshot after close text alert. */
+  chartPhotoOnClose: boolean
   dailySummaryEnabled: boolean
   /** 24h HH:mm in the user's timezone */
   dailySummaryTime: string
@@ -14,6 +18,8 @@ export const DEFAULT_TELEGRAM_PREFERENCES: TelegramPreferences = {
   chatId: "",
   notifyOpen: true,
   notifyClose: true,
+  chartPhotoOnOpen: false,
+  chartPhotoOnClose: true,
   dailySummaryEnabled: true,
   dailySummaryTime: "23:00",
 }
@@ -56,6 +62,8 @@ export function normalizeTelegramPreferences(
     chatId: normalizeChatId(prefs?.chatId),
     notifyOpen: prefs?.notifyOpen !== false,
     notifyClose: prefs?.notifyClose !== false,
+    chartPhotoOnOpen: prefs?.chartPhotoOnOpen === true,
+    chartPhotoOnClose: prefs?.chartPhotoOnClose !== false,
     dailySummaryEnabled: prefs?.dailySummaryEnabled !== false,
     dailySummaryTime: isValidDailySummaryTime(prefs?.dailySummaryTime || "")
       ? prefs!.dailySummaryTime!
@@ -66,4 +74,16 @@ export function normalizeTelegramPreferences(
 
 export function isTelegramLinked(prefs: TelegramPreferences) {
   return Boolean(prefs.chatId)
+}
+
+/** Keep text alerts fast — only return chart photo keys the user enabled. */
+export function filterChartPhotoAlertKeys(
+  keys: string[],
+  prefs: Pick<TelegramPreferences, "chartPhotoOnOpen" | "chartPhotoOnClose">,
+) {
+  return keys.filter((key) => {
+    if (key.startsWith("new-trade:")) return prefs.chartPhotoOnOpen
+    if (key.startsWith("trade-closed:")) return prefs.chartPhotoOnClose
+    return false
+  })
 }
