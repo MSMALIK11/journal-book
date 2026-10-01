@@ -1,9 +1,11 @@
 /* global JBSync */
-const VERSION = "1.18.21"
+const VERSION = "1.18.29"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
-const CAPTURE_SYNC_DEBOUNCE_MS = 40
-const SYNC_ALARM_BACKUP_SEC = 5
+const CLOSE_WATCH_ALARM = "jb-close-watch"
+const CAPTURE_SYNC_DEBOUNCE_MS = 20
+const SYNC_ALARM_BACKUP_SEC = 2
+const CLOSE_WATCH_SEC = 2
 const LOCAL_JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
 const JOURNAL_SCRIPT_ID = "jb-journal-bridge-dynamic"
 const IMPORT_ALL_MAX_MS = 15 * 60 * 1000
@@ -11,6 +13,7 @@ const IMPORT_ALL_MAX_MS = 15 * 60 * 1000
 importScripts("../lib/symbol-utils.js", "../lib/sync-client.js")
 
 let syncInFlight = false
+let fastSyncInFlight = false
 let captureSyncInFlight = false
 let importAllInFlight = false
 let importAllWatchdog = null
@@ -23,7 +26,7 @@ let lastJournalSyncAt = 0
 let lastTableSyncAt = 0
 let lastRefreshCheckAt = 0
 const JOURNAL_SYNC_MIN_MS = 800
-const TABLE_SYNC_MIN_MS = 40
+const TABLE_SYNC_MIN_MS = 0
 const REFRESH_CHECK_MIN_MS = 5_000
 
 function sleep(ms) {
@@ -283,45 +286,44 @@ async function sendHeartbeatIfConfigured() {
 }
 
 async function runAutoSync(source) {
-  const fastSource = source === "capture" || source === "table"
+  const fastSource =
+    source === "capture" ||
+    source === "table" ||
+    source === "alarm" ||
+    source === "close-watch" ||
+    source === "poll" ||
+    source === "journal"
 
   if (await isBackgroundSyncPaused()) {
     if (
       source === "capture" ||
       source === "alarm" ||
       source === "journal" ||
-      source === "table"
+      source === "table" ||
+      source === "close-watch"
     ) {
       captureSyncPending = true
     }
-    return null
-  }
-
-  if (syncInFlight) {
-    if (
-      source === "capture" ||
-      source === "alarm" ||
-      source === "journal" ||
-      source === "table"
-    ) {
-      captureSyncPending = true
-    }
-    return null
-  }
-
-  // Instant capture must not wait on a slow poll/alarm scrape.
-  if (fastSource && captureSyncInFlight) {
-    captureSyncPending = true
     return null
   }
 
   if (fastSource) {
-    while (captureSyncInFlight) {
-      await sleep(25)
+    if (fastSyncInFlight) {
+      captureSyncPending = true
+      return null
     }
+    while (captureSyncInFlight) {
+      await sleep(15)
+    }
+    fastSyncInFlight = true
+  } else {
+    if (syncInFlight || fastSyncInFlight) {
+      captureSyncPending = true
+      return null
+    }
+    syncInFlight = true
   }
 
-  syncInFlight = true
   try {
     const config = await JBSync.getConfig()
     if (!config.syncToken) return null
@@ -332,10 +334,6 @@ async function runAutoSync(source) {
 
     void JBSync.sendHeartbeat(config).catch(() => {})
 
-    if (!fastSource) {
-      await JBSync.maybeRunRequestedRefresh(config).catch(() => {})
-    }
-
     const tab = await JBSync.getTradingViewTab()
     if (!tab?.id) {
       console.warn(`${source} sync skipped: no TradingView chart tab`)
@@ -343,17 +341,27 @@ async function runAutoSync(source) {
     }
 
     const result = fastSource
-      ? await JBSync.syncFromCaptureOrScrape(config)
+      ? await JBSync.syncFromCaptureOrScrape(config, { skipScreenshot: source === "close-watch" })
       : await JBSync.refreshNewTrades(config)
-    if (result?.imported > 0 || result?.updated > 0) {
-      console.info(`${source} sync ok:`, result.imported, "imported,", result.updated, "updated")
+    if (result?.imported > 0 || result?.updated > 0 || result?.closedStale > 0) {
+      console.info(
+        `${source} sync ok:`,
+        result.imported,
+        "imported,",
+        result.updated,
+        "updated,",
+        result.closedStale || 0,
+        "closed",
+      )
     }
+    await maybeScheduleCloseWatch(config)
     return result
   } catch (error) {
     console.warn(`${source} sync failed:`, error?.message || error)
     return null
   } finally {
-    syncInFlight = false
+    if (fastSource) fastSyncInFlight = false
+    else syncInFlight = false
     drainPendingCapture()
   }
 }
@@ -407,6 +415,7 @@ async function syncCapturePayload(payload) {
             result.closedStale || 0,
             "closed",
           )
+          await maybeScheduleCloseWatch(config)
           return result
         }
       } catch (error) {
@@ -498,6 +507,24 @@ function scheduleSyncBackupAlarm(seconds = SYNC_ALARM_BACKUP_SEC) {
   void chrome.alarms.create(SYNC_ALARM, { delayInMinutes })
 }
 
+function scheduleCloseWatchAlarm() {
+  const delayInMinutes = Math.max(CLOSE_WATCH_SEC / 60, 0.034)
+  void chrome.alarms.clear(CLOSE_WATCH_ALARM)
+  void chrome.alarms.create(CLOSE_WATCH_ALARM, { delayInMinutes })
+}
+
+async function maybeScheduleCloseWatch(config) {
+  if (!config?.syncToken) return
+  const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: JBSync.FAST_SNAPSHOT_LIMIT }).catch(
+    () => null,
+  )
+  if (snapshot?.openFps?.size > 0 || snapshot?.openIds?.size > 0) {
+    scheduleCloseWatchAlarm()
+  } else {
+    void chrome.alarms.clear(CLOSE_WATCH_ALARM)
+  }
+}
+
 async function syncAlarmFromSettings() {
   const stored = await chrome.storage.sync.get(["pollIntervalSeconds", "syncToken", "autoSyncTrades"])
   const seconds = Number(stored.pollIntervalSeconds) || 0
@@ -515,9 +542,11 @@ async function syncAlarmFromSettings() {
   // MV3 throttles content-script timers in background tabs — chain short one-shot alarms.
   if (autoSync) {
     const backupSec =
-      seconds > 0 ? Math.min(Math.max(seconds, 5), 30) : SYNC_ALARM_BACKUP_SEC
+      seconds > 0 ? Math.min(Math.max(seconds, 2), 30) : SYNC_ALARM_BACKUP_SEC
     scheduleSyncBackupAlarm(backupSec)
   }
+
+  void JBSync.getConfig().then((config) => maybeScheduleCloseWatch(config))
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -545,11 +574,24 @@ chrome.alarms.onAlarm.addListener((alarm) => {
         await runAutoSync("alarm")
         if (autoSync && (stored.syncToken || "").trim()) {
           const backupSec =
-            seconds > 0 ? Math.min(Math.max(seconds, 5), 30) : SYNC_ALARM_BACKUP_SEC
+            seconds > 0 ? Math.min(Math.max(seconds, 2), 30) : SYNC_ALARM_BACKUP_SEC
           scheduleSyncBackupAlarm(backupSec)
         }
       } catch {
         scheduleSyncBackupAlarm(SYNC_ALARM_BACKUP_SEC)
+      }
+    })()
+    return
+  }
+  if (alarm.name === CLOSE_WATCH_ALARM) {
+    void (async () => {
+      try {
+        const config = await JBSync.getConfig()
+        if (!config.syncToken) return
+        await runAutoSync("close-watch")
+        await maybeScheduleCloseWatch(config)
+      } catch {
+        // ignore — next table/capture event will retry
       }
     })()
   }

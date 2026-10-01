@@ -83,7 +83,9 @@
 
     <label for="pollIntervalSeconds">Connection poll interval</label>
     <select id="pollIntervalSeconds">
-      <option value="5" selected>Every 5 seconds (recommended)</option>
+      <option value="2">Every 2 seconds (fastest alerts)</option>
+      <option value="3" selected>Every 3 seconds (recommended)</option>
+      <option value="5">Every 5 seconds</option>
       <option value="15">Every 15 seconds (backup poll)</option>
       <option value="30">Every 30 seconds</option>
       <option value="60">Every 60 seconds</option>
@@ -95,7 +97,8 @@
       <option value="0">Off — manual sync only</option>
     </select>
     <p class="hint">
-      Keeps Live Sync showing &quot;Extension connected&quot; while a TradingView chart tab is open.
+      Keeps Live Sync connected and backs up instant trade detection. Use 2–3 seconds for Telegram alerts
+      close to TV fill time. While a trade is open, the extension also checks every 2 seconds for exits.
     </p>
 
     <div class="checkbox-row">

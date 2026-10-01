@@ -13,7 +13,7 @@
       "autoSyncTrades",
     ])
     const pollIntervalSeconds =
-      stored.pollIntervalSeconds === undefined ? 5 : Number(stored.pollIntervalSeconds)
+      stored.pollIntervalSeconds === undefined ? 3 : Number(stored.pollIntervalSeconds)
     return {
       configured: Boolean((stored.syncToken || "").trim()),
       pollIntervalSeconds: Number.isFinite(pollIntervalSeconds) ? pollIntervalSeconds : 30,
@@ -81,10 +81,10 @@
 
   void applySchedule()
 
-  // Keep extension alive on TradingView — heartbeat + refresh queue every 15s.
+  // Keep extension alive on TradingView — heartbeat + refresh queue every 10s.
   setInterval(() => {
     void keepaliveTick()
-  }, 15_000)
+  }, 10_000)
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {

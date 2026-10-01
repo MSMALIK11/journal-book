@@ -970,7 +970,7 @@ JBSync.getConfig = async function getConfig() {
   ])
 
   const pollIntervalSeconds =
-    stored.pollIntervalSeconds === undefined ? 5 : Number(stored.pollIntervalSeconds)
+    stored.pollIntervalSeconds === undefined ? 3 : Number(stored.pollIntervalSeconds)
 
   return {
     apiUrl: (stored.apiUrl || "http://localhost:3000").replace(/\/$/, ""),
@@ -1872,6 +1872,19 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config, options = {}) 
   )
 
   const scrapedOpens = result.trades.filter((trade) => JBSync.isOpenTrade(trade))
+
+  // Journal still has a live open — always check top rows for the matching closed exit.
+  if (JBSync.snapshotHasOpenForSymbol(snapshot, chartSymbol)) {
+    const flatCloses = JBSync.pickFlatCloseCandidates(result.trades, snapshot, chartSymbol)
+    if (flatCloses.length) {
+      const seen = new Set(tradesToSync.map((trade) => trade.tradeNumber))
+      for (const trade of flatCloses) {
+        if (seen.has(trade.tradeNumber)) continue
+        tradesToSync.push(trade)
+        seen.add(trade.tradeNumber)
+      }
+    }
+  }
 
   // TV is flat but journal still has Opens — force-send matching closed rows.
   if (!tradesToSync.length && !scrapedOpens.length) {
