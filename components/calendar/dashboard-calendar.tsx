@@ -41,11 +41,18 @@ export function DashboardCalendar({ trades }: { trades: CalendarTrade[] }) {
     return date >= format(monthStart, "yyyy-MM-dd") && date <= format(monthEnd, "yyyy-MM-dd")
   })
 
-  const byDate = monthTrades.reduce<Record<string, { pnl: number; count: number }>>((result, trade) => {
+  const byDate = monthTrades.reduce<
+    Record<string, { pnl: number; count: number; wins: number; losses: number; breakEven: number }>
+  >((result, trade) => {
     const date = trade.entry_date.slice(0, 10)
-    result[date] ??= { pnl: 0, count: 0 }
+    result[date] ??= { pnl: 0, count: 0, wins: 0, losses: 0, breakEven: 0 }
     result[date].pnl += trade.net_pnl ?? 0
     result[date].count += 1
+    if (typeof trade.net_pnl === "number") {
+      if (trade.net_pnl > 0) result[date].wins += 1
+      else if (trade.net_pnl < 0) result[date].losses += 1
+      else result[date].breakEven += 1
+    }
     return result
   }, {})
 
@@ -143,8 +150,16 @@ export function DashboardCalendar({ trades }: { trades: CalendarTrade[] }) {
                     {result.pnl > 0 ? "+" : ""}
                     {money.format(result.pnl)}
                   </p>
-                  <p className="text-[9px] text-muted-foreground">
-                    {result.count} trade{result.count === 1 ? "" : "s"}
+                  <p className="text-[9px] font-medium">
+                    <span className="text-emerald-400">{result.wins}W</span>
+                    {result.breakEven > 0 ? (
+                      <>
+                        <span className="text-muted-foreground"> · </span>
+                        <span className="text-amber-400">{result.breakEven}B</span>
+                      </>
+                    ) : null}
+                    <span className="text-muted-foreground"> · </span>
+                    <span className="text-rose-400">{result.losses}L</span>
                   </p>
                 </div>
               ) : null}

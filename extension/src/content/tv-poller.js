@@ -4,6 +4,7 @@
   window.__JB_TV_POLLER__ = true
 
   let timer = null
+  let visibleTimer = null
   let lastInterval = null
 
   async function readSettings() {
@@ -13,7 +14,7 @@
       "autoSyncTrades",
     ])
     const pollIntervalSeconds =
-      stored.pollIntervalSeconds === undefined ? 3 : Number(stored.pollIntervalSeconds)
+      stored.pollIntervalSeconds === undefined ? 2 : Number(stored.pollIntervalSeconds)
     return {
       configured: Boolean((stored.syncToken || "").trim()),
       pollIntervalSeconds: Number.isFinite(pollIntervalSeconds) ? pollIntervalSeconds : 30,
@@ -28,6 +29,24 @@
       clearInterval(timer)
       timer = null
     }
+    if (visibleTimer) {
+      clearInterval(visibleTimer)
+      visibleTimer = null
+    }
+  }
+
+  function applyVisibleFastPoll() {
+    if (document.visibilityState !== "visible") {
+      if (visibleTimer) {
+        clearInterval(visibleTimer)
+        visibleTimer = null
+      }
+      return
+    }
+    if (visibleTimer) return
+    visibleTimer = setInterval(() => {
+      void tick()
+    }, 1000)
   }
 
   async function keepaliveTick() {
@@ -70,6 +89,7 @@
 
     void tick()
     timer = setInterval(tick, settings.pollIntervalSeconds * 1000)
+    applyVisibleFastPoll()
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -90,6 +110,10 @@
     if (document.visibilityState === "visible") {
       void keepaliveTick()
       void tick()
+      applyVisibleFastPoll()
+    } else if (visibleTimer) {
+      clearInterval(visibleTimer)
+      visibleTimer = null
     }
   })
 })()

@@ -77,6 +77,21 @@ function formatDayLabel(dateKey: string) {
   return format(parsed, "EEE, MMM d")
 }
 
+function dayTradeStats(dayTrades: Trade[]) {
+  const closed = dayTrades.filter((trade) => typeof trade.net_pnl === "number")
+  const wins = closed.filter((trade) => (trade.net_pnl ?? 0) > 0).length
+  const losses = closed.filter((trade) => (trade.net_pnl ?? 0) < 0).length
+  const breakEven = closed.length - wins - losses
+  return { wins, losses, breakEven, closed: closed.length, open: dayTrades.length - closed.length }
+}
+
+function formatDayWinLoss(stats: ReturnType<typeof dayTradeStats>) {
+  const parts = [`${stats.wins}W`]
+  if (stats.breakEven > 0) parts.push(`${stats.breakEven}B`)
+  parts.push(`${stats.losses}L`)
+  return parts.join(" · ")
+}
+
 export function TradingCalendar() {
   const [currentDate, setCurrentDate] = useState(new Date())
   const [trades, setTrades] = useState<Trade[]>([])
@@ -185,6 +200,7 @@ export function TradingCalendar() {
   const selectedTrades = selectedDate
     ? tradesByDate[format(selectedDate, "yyyy-MM-dd")] ?? []
     : []
+  const selectedStats = dayTradeStats(selectedTrades)
   const selectedPnL = selectedTrades.reduce(
     (total, trade) => total + (trade.net_pnl ?? 0),
     0,
@@ -327,6 +343,7 @@ export function TradingCalendar() {
               {days.map((day, index) => {
                 const dateKey = format(day, "yyyy-MM-dd")
                 const dayTrades = tradesByDate[dateKey] ?? []
+                const dayStats = dayTradeStats(dayTrades)
                 const pnl = dayTrades.reduce(
                   (total, trade) => total + (trade.net_pnl ?? 0),
                   0,
@@ -383,8 +400,19 @@ export function TradingCalendar() {
                           {pnl > 0 && "+"}
                           {currency.format(pnl)}
                         </p>
-                        <p className="mt-1 text-[11px] text-muted-foreground">
-                          {dayTrades.length} {dayTrades.length === 1 ? "trade" : "trades"}
+                        <p className="mt-1 text-[11px] font-medium">
+                          <span className="text-emerald-400">{dayStats.wins}W</span>
+                          {dayStats.breakEven > 0 ? (
+                            <>
+                              <span className="text-muted-foreground"> · </span>
+                              <span className="text-amber-400">{dayStats.breakEven}B</span>
+                            </>
+                          ) : null}
+                          <span className="text-muted-foreground"> · </span>
+                          <span className="text-rose-400">{dayStats.losses}L</span>
+                          {dayStats.open > 0 ? (
+                            <span className="text-muted-foreground"> · {dayStats.open} open</span>
+                          ) : null}
                         </p>
                       </div>
                     )}
@@ -416,7 +444,7 @@ export function TradingCalendar() {
               <p className="font-semibold">{format(selectedDate, "EEEE, MMMM d")}</p>
               <p className="text-sm text-muted-foreground">
                 {selectedTrades.length
-                  ? `${selectedTrades.length} ${selectedTrades.length === 1 ? "trade" : "trades"} recorded`
+                  ? `${formatDayWinLoss(selectedStats)}${selectedStats.open > 0 ? ` · ${selectedStats.open} open` : ""}`
                   : "No trades recorded"}
               </p>
             </div>

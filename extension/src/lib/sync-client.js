@@ -970,7 +970,7 @@ JBSync.getConfig = async function getConfig() {
   ])
 
   const pollIntervalSeconds =
-    stored.pollIntervalSeconds === undefined ? 3 : Number(stored.pollIntervalSeconds)
+    stored.pollIntervalSeconds === undefined ? 2 : Number(stored.pollIntervalSeconds)
 
   return {
     apiUrl: (stored.apiUrl || "http://localhost:3000").replace(/\/$/, ""),
@@ -1607,6 +1607,13 @@ JBSync.maybeRunRequestedRefresh = async function maybeRunRequestedRefresh(config
   }
 }
 
+const EMPTY_TRADE_SNAPSHOT = Object.freeze({
+  ids: new Set(),
+  openIds: new Set(),
+  fps: new Set(),
+  openFps: new Set(),
+})
+
 /** Sync trades already captured from TV network hooks — no Strategy Tester scrape needed. */
 JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, chartSymbol, options = {}) {
   const skipScreenshot = options.skipScreenshot === true
@@ -1622,10 +1629,24 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     JBSync.normalizeChartSymbol(list[0]?.instrument) ||
     ""
 
-  const [, snapshot] = await Promise.all([
-    options.skipHeartbeat ? Promise.resolve() : JBSync.sendHeartbeat(config).catch(() => {}),
-    JBSync.fetchKnownTradeSnapshot(config, { limit: JBSync.FAST_SNAPSHOT_LIMIT }),
-  ])
+  const closeHints =
+    options.closeHints instanceof Set
+      ? options.closeHints
+      : new Set(Array.isArray(options.closeHints) ? options.closeHints : [])
+  const openHints =
+    options.openHints instanceof Set
+      ? options.openHints
+      : new Set(Array.isArray(options.openHints) ? options.openHints : [])
+  let snapshot = EMPTY_TRADE_SNAPSHOT
+  if (!options.skipSnapshotPrefetch) {
+    const [, fetched] = await Promise.all([
+      options.skipHeartbeat ? Promise.resolve() : JBSync.sendHeartbeat(config).catch(() => {}),
+      JBSync.fetchKnownTradeSnapshot(config, { limit: JBSync.FAST_SNAPSHOT_LIMIT }),
+    ])
+    snapshot = fetched || EMPTY_TRADE_SNAPSHOT
+  } else if (!options.skipHeartbeat) {
+    void JBSync.sendHeartbeat(config).catch(() => {})
+  }
 
   if (!symbol || symbol === "UNKNOWN") {
     symbol = JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tvTab))
@@ -1636,16 +1657,22 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
   }
 
   const stamped = list.map((trade) => ({ ...trade, instrument: symbol, strategy: trade.strategy || "TradingView Strategy" }))
-  const closeHints =
-    options.closeHints instanceof Set
-      ? options.closeHints
-      : new Set(Array.isArray(options.closeHints) ? options.closeHints : [])
 
   const newOrUpdated = stamped.filter((trade) => JBSync.tradeNeedsRefresh(trade, snapshot))
+  const seen = new Set(newOrUpdated.map((trade) => trade.tradeNumber))
+
+  // Hook fired "new" — POST the open immediately; don't wait on snapshot round-trip.
+  if (openHints.size) {
+    for (const trade of stamped) {
+      if (!openHints.has(trade.tradeNumber) || seen.has(trade.tradeNumber)) continue
+      if (!JBSync.isOpenTrade(trade)) continue
+      newOrUpdated.push(trade)
+      seen.add(trade.tradeNumber)
+    }
+  }
 
   // Hook fired "closed" — don't wait for the grid to repaint before POSTing the exit.
-  if (closeHints.size && JBSync.snapshotHasOpenForSymbol(snapshot, symbol)) {
-    const seen = new Set(newOrUpdated.map((trade) => trade.tradeNumber))
+  if (closeHints.size) {
     for (const trade of stamped) {
       if (!closeHints.has(trade.tradeNumber) || seen.has(trade.tradeNumber)) continue
       if (JBSync.isOpenTrade(trade)) continue
@@ -1667,9 +1694,13 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
 
   const syncResult = await JBSync.syncTrades(newOrUpdated, config, symbol, {
     reconcileFromTrades: stamped,
-    reconcile: true,
+    reconcile: options.instant !== true,
     screenshotJpeg: null,
   })
+
+  if (options.instant === true) {
+    void JBSync.reconcileOpenTrades(config, stamped, symbol).catch(() => {})
+  }
 
   const closedStale = syncResult.closedStale || 0
   await JBSync.maybeNotifyJournalTabs(syncResult, config)
@@ -1761,11 +1792,23 @@ JBSync.syncFromCaptureOrScrape = async function syncFromCaptureOrScrape(config, 
     const journalHasOpen = JBSync.snapshotHasOpenForSymbol(snapshot, symbol)
     const captureHasClose = captured.trades.some((trade) => !JBSync.isOpenTrade(trade))
 
-    if (needsSync || (journalHasOpen && captureHasClose)) {
+    const openHints = new Set(
+      captured.trades
+        .filter((trade) => JBSync.isOpenTrade(trade) && JBSync.tradeNeedsRefresh(trade, snapshot))
+        .map((trade) => trade.tradeNumber),
+    )
+    const closeHints = new Set(
+      captured.trades
+        .filter((trade) => !JBSync.isOpenTrade(trade) && JBSync.tradeNeedsRefresh(trade, snapshot))
+        .map((trade) => trade.tradeNumber),
+    )
+
+    if (needsSync || (journalHasOpen && captureHasClose) || openHints.size > 0) {
       const result = await JBSync.syncCapturedTrades(config, captured.trades, symbol, {
-        closeHints: new Set(
-          captured.trades.filter((trade) => !JBSync.isOpenTrade(trade)).map((trade) => trade.tradeNumber),
-        ),
+        openHints,
+        closeHints,
+        skipSnapshotPrefetch: openHints.size > 0 || closeHints.size > 0,
+        instant: openHints.size > 0 || closeHints.size > 0,
         skipHeartbeat: true,
         skipScreenshot: fast.skipScreenshot === true,
         tab,

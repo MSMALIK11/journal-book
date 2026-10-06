@@ -1,11 +1,11 @@
 /* global JBSync */
-const VERSION = "1.18.29"
+const VERSION = "1.18.30"
 const HEARTBEAT_ALARM = "jb-heartbeat"
 const SYNC_ALARM = "jb-trade-sync"
 const CLOSE_WATCH_ALARM = "jb-close-watch"
 const CAPTURE_SYNC_DEBOUNCE_MS = 20
 const SYNC_ALARM_BACKUP_SEC = 2
-const CLOSE_WATCH_SEC = 2
+const CLOSE_WATCH_SEC = 1.5
 const LOCAL_JOURNAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//
 const JOURNAL_SCRIPT_ID = "jb-journal-bridge-dynamic"
 const IMPORT_ALL_MAX_MS = 15 * 60 * 1000
@@ -354,7 +354,7 @@ async function runAutoSync(source) {
         "closed",
       )
     }
-    await maybeScheduleCloseWatch(config)
+    await maybeScheduleFillWatch(config)
     return result
   } catch (error) {
     console.warn(`${source} sync failed:`, error?.message || error)
@@ -396,6 +396,17 @@ async function syncCapturePayload(payload) {
       .map((change) => change?.tradeNumber)
       .filter((num) => Number.isFinite(num)),
   )
+  const openHints = new Set(
+    (payload?.changes || [])
+      .filter(
+        (change) =>
+          change?.reason === "new" ||
+          (change?.reason === "updated" && change?.isOpen !== false),
+      )
+      .map((change) => change?.tradeNumber)
+      .filter((num) => Number.isFinite(num)),
+  )
+  const instantCapture = closeHints.size > 0 || openHints.size > 0
 
   captureSyncInFlight = true
   try {
@@ -403,6 +414,9 @@ async function syncCapturePayload(payload) {
       try {
         const result = await JBSync.syncCapturedTrades(config, trades, payload?.chartSymbol, {
           closeHints,
+          openHints,
+          skipSnapshotPrefetch: instantCapture,
+          instant: instantCapture,
           skipHeartbeat: true,
         })
         if (result?.imported > 0 || result?.updated > 0 || result?.closedStale > 0) {
@@ -415,7 +429,7 @@ async function syncCapturePayload(payload) {
             result.closedStale || 0,
             "closed",
           )
-          await maybeScheduleCloseWatch(config)
+          await maybeScheduleFillWatch(config)
           return result
         }
       } catch (error) {
@@ -513,16 +527,13 @@ function scheduleCloseWatchAlarm() {
   void chrome.alarms.create(CLOSE_WATCH_ALARM, { delayInMinutes })
 }
 
-async function maybeScheduleCloseWatch(config) {
+async function maybeScheduleFillWatch(config) {
   if (!config?.syncToken) return
-  const snapshot = await JBSync.fetchKnownTradeSnapshot(config, { limit: JBSync.FAST_SNAPSHOT_LIMIT }).catch(
-    () => null,
-  )
-  if (snapshot?.openFps?.size > 0 || snapshot?.openIds?.size > 0) {
-    scheduleCloseWatchAlarm()
-  } else {
+  if (config.autoSyncTrades === false) {
     void chrome.alarms.clear(CLOSE_WATCH_ALARM)
+    return
   }
+  scheduleCloseWatchAlarm()
 }
 
 async function syncAlarmFromSettings() {
@@ -546,7 +557,7 @@ async function syncAlarmFromSettings() {
     scheduleSyncBackupAlarm(backupSec)
   }
 
-  void JBSync.getConfig().then((config) => maybeScheduleCloseWatch(config))
+  void JBSync.getConfig().then((config) => maybeScheduleFillWatch(config))
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -589,7 +600,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
         const config = await JBSync.getConfig()
         if (!config.syncToken) return
         await runAutoSync("close-watch")
-        await maybeScheduleCloseWatch(config)
+        await maybeScheduleFillWatch(config)
       } catch {
         // ignore — next table/capture event will retry
       }
