@@ -17,6 +17,78 @@ export function isStandalonePwa() {
   )
 }
 
+export function isIOSDevice() {
+  if (typeof window === "undefined") return false
+  return /iPad|iPhone|iPod/.test(window.navigator.userAgent)
+}
+
+export type PushAlertStatus = {
+  permission: NotificationPermission | "unsupported"
+  hasSubscription: boolean
+  serverConfigured: boolean
+  standalone: boolean
+  ios: boolean
+  /** Background push will actually deliver on this device/session. */
+  active: boolean
+  /** iOS Safari tab — must install to home screen before push works. */
+  needsHomeScreenInstall: boolean
+}
+
+export async function getPushAlertStatus(): Promise<PushAlertStatus> {
+  const permission = pushPermissionState()
+  const standalone = isStandalonePwa()
+  const ios = isIOSDevice()
+  const needsHomeScreenInstall = ios && !standalone
+
+  if (permission === "unsupported") {
+    return {
+      permission,
+      hasSubscription: false,
+      serverConfigured: false,
+      standalone,
+      ios,
+      active: false,
+      needsHomeScreenInstall,
+    }
+  }
+
+  let serverConfigured = false
+  try {
+    const keyResponse = await fetch("/api/push/vapid-public-key")
+    const keyData = await keyResponse.json()
+    serverConfigured = keyResponse.ok && Boolean(keyData.publicKey)
+  } catch {
+    serverConfigured = false
+  }
+
+  let hasSubscription = false
+  if ("serviceWorker" in navigator) {
+    try {
+      await registerServiceWorker()
+      const registration = await navigator.serviceWorker.ready
+      hasSubscription = Boolean(await registration.pushManager.getSubscription())
+    } catch {
+      hasSubscription = false
+    }
+  }
+
+  const active =
+    permission === "granted" &&
+    hasSubscription &&
+    serverConfigured &&
+    !needsHomeScreenInstall
+
+  return {
+    permission,
+    hasSubscription,
+    serverConfigured,
+    standalone,
+    ios,
+    active,
+    needsHomeScreenInstall,
+  }
+}
+
 export async function registerServiceWorker() {
   if (typeof window === "undefined" || !("serviceWorker" in navigator)) return null
   try {
@@ -44,6 +116,12 @@ export async function subscribeToPushAlerts() {
   }
   if (!("Notification" in window) || !("serviceWorker" in navigator)) {
     return { ok: false, error: "Notifications are not supported on this device" }
+  }
+  if (isIOSDevice() && !isStandalonePwa()) {
+    return {
+      ok: false,
+      error: "On iPhone, add this site to your Home Screen first, open it from the icon, then tap Enable.",
+    }
   }
 
   const permission = await Notification.requestPermission()
