@@ -19,7 +19,12 @@ const riskConfig: ChartConfig = {
   breachPct: { label: "DD breach %", color: "#f43f5e" },
 }
 
-export function FundedRoadmapCharts({ model }: { model: FundedRoadmapModel }) {
+type ChartsModel = Pick<
+  FundedRoadmapModel,
+  "scalingCurve" | "projectedEquity" | "tradesToTargetHist" | "drawdownHist" | "riskComparison"
+>
+
+export function FundedRoadmapCharts({ model }: { model: ChartsModel }) {
   return (
     <div className="grid gap-4 xl:grid-cols-2">
       <HudPanel>
@@ -91,16 +96,22 @@ export function FundedRoadmapCharts({ model }: { model: FundedRoadmapModel }) {
           description="Same strategy, different risk %. Breach % is the chance max DD is hit before the profit target."
         />
         <div className="p-4">
-          <ChartContainer config={riskConfig} className="aspect-[21/7]">
-            <BarChart data={model.riskComparison}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="riskPercent" tickFormatter={(value) => `${value}%`} />
-              <YAxis />
-              <ChartTooltip content={<ChartTooltipContent />} />
-              <Bar dataKey="targetHitPct" fill="var(--color-targetHitPct)" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="breachPct" fill="var(--color-breachPct)" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ChartContainer>
+          {model.riskComparison.length ? (
+            <ChartContainer config={riskConfig} className="aspect-[21/7]">
+              <BarChart data={model.riskComparison}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="riskPercent" tickFormatter={(value) => `${value}%`} />
+                <YAxis />
+                <ChartTooltip content={<ChartTooltipContent />} />
+                <Bar dataKey="targetHitPct" fill="var(--color-targetHitPct)" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="breachPct" fill="var(--color-breachPct)" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ChartContainer>
+          ) : (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              Risk comparison needs % of equity mode and at least 30 stop-loss R samples.
+            </p>
+          )}
         </div>
       </HudPanel>
     </div>

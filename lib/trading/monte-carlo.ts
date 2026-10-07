@@ -23,8 +23,11 @@ export type MonteCarloResult = {
 
 function percentile(sorted: number[], p: number) {
   if (!sorted.length) return null
-  const index = Math.min(sorted.length - 1, Math.max(0, Math.round((p / 100) * (sorted.length - 1))))
-  return sorted[index]
+  const pos = (p / 100) * (sorted.length - 1)
+  const lo = Math.floor(pos)
+  const hi = Math.ceil(pos)
+  if (lo === hi) return sorted[lo]
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo)
 }
 
 function mulberry32(seed: number) {
@@ -75,7 +78,16 @@ export function runMonteCarlo(rMultiples: number[], options: MonteCarloOptions):
 
   if (!usable.length || !(targetR > 0) || !(maxDrawdownR > 0)) return empty
 
-  const random = mulberry32(usable.length * 997 + Math.round(targetR * 100) + Math.round(maxDrawdownR * 100))
+  // Seed from every input, including a checksum of the R-multiples, so two
+  // different trade samples with the same trade count never share a draw sequence.
+  const rChecksum = usable.reduce((sum, value) => sum + Math.round(value * 100), 0)
+  const random = mulberry32(
+    usable.length * 997 +
+      Math.round(targetR * 100) +
+      Math.round(maxDrawdownR * 100) +
+      simulations * 31 +
+      rChecksum,
+  )
   const tradesToTarget: number[] = []
   const maxDrawdownsR: number[] = []
   let hits = 0

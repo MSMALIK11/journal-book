@@ -21,7 +21,7 @@ export type SessionFilter = "all" | "asia" | "london" | "newyork"
 export type WeekdayFilter = "all" | "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"
 export type DataSourceLabel = "Backtest" | "Live/Manual" | "Mixed"
 export type ConfidenceLevel = "Low" | "Medium" | "High"
-export type StageStatus = "Current" | "Locked" | "Ready" | "Completed" | "At Risk"
+export type StageStatus = "Current" | "Locked" | "Ready" | "Prior" | "At Risk"
 export type ScenarioKey = "optimistic" | "base" | "conservative"
 
 export type FundedRiskConfig = {
@@ -64,8 +64,6 @@ export type DrawdownStress = {
   stress2Streak: number
   historicalDdPct: number
   historicalDdUsd: number
-  stress1R: number
-  stress2R: number
 }
 
 export type StageProjection = {
@@ -84,11 +82,9 @@ export type StageProjection = {
   optimisticTrades: number | null
   baseTrades: number | null
   conservativeTrades: number | null
-  expectedDays: number | null
   optimisticDays: number | null
   baseDays: number | null
   conservativeDays: number | null
-  safetyBufferDays: number | null
   historicalDdPct: number
   stressDdPct: number
   stressDdUsd: number
@@ -98,9 +94,9 @@ export type StageProjection = {
 }
 
 export type RiskRecommendation = {
-  conservative: number
-  recommended: number
-  aggressive: number
+  conservative: number | null
+  recommended: number | null
+  aggressive: number | null
   note: string
 }
 
@@ -136,8 +132,8 @@ export type ChallengeAssessment = {
   headline: string
   summary: string
   checks: ChallengePassCheck[]
-  suggestedRiskPct: number
-  conservativeRiskPct: number
+  suggestedRiskPct: number | null
+  conservativeRiskPct: number | null
   planTrades: {
     optimistic: number | null
     base: number | null
@@ -160,7 +156,7 @@ export type FundedRoadmapModel = {
   happyFlowMonths: number | null
   totalDays: Record<ScenarioKey, number | null>
   confidence: ConfidenceScore
-  recommendation: RiskRecommendation
+  recommendation: RiskRecommendation | null
   riskComparison: RiskComparisonRow[]
   rDistribution: { bucket: string; count: number }[]
   tradesToTargetHist: { label: string; count: number }[]
@@ -263,6 +259,23 @@ function tradesToDays(
   return trades / tradesPerDay
 }
 
+/**
+ * tradesToDays counts active trading days. Prop-firm minimums also count active
+ * days, so the floor applies before conversion, but users plan in calendar time —
+ * a trader active 3 days a week needs ~2.3 calendar days per trading day.
+ */
+function toCalendarDays(
+  tradingDays: number | null,
+  profile: Pick<StrategyProfile, "avgTradesPerDay" | "medianTradesPerDay" | "avgTradesPerWeek">,
+): number | null {
+  if (tradingDays == null) return null
+  const perActiveDay = resolveTradesPerDay(profile, "base")
+  if (!(perActiveDay > 0) || !(profile.avgTradesPerWeek > 0)) return tradingDays
+  const activeDaysPerWeek = Math.min(7, profile.avgTradesPerWeek / perActiveDay)
+  if (!(activeDaysPerWeek > 0)) return tradingDays
+  return (tradingDays / activeDaysPerWeek) * 7
+}
+
 function expectedTrades(targetR: number, expectancyR: number) {
   if (!(targetR > 0) || !(expectancyR > 0)) return null
   return targetR / expectancyR
@@ -321,8 +334,6 @@ export function buildDrawdownStress(profile: StrategyProfile): DrawdownStress {
     stress2Streak: Math.max(2, Math.round(historicalStreak * 2)),
     historicalDdPct: profile.maxDrawdownPct,
     historicalDdUsd: profile.maxDrawdown,
-    stress1R: Math.max(1, Math.round(historicalStreak * 1.5)),
-    stress2R: Math.max(2, Math.round(historicalStreak * 2)),
   }
 }
 
@@ -356,11 +367,13 @@ export function computeConfidence(analytics: AnalyticsResult, rStats: RMultipleS
   else if (analytics.overview.maxDrawdownPct < 25) score += 6
   else score += 2
 
-  if (analytics.overview.winRate >= 45 && analytics.overview.winRate <= 72) score += 10
-  else score += 4
+  if (analytics.overview.winRate >= 45 && analytics.overview.winRate <= 80) score += 10
+  else if (analytics.overview.winRate >= 35 && analytics.overview.winRate <= 90) score += 6
+  else score += 3
 
-  if (rStats.expectancyR >= 0.4) score += 14
-  else if (rStats.expectancyR > 0) score += 8
+  if (rStats.expectancyR >= 0.4) score += 18
+  else if (rStats.expectancyR > 0.15) score += 10
+  else if (rStats.expectancyR > 0) score += 6
 
   score = Math.max(0, Math.min(100, Math.round(score)))
   const level: ConfidenceLevel = score >= 70 ? "High" : score >= 40 ? "Medium" : "Low"
@@ -377,7 +390,7 @@ export function computeConfidence(analytics: AnalyticsResult, rStats: RMultipleS
 export function buildChallengeAssessment(
   stage: StageProjection,
   profile: StrategyProfile,
-  recommendation: RiskRecommendation,
+  recommendation: RiskRecommendation | null,
   rules: FundedChallengeRules,
 ): ChallengeAssessment {
   const mc = stage.monteCarlo
@@ -401,7 +414,7 @@ export function buildChallengeAssessment(
       id: "reach",
       label: "Simulations reach profit target",
       status: mc.targetHitPct >= 75 ? "pass" : mc.targetHitPct >= 40 ? "warn" : "fail",
-      detail: `${mc.targetHitPct.toFixed(0)}% of 1,000 sims hit +${stage.targetR.toFixed(1)}R before max DD`,
+      detail: `${mc.targetHitPct.toFixed(0)}% of ${mc.simulations.toLocaleString("en-US")} sims hit +${stage.targetR.toFixed(1)}R before max DD`,
     },
     {
       id: "breach",
@@ -451,7 +464,7 @@ export function buildChallengeAssessment(
     headline = "Not ready — no proven edge on this filter"
     summary =
       "Expectancy is flat or negative, or the sample is too small. Do not start a funded challenge on this data yet."
-  } else if (failCount >= 2 || mc.targetHitPct < 40 || profile.expectancyR <= 0) {
+  } else if (failCount >= 2 || mc.targetHitPct < 40) {
     likelihood = "low"
     headline = "Low pass odds at current risk"
     summary =
@@ -483,8 +496,8 @@ export function buildChallengeAssessment(
     headline,
     summary,
     checks,
-    suggestedRiskPct: recommendation.recommended,
-    conservativeRiskPct: recommendation.conservative,
+    suggestedRiskPct: recommendation?.recommended ?? null,
+    conservativeRiskPct: recommendation?.conservative ?? null,
     planTrades: {
       optimistic: stage.optimisticTrades,
       base: stage.baseTrades,
@@ -499,7 +512,7 @@ export function buildChallengeAssessment(
 }
 
 function stageStatus(index: number, currentIndex: number, stressDdPct: number, maxDdPct: number, hitPct: number): StageStatus {
-  if (index < currentIndex) return "Completed"
+  if (index < currentIndex) return "Prior"
   if (index > currentIndex) return "Locked"
   if (stressDdPct >= maxDdPct || hitPct < 40) return "At Risk"
   if (hitPct >= 75 && stressDdPct < maxDdPct * 0.85) return "Ready"
@@ -523,22 +536,38 @@ export function buildStageProjection(
   trades: FundedTrade[],
   rules: FundedChallengeRules,
   config: FundedRiskConfig,
+  shared?: {
+    rStats?: RMultipleStats
+    mc?: MonteCarloResult
+  },
 ): StageProjection {
   const oneR = oneRValue(level.size, config)
   const profitTarget = level.size * (rules.profitTargetPct / 100)
   const drawdownLimit = level.size * (rules.maxDrawdownPct / 100)
   const targetR = oneR > 0 ? profitTarget / oneR : 0
   const maxDrawdownR = oneR > 0 ? drawdownLimit / oneR : 0
-  const stressDdUsd = stress.stress2Streak * oneR
+  // Losses are rarely exactly -1R — size the stress path by the real average loss.
+  const avgLossR = Math.abs(profile.avgLossR) > 0 ? Math.abs(profile.avgLossR) : 1
+  const stressDdUsd = stress.stress2Streak * avgLossR * oneR
   const stressDdPct = level.size > 0 ? (stressDdUsd / level.size) * 100 : 0
 
-  const stageRStats = computeChallengeRStats(trades, oneR)
+  // All stages share the R distribution measured at the user's planned risk.
+  // Re-measuring pnl at each stage's 1R would shrink every R as accounts grow
+  // while the R target stays fixed — modeling "wins never scale with risk".
+  // In % mode this makes every stage the identical game (only $ amounts scale);
+  // in fixed-$ mode the R target grows with stage size, which is the honest math.
+  const stageRStats = shared?.rStats ?? computeChallengeRStats(trades, oneR)
   const rMultiples = stageRStats.rMultiples
   const expectancyR = stageRStats.expectancyR
 
   const naive = expectedTrades(targetR, expectancyR)
-  const maxTrades = resolveMonteCarloMaxTrades(rMultiples, targetR, expectancyR)
-  const mc = runMonteCarlo(rMultiples, { targetR, maxDrawdownR, maxTrades })
+  const mc =
+    shared?.mc ??
+    runMonteCarlo(rMultiples, {
+      targetR,
+      maxDrawdownR,
+      maxTrades: resolveMonteCarloMaxTrades(rMultiples, targetR, expectancyR),
+    })
   const optimisticTrades = roundTrades(
     mc.p10TradesToTarget ?? (naive != null ? naive * 0.85 : null),
   )
@@ -546,7 +575,13 @@ export function buildStageProjection(
   const conservativeTrades = roundTrades(
     mc.p90TradesToTarget ?? (naive != null ? naive * 1.35 : null),
   )
-  const conservativeDaysRaw = tradesToDays(conservativeTrades, profile, "conservative")
+  // The firm's minimum trading days applies to every pace — you cannot legally
+  // pass faster than it — so floor each pace before converting to calendar time.
+  const planDays = (trades: number | null, pace: TimelinePace) => {
+    const tradingDays = tradesToDays(trades, profile, pace)
+    const floored = tradingDays == null ? null : Math.max(tradingDays, rules.minTradingDays)
+    return toCalendarDays(floored, profile)
+  }
 
   return {
     id: level.id,
@@ -564,13 +599,9 @@ export function buildStageProjection(
     optimisticTrades,
     baseTrades,
     conservativeTrades,
-    expectedDays: tradesToDays(naive, profile, "base"),
-    optimisticDays: tradesToDays(optimisticTrades, profile, "optimistic"),
-    baseDays: tradesToDays(baseTrades, profile, "base"),
-    conservativeDays:
-      conservativeDaysRaw == null ? null : Math.max(conservativeDaysRaw, rules.minTradingDays),
-    safetyBufferDays:
-      conservativeDaysRaw == null ? null : Math.max(conservativeDaysRaw, rules.minTradingDays),
+    optimisticDays: planDays(optimisticTrades, "optimistic"),
+    baseDays: planDays(baseTrades, "base"),
+    conservativeDays: planDays(conservativeTrades, "conservative"),
     historicalDdPct: profile.maxDrawdownPct,
     stressDdPct,
     stressDdUsd,
@@ -580,63 +611,78 @@ export function buildStageProjection(
   }
 }
 
+const MIN_INTRINSIC_R_SAMPLE = 30
+const RISK_CANDIDATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2]
+
+/**
+ * Compares risk levels using intrinsic R-multiples (R = pnl / actual risk taken).
+ * Re-measuring pnl at each candidate's 1R makes every candidate the identical
+ * game — real differences only appear when the R draws stay fixed and the
+ * target/drawdown R-thresholds move: targetR = targetPct / riskPct.
+ */
 export function recommendRisk(
-  trades: FundedTrade[],
+  intrinsicR: number[],
   profile: StrategyProfile,
   rules: FundedChallengeRules,
-  accountSize: number,
-): RiskRecommendation {
-  const candidates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2]
-  const passing: number[] = []
+): RiskRecommendation | null {
+  if (intrinsicR.length < MIN_INTRINSIC_R_SAMPLE) {
+    return {
+      conservative: null,
+      recommended: null,
+      aggressive: null,
+      note: "Not enough stop-loss or loss history to compare risk levels — log stop-losses or more losing trades first.",
+    }
+  }
 
-  for (const riskPercent of candidates) {
-    const oneR = accountSize * (riskPercent / 100)
-    const targetR = oneR > 0 ? (accountSize * (rules.profitTargetPct / 100)) / oneR : 0
-    const maxDrawdownR = oneR > 0 ? (accountSize * (rules.maxDrawdownPct / 100)) / oneR : 0
-    const stageRStats = computeChallengeRStats(trades, oneR)
-    const mc = runMonteCarlo(stageRStats.rMultiples, {
+  const passing: number[] = []
+  for (const riskPercent of RISK_CANDIDATES) {
+    const targetR = rules.profitTargetPct / riskPercent
+    const maxDrawdownR = rules.maxDrawdownPct / riskPercent
+    const mc = runMonteCarlo(intrinsicR, {
       targetR,
       maxDrawdownR,
       simulations: 400,
-      maxTrades: resolveMonteCarloMaxTrades(stageRStats.rMultiples, targetR, stageRStats.expectancyR),
+      maxTrades: resolveMonteCarloMaxTrades(intrinsicR, targetR),
     })
-    const medianDdPct = (mc.medianMaxDrawdownR * riskPercent)
+    const medianDdPct = mc.medianMaxDrawdownR * riskPercent
     if (mc.drawdownFirstPct <= 12 && medianDdPct < rules.maxDrawdownPct) passing.push(riskPercent)
   }
 
-  const recommended = passing.includes(1) ? 1 : passing.at(-1) ?? 0.25
-  const conservative = passing.find((value) => value <= 0.5) ?? passing[0] ?? 0.25
-  const aggressiveCandidate = passing.find((value) => value >= 1.5)
+  const recommended = passing.includes(1) ? 1 : (passing.at(-1) ?? null)
+  const conservative = passing.find((value) => value <= 0.5) ?? passing[0] ?? null
+  const aggressiveCandidate = passing.find((value) => value >= 1.5) ?? null
   const aggressive = aggressiveCandidate ?? recommended
   const note =
-    !aggressiveCandidate && recommended < 1.5
-      ? "Aggressive risk is hidden because simulated drawdown breaches the account limit."
-      : profile.expectancyR <= 0
-        ? "Expectancy is not positive on this filter — treat every timeline as a warning, not a plan."
-        : "Sized from historical R-multiples and the selected drawdown cap."
+    recommended == null
+      ? "No tested risk level keeps simulated drawdown inside the firm limit — fix the loss profile before attempting a challenge."
+      : !aggressiveCandidate && recommended < 1.5
+        ? "Aggressive risk is hidden because simulated drawdown breaches the account limit."
+        : profile.expectancyR <= 0
+          ? "Expectancy is not positive on this filter — treat every timeline as a warning, not a plan."
+          : "Sized from your actual R-multiples and the selected drawdown cap."
 
   return { conservative, recommended, aggressive, note }
 }
 
 export function buildRiskComparison(
-  trades: FundedTrade[],
+  intrinsicR: number[],
   rules: FundedChallengeRules,
-  accountSize: number,
 ): RiskComparisonRow[] {
+  const expectancyR = intrinsicR.length
+    ? intrinsicR.reduce((sum, value) => sum + value, 0) / intrinsicR.length
+    : 0
   return RISK_COMPARISON_PERCENTS.map((riskPercent) => {
-    const oneR = accountSize * (riskPercent / 100)
-    const targetR = oneR > 0 ? (accountSize * (rules.profitTargetPct / 100)) / oneR : 0
-    const maxDrawdownR = oneR > 0 ? (accountSize * (rules.maxDrawdownPct / 100)) / oneR : 0
-    const stageRStats = computeChallengeRStats(trades, oneR)
-    const mc = runMonteCarlo(stageRStats.rMultiples, {
+    const targetR = rules.profitTargetPct / riskPercent
+    const maxDrawdownR = rules.maxDrawdownPct / riskPercent
+    const mc = runMonteCarlo(intrinsicR, {
       targetR,
       maxDrawdownR,
       simulations: 500,
-      maxTrades: resolveMonteCarloMaxTrades(stageRStats.rMultiples, targetR, stageRStats.expectancyR),
+      maxTrades: resolveMonteCarloMaxTrades(intrinsicR, targetR),
     })
     return {
       riskPercent,
-      expectedReturnR: stageRStats.expectancyR,
+      expectedReturnR: expectancyR,
       medianMaxDrawdownPct: mc.medianMaxDrawdownR * riskPercent,
       p95MaxDrawdownPct: mc.p95MaxDrawdownR * riskPercent,
       breachPct: mc.drawdownFirstPct,
@@ -650,13 +696,12 @@ function sumDays(stages: StageProjection[], key: "optimisticDays" | "baseDays" |
   return stages.reduce((sum, stage) => sum + (stage[key] ?? 0), 0)
 }
 
-function projectedEquityPath(rMultiples: number[], start = 5000, oneR = 50, trades = 80) {
+function projectedEquityPath(rMultiples: number[], start: number, oneR: number, trades = 80) {
   if (!rMultiples.length) return []
-  const random = (index: number) => rMultiples[index % rMultiples.length]
   let equity = start
   const points = [{ trade: 0, equity }]
   for (let i = 0; i < trades; i++) {
-    equity += random(i) * oneR
+    equity += rMultiples[i % rMultiples.length] * oneR
     points.push({ trade: i + 1, equity })
   }
   return points
@@ -674,12 +719,32 @@ export function buildFundedRoadmap(input: {
   const ladder = input.ladder ?? FUNDED_ACCOUNT_LADDER
   const currentIndex = Math.max(0, Math.min(ladder.length - 1, input.currentStageIndex ?? 0))
   const currentLevel = ladder[currentIndex] ?? ladder[0]
-  const challengeRStats = computeChallengeRStats(
-    input.trades,
-    oneRValue(currentLevel.size, input.risk),
-  )
+
+  const currentOneR = oneRValue(currentLevel.size, input.risk)
+  const challengeRStats = computeChallengeRStats(input.trades, currentOneR)
   const profile = buildStrategyProfile(input.analytics, challengeRStats, input.slRStats)
   const stress = buildDrawdownStress(profile)
+
+  // Current stage's MC is run once with raw arrays kept for the histograms; each
+  // stage otherwise stores a compacted copy.
+  const currentTargetR =
+    currentOneR > 0
+      ? (currentLevel.size * (input.rules.profitTargetPct / 100)) / currentOneR
+      : 0
+  const currentMaxDdR =
+    currentOneR > 0
+      ? (currentLevel.size * (input.rules.maxDrawdownPct / 100)) / currentOneR
+      : 0
+  const currentMc = runMonteCarlo(challengeRStats.rMultiples, {
+    targetR: currentTargetR,
+    maxDrawdownR: currentMaxDdR,
+    maxTrades: resolveMonteCarloMaxTrades(
+      challengeRStats.rMultiples,
+      currentTargetR,
+      challengeRStats.expectancyR,
+    ),
+  })
+
   const stages = ladder.map((level, index) =>
     buildStageProjection(
       level,
@@ -690,22 +755,21 @@ export function buildFundedRoadmap(input: {
       input.trades,
       input.rules,
       input.risk,
+      {
+        rStats: challengeRStats,
+        mc: index === currentIndex ? currentMc : undefined,
+      },
     ),
   )
 
   const first = stages[currentIndex] ?? stages[0]
-  const recommendation = recommendRisk(input.trades, profile, input.rules, first.size)
-  const riskComparison = buildRiskComparison(input.trades, input.rules, first.size)
-  const firstChallengeR = computeChallengeRStats(input.trades, first.oneR)
-  const firstMc = runMonteCarlo(firstChallengeR.rMultiples, {
-    targetR: first.targetR,
-    maxDrawdownR: first.oneR > 0 ? first.drawdownLimit / first.oneR : 0,
-    maxTrades: resolveMonteCarloMaxTrades(
-      firstChallengeR.rMultiples,
-      first.targetR,
-      firstChallengeR.expectancyR,
-    ),
-  })
+  // Fixed-$ risk makes every %-of-equity comparison meaningless — hide instead
+  // of showing numbers that do not apply.
+  const intrinsicR = input.slRStats.rMultiples.filter((value) => Number.isFinite(value))
+  const recommendation =
+    input.risk.mode === "fixed" ? null : recommendRisk(intrinsicR, profile, input.rules)
+  const riskComparison =
+    input.risk.mode === "fixed" ? [] : buildRiskComparison(intrinsicR, input.rules)
 
   const happyFlowDays = sumDays(stages, "optimisticDays")
   const baseDays = sumDays(stages, "baseDays")
@@ -729,15 +793,15 @@ export function buildFundedRoadmap(input: {
     recommendation,
     riskComparison,
     rDistribution: challengeRStats.distribution,
-    tradesToTargetHist: histogram(firstMc.tradesToTarget, 8).map((bucket) => ({
+    tradesToTargetHist: histogram(currentMc.tradesToTarget, 8).map((bucket) => ({
       label: bucket.label,
       count: bucket.count,
     })),
-    drawdownHist: histogram(firstMc.maxDrawdownsR, 8).map((bucket) => ({
+    drawdownHist: histogram(currentMc.maxDrawdownsR, 8).map((bucket) => ({
       label: `${bucket.start.toFixed(1)}R`,
       count: bucket.count,
     })),
-    projectedEquity: projectedEquityPath(firstChallengeR.rMultiples, first.size, first.oneR),
+    projectedEquity: projectedEquityPath(challengeRStats.rMultiples, first.size, first.oneR),
     scalingCurve: stages.map((stage) => ({
       label: stage.shortLabel,
       size: stage.size,
@@ -761,6 +825,7 @@ export function formatRr(ratio: number | null) {
 }
 
 export { formatAccountSize, round }
+export type { FundedChallengeRules } from "@/lib/trading/funded-presets"
 
 export type CompareSnapshot = {
   label: string
@@ -774,7 +839,13 @@ export type CompareSnapshot = {
   estimatedDays: number | null
 }
 
-export function toCompareSnapshot(label: string, model: FundedRoadmapModel): CompareSnapshot {
+export function toCompareSnapshot(
+  label: string,
+  model: FundedRoadmapModel,
+  stageIndex = 0,
+): CompareSnapshot {
+  const stage =
+    model.stages[Math.max(0, Math.min(model.stages.length - 1, stageIndex))] ?? model.stages[0]
   return {
     label,
     winRate: model.profile.winRate,
@@ -784,7 +855,7 @@ export function toCompareSnapshot(label: string, model: FundedRoadmapModel): Com
     maxDrawdownPct: model.profile.maxDrawdownPct,
     closedTrades: model.profile.closedTrades,
     avgTradesPerWeek: model.profile.avgTradesPerWeek,
-    estimatedDays: model.stages[0]?.optimisticDays ?? null,
+    estimatedDays: stage?.optimisticDays ?? null,
   }
 }
 

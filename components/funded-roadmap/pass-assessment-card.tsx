@@ -152,12 +152,16 @@ export function PassAssessmentCard({ accountName, stage, assessment, rules }: Pr
       </div>
 
       <div className="mt-5 flex flex-wrap gap-2 text-xs">
-        <Badge variant="outline" className="border-cyan-400/30 text-cyan-200">
-          Use {assessment.suggestedRiskPct.toFixed(2)}% risk (recommended)
-        </Badge>
-        <Badge variant="outline" className="border-white/15 text-muted-foreground">
-          Conservative {assessment.conservativeRiskPct.toFixed(2)}%
-        </Badge>
+        {assessment.suggestedRiskPct != null ? (
+          <Badge variant="outline" className="border-cyan-400/30 text-cyan-200">
+            Use {assessment.suggestedRiskPct.toFixed(2)}% risk (recommended)
+          </Badge>
+        ) : null}
+        {assessment.conservativeRiskPct != null ? (
+          <Badge variant="outline" className="border-white/15 text-muted-foreground">
+            Conservative {assessment.conservativeRiskPct.toFixed(2)}%
+          </Badge>
+        ) : null}
         <Badge variant="outline" className="border-white/15 text-muted-foreground">
           Daily stop {currency.format(stage.dailyLossCap)} ({rules.dailyDrawdownPct}%)
         </Badge>

@@ -54,7 +54,7 @@ const HOW_TO_USE = [
   "Pick an account in the sidebar. Every number comes from that account’s closed trades on the active filter.",
   "Set risk % (or fixed $) and firm rules. R and timelines use your planned 1R (e.g. $50 on $5K @ 1%), not chart stop distance.",
   "Plan around Conservative trades/days — not Happy flow. Happy flow is the lucky 10% of simulations.",
-  "Reach target % = how many of 1,000 simulated futures hit profit target before max DD. Hit max DD first % = fail rate in those sims.",
+  "Reach target % = how many simulated futures hit profit target before max DD. Hit max DD first % = fail rate in those sims.",
   "Do not risk more than 1R per trade. Stop for the day when daily DD is hit.",
 ]
 
@@ -122,7 +122,7 @@ const GLOSSARY: { id: FundedHelpTermId; term: string; meaning: string }[] = [
     id: "reach-target",
     term: "Reach target %",
     meaning:
-      "In 1,000 Monte Carlo runs, how often the profit target was hit before max drawdown. 99% means 990 of those sims — not that the market is 99% sure.",
+      "In the Monte Carlo runs, how often the profit target was hit before max drawdown. 99% means 99 of every 100 sims — not that the market is 99% sure.",
   },
   {
     id: "hit-dd-first",
@@ -149,12 +149,12 @@ const GLOSSARY: { id: FundedHelpTermId; term: string; meaning: string }[] = [
     id: "monte-carlo",
     term: "Monte Carlo",
     meaning:
-      "The app shuffles your past R list and plays 1,000 fake futures. High hit % is only those sims — it does not make the live market certain.",
+      "The app shuffles your past R list and plays hundreds of fake futures. High hit % is only those sims — it does not make the live market certain.",
   },
   {
     id: "timeout",
     term: "Timeout",
-    meaning: "A sim that hit neither target nor max DD within 400 trades.",
+    meaning: "A sim that hit neither target nor max DD within the simulation's trade limit.",
   },
   {
     id: "challenge-rules",
@@ -168,7 +168,7 @@ const GLOSSARY: { id: FundedHelpTermId; term: string; meaning: string }[] = [
   },
   {
     id: "stage-badges",
-    term: "Locked / Current / Ready / At Risk / Completed",
+    term: "Locked / Current / Ready / At Risk / Prior",
     meaning:
       "Where that account size sits on the $5K → $1M ladder. Current is the stage you are reading; At Risk means stress DD is close to the rule.",
   },
@@ -176,7 +176,7 @@ const GLOSSARY: { id: FundedHelpTermId; term: string; meaning: string }[] = [
     id: "target-probability",
     term: "Target probability",
     meaning:
-      "The card that groups Reach target %, Hit max DD first, median trades, and P5 / P95 from the 1,000 simulations.",
+      "The card that groups Reach target %, Hit max DD first, median trades, and P5 / P95 from the simulations.",
   },
   {
     id: "pass-verdict",
