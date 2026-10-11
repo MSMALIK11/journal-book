@@ -423,17 +423,32 @@ export function TradingCalendar() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-cyan-400/10 px-5 py-3 text-xs text-muted-foreground">
-          {[
-            ["bg-emerald-500", "Profitable"],
-            ["bg-rose-500", "Loss"],
-            ["bg-amber-500", "Break-even"],
-          ].map(([color, label]) => (
-            <div key={label} className="flex items-center gap-2">
-              <span className={cn("h-2 w-2 rounded-full", color)} />
-              {label}
-            </div>
-          ))}
+        <div className="flex flex-col gap-3 border-t border-cyan-400/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
+            {[
+              ["bg-emerald-500", "Profitable"],
+              ["bg-rose-500", "Loss"],
+              ["bg-amber-500", "Break-even"],
+            ].map(([color, label]) => (
+              <div key={label} className="flex items-center gap-2">
+                <span className={cn("h-2 w-2 rounded-full", color)} />
+                {label}
+              </div>
+            ))}
+          </div>
+          <p className="text-sm font-medium">
+            <span className="text-muted-foreground">{format(currentDate, "MMMM yyyy")} — </span>
+            <span className="text-emerald-400">{winningTrades} wins</span>
+            <span className="text-muted-foreground"> · </span>
+            <span className="text-rose-400">{losingTrades} losses</span>
+            {breakEvenTrades > 0 ? (
+              <>
+                <span className="text-muted-foreground"> · </span>
+                <span className="text-amber-400">{breakEvenTrades} break-even</span>
+              </>
+            ) : null}
+            <span className="text-muted-foreground"> ({completedTrades.length} trades)</span>
+          </p>
         </div>
       </HudPanel>
 

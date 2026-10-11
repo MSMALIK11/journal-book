@@ -934,11 +934,5 @@ async function jbMainScrape() {
   }
 }
 
-return jbMainScrape().catch((err) => ({
-  trades: [],
-  strategy: "TradingView Strategy",
-  instrument: window.__JB_CHART_SYMBOL__ || "UNKNOWN",
-  frameUrl: location.href,
-  debug: { scraperCrash: true, message: String(err?.message || err) },
-  error: String(err?.message || err),
-}))
+// Registered for sync-client func injection (file scripts cannot use top-level return).
+globalThis.__JB_MAIN_SCRAPE__ = jbMainScrape

@@ -57,12 +57,18 @@ JBSync.buildExternalId = function buildExternalId(trade) {
   if (Number.isFinite(entryMs) && entryMs > 0) {
     return `tv:${slug}:${symbol}:${entryMs}:${trade.direction}`
   }
-  return `tv:${slug}:${trade.tradeNumber}`
+  return `tv:${slug}:${symbol}:${trade.tradeNumber}`
+}
+
+JBSync.legacyExternalId = function legacyExternalId(trade) {
+  const slug = JBSync.strategySlug(trade.strategy || "")
+  const symbol = (trade.instrument || "UNKNOWN").replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+  return `tv:${slug}:${symbol}:${trade.tradeNumber}`
 }
 
 JBSync.tradeKnownOnServer = function tradeKnownOnServer(trade, knownIds) {
   if (knownIds.has(JBSync.buildExternalId(trade))) return true
-  return knownIds.has(`tv:${JBSync.strategySlug(trade.strategy || "")}:${trade.tradeNumber}`)
+  return knownIds.has(JBSync.legacyExternalId(trade))
 }
 
 JBSync.isTypedExitTrade = function isTypedExitTrade(trade) {
@@ -335,7 +341,7 @@ JBSync.fetchKnownTradeSnapshot = async function fetchKnownTradeSnapshot(config, 
 
 JBSync.tradeNeedsRefresh = function tradeNeedsRefresh(trade, snapshot) {
   const extId = JBSync.buildExternalId(trade)
-  const legacyId = `tv:${JBSync.strategySlug(trade.strategy || "")}:${trade.tradeNumber}`
+  const legacyId = JBSync.legacyExternalId(trade)
   const fp = JBSync.tradeFingerprint(trade)
   const known =
     snapshot.ids.has(extId) ||
@@ -597,10 +603,9 @@ JBSync.readChartSymbolFromTab = async function readChartSymbolFromTab(tab) {
     typeof JBSymbol !== "undefined" && JBSymbol.fromTitle
       ? JBSync.normalizeChartSymbol(JBSymbol.fromTitle(tab.title || ""))
       : ""
-  // Visible title wins when the URL/widget is still on the previous symbol.
-  if (titleSymbol && fromPage && titleSymbol !== fromPage) return titleSymbol
-  if (fromPage) return fromPage
+  // Tab title is what the user sees; URL ?symbol= often lags after switching charts.
   if (titleSymbol) return titleSymbol
+  if (fromPage) return fromPage
   return JBSync.symbolFromTabUrl(tab.url)
 }
 
@@ -669,13 +674,48 @@ JBSync.filterTradesForChart = function filterTradesForChart(trades, chartSymbol)
   })
 }
 
+JBSync.inferChartSymbolFromTrades = function inferChartSymbolFromTrades(trades, chartSymbol) {
+  const normalized = JBSync.normalizeChartSymbol(chartSymbol)
+  const list = trades || []
+  if (!list.length) return normalized
+
+  const sample = list.find((t) => Number.isFinite(t?.entry?.price)) || list[0]
+  const price = sample?.entry?.price
+  if (normalized && JBSync.priceMatchesInstrument(price, normalized)) return normalized
+
+  const inst = JBSync.normalizeChartSymbol(sample?.instrument)
+  if (inst && inst !== "UNKNOWN" && JBSync.priceMatchesInstrument(price, inst)) return inst
+
+  for (const trade of list) {
+    const p = trade?.entry?.price
+    const candidate = JBSync.normalizeChartSymbol(trade?.instrument)
+    if (candidate && candidate !== "UNKNOWN" && JBSync.priceMatchesInstrument(p, candidate)) {
+      return candidate
+    }
+  }
+  return normalized
+}
+
 JBSync.applyChartSymbol = function applyChartSymbol(trades, chartSymbol) {
   const normalized = JBSync.normalizeChartSymbol(chartSymbol)
   if (!normalized) return trades
-  const filtered = JBSync.filterTradesForChart(trades, normalized)
+  let filtered = JBSync.filterTradesForChart(trades, normalized)
+  if (!filtered.length && (trades || []).length) {
+    const inferred = JBSync.inferChartSymbolFromTrades(trades, normalized)
+    if (inferred && inferred !== normalized) {
+      filtered = JBSync.filterTradesForChart(trades, inferred)
+    }
+    if (!filtered.length) {
+      filtered = (trades || []).filter((trade) => {
+        const inst = JBSync.normalizeChartSymbol(trade.instrument) || inferred || normalized
+        return JBSync.priceMatchesInstrument(trade.entry?.price, inst)
+      })
+    }
+  }
+  const stamp = JBSync.inferChartSymbolFromTrades(filtered.length ? filtered : trades, normalized)
   for (const trade of filtered) {
-    if (JBSync.priceMatchesInstrument(trade.entry?.price, normalized)) {
-      trade.instrument = normalized
+    if (JBSync.priceMatchesInstrument(trade.entry?.price, stamp)) {
+      trade.instrument = stamp
     }
   }
   return filtered
@@ -788,10 +828,31 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
       frameDebug.push({ method: "main-world", injectionError: error.message })
     }
 
-    // isolated-world scraper — light mode only peeks top of List of trades.
-    const injections = await chrome.scripting.executeScript({
+    // Load scraper, then invoke via func so Chrome awaits the async result.
+    await chrome.scripting.executeScript({
       target,
       files: ["src/content/main-scraper.js"],
+    })
+    const injections = await chrome.scripting.executeScript({
+      target,
+      func: () => {
+        const run = globalThis.__JB_MAIN_SCRAPE__
+        if (typeof run !== "function") {
+          return {
+            trades: [],
+            error: "Scraper not loaded — reload extension and refresh TradingView (F5).",
+            debug: { scraperMissing: true },
+          }
+        }
+        return run().catch((err) => ({
+          trades: [],
+          strategy: "TradingView Strategy",
+          instrument: globalThis.__JB_CHART_SYMBOL__ || "UNKNOWN",
+          frameUrl: location.href,
+          debug: { scraperCrash: true, message: String(err?.message || err) },
+          error: String(err?.message || err),
+        }))
+      },
     })
 
     for (const injection of injections || []) {
@@ -877,12 +938,9 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
       }
     }
 
-    const trades = JBSync.markLatestPaintedOpens(
-      JBSync.applyChartSymbol(
-        mergedTrades.sort((a, b) => b.tradeNumber - a.tradeNumber),
-        chartSymbol,
-      ),
-    )
+    const sorted = mergedTrades.sort((a, b) => b.tradeNumber - a.tradeNumber)
+    const resolvedSymbol = JBSync.inferChartSymbolFromTrades(sorted, chartSymbol) || chartSymbol
+    const trades = JBSync.markLatestPaintedOpens(JBSync.applyChartSymbol(sorted, resolvedSymbol))
     const best = frameDebug.sort((a, b) => b.trades - a.trades)[0]
     const bestGrid = injections?.find((i) => i.result)?.result
 
@@ -935,9 +993,10 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
     const result = {
       trades,
       strategy: bestGrid?.strategy || "TradingView Strategy",
-      instrument: chartSymbol || bestGrid?.instrument || trades[0]?.instrument || "",
+      instrument: resolvedSymbol || chartSymbol || bestGrid?.instrument || trades[0]?.instrument || "",
       debug: {
         chartSymbol: chartSymbol || null,
+        resolvedSymbol: resolvedSymbol || null,
         tabId: tab.id,
         tabTitle: tab.title || null,
         tabUrl: tab.url || null,
@@ -1021,17 +1080,33 @@ JBSync.inferAssetType = function inferAssetType(symbol, fallback) {
   return fallback || "crypto"
 }
 
+JBSync.resolveTradeInstrument = function resolveTradeInstrument(trade, chartSymbol) {
+  const chart = JBSync.normalizeChartSymbol(chartSymbol)
+  const scraped = JBSync.normalizeChartSymbol(trade?.instrument)
+  const price = trade?.entry?.price
+  if (scraped && scraped !== "UNKNOWN" && JBSync.priceMatchesInstrument(price, scraped)) {
+    return scraped
+  }
+  if (chart && JBSync.priceMatchesInstrument(price, chart)) {
+    return chart
+  }
+  if (scraped && scraped !== "UNKNOWN") return scraped
+  return chart || scraped || "UNKNOWN"
+}
+
 JBSync.normalizeTrades = function normalizeTrades(trades, assetType, chartSymbol) {
-  const symbol = JBSync.normalizeChartSymbol(chartSymbol)
-  if (!symbol) {
+  const chart = JBSync.normalizeChartSymbol(chartSymbol)
+  if (!chart) {
     throw new Error("Missing chart symbol — open the TradingView chart tab and retry.")
   }
-  return trades.map((trade) => ({
+  return trades.map((trade) => {
+    const instrument = JBSync.resolveTradeInstrument(trade, chart)
+    return {
     tradeNumber: trade.tradeNumber,
     direction: trade.direction,
-    instrument: symbol,
+    instrument,
     strategy: trade.strategy,
-    assetType: JBSync.inferAssetType(symbol, assetType),
+    assetType: JBSync.inferAssetType(instrument, assetType),
     entry: {
       datetime: JBSync.normalizeDatetime(trade.entry.datetime),
       price: trade.entry.price,
@@ -1048,7 +1123,8 @@ JBSync.normalizeTrades = function normalizeTrades(trades, assetType, chartSymbol
     netPnl: trade.netPnl,
     returnPct: trade.returnPct,
     commission: trade.commission,
-  }))
+  }
+  })
 }
 
 JBSync.postJson = async function postJson(url, token, body) {
@@ -1063,7 +1139,12 @@ JBSync.postJson = async function postJson(url, token, body) {
   })
 
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`)
+  if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error(data.error || "Unauthorized — regenerate sync key in journal Profile → TradingView Sync")
+    }
+    throw new Error(data.error || `Request failed (${response.status})`)
+  }
   return data
 }
 
@@ -1679,7 +1760,11 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     throw new Error("Missing chart symbol for captured trades — refresh TradingView chart (F5).")
   }
 
-  const stamped = list.map((trade) => ({ ...trade, instrument: symbol, strategy: trade.strategy || "TradingView Strategy" }))
+  const stamped = list.map((trade) => ({
+    ...trade,
+    instrument: JBSync.resolveTradeInstrument(trade, symbol),
+    strategy: trade.strategy || "TradingView Strategy",
+  }))
 
   const newOrUpdated = stamped.filter((trade) => JBSync.tradeNeedsRefresh(trade, snapshot))
   const seen = new Set(newOrUpdated.map((trade) => trade.tradeNumber))

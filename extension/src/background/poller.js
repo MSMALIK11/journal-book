@@ -279,10 +279,14 @@ function startRefreshChecker() {
 startRefreshChecker()
 
 async function sendHeartbeatIfConfigured() {
-  const config = await JBSync.getConfig()
-  if (!config.syncToken) return
-  await JBSync.sendHeartbeat(config)
-  await runRefreshCheck()
+  try {
+    const config = await JBSync.getConfig()
+    if (!config.syncToken) return
+    await JBSync.sendHeartbeat(config)
+    await runRefreshCheck()
+  } catch (error) {
+    console.warn("Heartbeat failed:", error?.message || error)
+  }
 }
 
 async function runAutoSync(source) {

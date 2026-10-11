@@ -13,12 +13,13 @@ export function ThemeSettings() {
 
   useEffect(() => setMounted(true), [])
 
-  const isDark = resolvedTheme === "dark"
+  const isDark = mounted && resolvedTheme === "dark"
+  const sectionIcon = !mounted ? Sun : isDark ? Moon : Sun
 
   return (
     <SettingsSection
       id="appearance"
-      icon={isDark ? Moon : Sun}
+      icon={sectionIcon}
       iconTone="violet"
       title="Appearance"
       description="Switch between light and dark mode for the journal UI."
