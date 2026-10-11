@@ -8,6 +8,7 @@ import { AutoExportSettings } from "@/components/settings/auto-export-settings"
 import { PwaAlertsSettings } from "@/components/settings/pwa-alerts-settings"
 import { TradeAlarmSettings } from "@/components/settings/trade-alarm-settings"
 import { TelegramSettings } from "@/components/settings/telegram-settings"
+import { ThemeSettings } from "@/components/settings/theme-settings"
 import { HudPanel } from "@/components/dashboard/hud-panel"
 
 export function SettingsPageContent() {
@@ -29,6 +30,7 @@ export function SettingsPageContent() {
       </HudPanel>
 
       <div className="space-y-3">
+        <ThemeSettings />
         <AccountsSettings />
         <TradeAlarmSettings />
         <PwaAlertsSettings />

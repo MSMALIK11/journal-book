@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import type { MonthlyBucket } from "@/lib/trading/analytics"
+import { formatR, type MonthlyBucket } from "@/lib/trading/analytics"
 
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -192,6 +192,8 @@ export function MonthlyProfitLoss({ byMonth }: Props) {
                 <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Earned</TableHead>
                 <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Return %</TableHead>
                 <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Win %</TableHead>
+                <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Avg R</TableHead>
+                <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Fee drag</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -216,6 +218,24 @@ export function MonthlyProfitLoss({ byMonth }: Props) {
                     {formatReturnPct(month.returnPct)}
                   </TableCell>
                   <TableCell className="text-right">{month.winRate.toFixed(1)}%</TableCell>
+                  <TableCell
+                    className={`text-right ${
+                      month.avgR == null
+                        ? "text-muted-foreground"
+                        : month.avgR >= 0
+                          ? "text-emerald-400"
+                          : "text-rose-400"
+                    }`}
+                  >
+                    {formatR(month.avgR)}
+                  </TableCell>
+                  <TableCell
+                    className={`text-right ${
+                      month.feeDragPct != null && month.feeDragPct > 0.2 ? "text-amber-400" : "text-muted-foreground"
+                    }`}
+                  >
+                    {month.feeDragPct == null ? "—" : `${(month.feeDragPct * 100).toFixed(1)}%`}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

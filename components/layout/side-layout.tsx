@@ -3,6 +3,10 @@ import { ActiveAccountProvider } from "@/hooks/use-active-account"
 import { SyncAccountAutoSwitch } from "@/components/sync/sync-account-auto-switch"
 import { AutoExportScheduler } from "@/components/export/auto-export-scheduler"
 import { TelegramDailySummaryScheduler } from "@/components/telegram/telegram-daily-summary-scheduler"
+import { AppBadgeSync } from "@/components/pwa/app-badge-sync"
+import { InstallAppBanner } from "@/components/pwa/install-app-banner"
+import { PushNavigationSync } from "@/components/pwa/push-navigation-sync"
+import { AlertToastSync } from "@/components/notifications/alert-toast-sync"
 import { NewTradeAlarmProvider } from "@/components/notifications/new-trade-alarm-provider"
 import { TradingAlertsSync } from "@/components/notifications/trading-alerts-sync"
 import { TradeSyncProvider } from "@/hooks/use-trade-sync-event"
@@ -20,6 +24,10 @@ export default function SideLayout({ children }: SiteLayoutProps) {
       <TradeSyncProvider>
         <NewTradeAlarmProvider>
           <TradingAlertsSync />
+          <AlertToastSync />
+          <AppBadgeSync />
+          <PushNavigationSync />
+          <InstallAppBanner />
           <SyncAccountAutoSwitch />
           <AutoExportScheduler />
           <TelegramDailySummaryScheduler />

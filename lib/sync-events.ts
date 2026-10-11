@@ -31,6 +31,8 @@ export type AlertsUpdatedEvent = {
   type: "alerts_updated"
   accountId: string
   at?: string
+  /** Keys dismissed on another tab/device — apply before refetch for instant stop. */
+  dismissedKeys?: string[]
 }
 
 export type SyncEvent = TradesUpdatedEvent | AccountsUpdatedEvent | AlertsUpdatedEvent
@@ -98,11 +100,16 @@ export function publishAccountsUpdated(
   }
 }
 
-export function publishAlertsUpdated(userId: string, accountId: string) {
+export function publishAlertsUpdated(
+  userId: string,
+  accountId: string,
+  dismissedKeys?: string[],
+) {
   const event: AlertsUpdatedEvent = {
     type: "alerts_updated",
     accountId,
     at: new Date().toISOString(),
+    dismissedKeys: dismissedKeys?.length ? [...new Set(dismissedKeys)] : undefined,
   }
   for (const listener of getListenerMap().get(userListenerKey(userId)) ?? []) {
     try {

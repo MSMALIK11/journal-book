@@ -44,6 +44,9 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     }
     if (parsed.data.color !== undefined) account.color = parsed.data.color
     if (parsed.data.pnlSource !== undefined) account.pnlSource = parsed.data.pnlSource
+    if (parsed.data.initialCapital !== undefined) {
+      account.initialCapital = parsed.data.initialCapital ?? null
+    }
 
     if (parsed.data.isDefault === true && !account.isDefault) {
       await TradingAccount.updateMany({ userId: session.sub }, { $set: { isDefault: false } })

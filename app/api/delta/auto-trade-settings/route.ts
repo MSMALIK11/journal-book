@@ -5,10 +5,9 @@ import User from "@/app/api/models/User"
 import { getDeltaEnvironmentFromRequest } from "@/lib/broker/delta-api-params"
 import { getRecentAutoTradeLogs } from "@/lib/broker/delta-auto-trade"
 import { listEnabledDeltaAccounts } from "@/lib/broker/delta-credentials"
-import { isServerLiveTradingBlocked } from "@/lib/broker/delta-live-guard"
+import { assertLiveTradingEnabled, isServerLiveTradingBlocked } from "@/lib/broker/delta-live-guard"
 import { getDeltaOrderMaxSize } from "@/lib/broker/delta-orders"
 import {
-  DELTA_AUTO_TRADE_MARGIN_PCTS,
   DELTA_AUTO_TRADE_SYMBOLS,
   getDeltaAutoTradeConfig,
   normalizeDeltaAutoTradeConfig,
@@ -24,16 +23,17 @@ const patchSchema = z.object({
   broadcastAccountIds: z.array(z.string()).optional(),
   symbol: z.enum(DELTA_AUTO_TRADE_SYMBOLS).optional(),
   symbols: z.array(z.enum(DELTA_AUTO_TRADE_SYMBOLS)).min(1).optional(),
-  marginPct: z.union([
-    z.literal(10),
-    z.literal(25),
-    z.literal(50),
-    z.literal(75),
-    z.literal(100),
-  ]).optional(),
+  marginPct: z.number().int().min(1).max(100).optional(),
   leverage: z.number().int().positive().optional(),
   lotSize: z.number().int().positive().nullable().optional(),
+  leverageBySymbol: z
+    .record(z.enum(DELTA_AUTO_TRADE_SYMBOLS), z.number().int().positive())
+    .optional(),
+  lotSizeBySymbol: z
+    .record(z.enum(DELTA_AUTO_TRADE_SYMBOLS), z.number().int().positive().nullable())
+    .optional(),
   attachTvBrackets: z.boolean().optional(),
+  closeOnTvExit: z.boolean().optional(),
 })
 
 export async function GET(request: NextRequest) {
@@ -95,24 +95,54 @@ export async function PATCH(request: NextRequest) {
     await connectDB()
     const user = await User.findById(session.sub).select("deltaAutoTradePreferences").lean()
     const current = getDeltaAutoTradeConfig(user?.deltaAutoTradePreferences, environment)
-    const { leverage: leveragePatch, lotSize: lotSizePatch, ...rest } = parsed.data
+    const {
+      leverage: leveragePatch,
+      lotSize: lotSizePatch,
+      leverageBySymbol: leverageMapPatch,
+      lotSizeBySymbol: lotSizeMapPatch,
+      ...rest
+    } = parsed.data
+
+    const maxOrderSize = getDeltaOrderMaxSize(environment)
 
     if (leveragePatch != null && !DELTA_LEVERAGE_STEPS.includes(leveragePatch as (typeof DELTA_LEVERAGE_STEPS)[number])) {
       return NextResponse.json({ error: "Unsupported leverage value" }, { status: 400 })
     }
-    if (lotSizePatch != null && lotSizePatch > getDeltaOrderMaxSize(environment)) {
+    if (lotSizePatch != null && lotSizePatch > maxOrderSize) {
       return NextResponse.json(
-        { error: `Lot size exceeds the ${getDeltaOrderMaxSize(environment)} Lot per-order limit` },
+        { error: `Lot size exceeds the ${maxOrderSize} Lot per-order limit` },
         { status: 400 },
       )
     }
+    for (const [sym, leverage] of Object.entries(leverageMapPatch ?? {})) {
+      if (!DELTA_LEVERAGE_STEPS.includes(leverage as (typeof DELTA_LEVERAGE_STEPS)[number])) {
+        return NextResponse.json({ error: `Unsupported leverage value for ${sym}` }, { status: 400 })
+      }
+    }
+    for (const [sym, lots] of Object.entries(lotSizeMapPatch ?? {})) {
+      if (lots != null && lots > maxOrderSize) {
+        return NextResponse.json(
+          { error: `Lot size for ${sym} exceeds the ${maxOrderSize} Lot per-order limit` },
+          { status: 400 },
+        )
+      }
+    }
 
     const symbolForLeverage = rest.symbol ?? current.symbol
-    const leverageBySymbol =
-      leveragePatch != null
-        ? { ...current.leverageBySymbol, [symbolForLeverage]: leveragePatch }
-        : current.leverageBySymbol
+    const leverageBySymbol = { ...current.leverageBySymbol }
+    for (const sym of DELTA_AUTO_TRADE_SYMBOLS) {
+      const next = leverageMapPatch?.[sym]
+      if (next != null) leverageBySymbol[sym] = next
+    }
+    if (leveragePatch != null) leverageBySymbol[symbolForLeverage] = leveragePatch
+
     const lotSizeBySymbol = { ...current.lotSizeBySymbol }
+    for (const sym of DELTA_AUTO_TRADE_SYMBOLS) {
+      const next = lotSizeMapPatch?.[sym]
+      if (next === undefined) continue
+      if (next === null) delete lotSizeBySymbol[sym]
+      else lotSizeBySymbol[sym] = next
+    }
     if (lotSizePatch === null) {
       delete lotSizeBySymbol[symbolForLeverage]
     } else if (lotSizePatch != null) {
@@ -126,11 +156,19 @@ export async function PATCH(request: NextRequest) {
       lotSizeBySymbol,
     })
 
-    if (next.enabled && environment === "live" && isServerLiveTradingBlocked()) {
-      return NextResponse.json(
-        { error: "Live trading is blocked on this server (DELTA_LIVE_ENABLED=false)" },
-        { status: 400 },
-      )
+    if (next.enabled && environment === "live") {
+      if (isServerLiveTradingBlocked()) {
+        return NextResponse.json(
+          { error: "Live trading is blocked on this server (DELTA_LIVE_ENABLED=false)" },
+          { status: 400 },
+        )
+      }
+      try {
+        await assertLiveTradingEnabled(session.sub)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Live trading is not enabled"
+        return NextResponse.json({ error: message }, { status: 400 })
+      }
     }
 
     const enabledAccounts = await listEnabledDeltaAccounts(session.sub, environment)

@@ -1,10 +1,11 @@
 import type { DeltaEnvironment } from "@/lib/broker/delta-env"
 import { DELTA_LEVERAGE_STEPS } from "@/lib/broker/delta-product"
 
-export const DELTA_AUTO_TRADE_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XAUTUSD"] as const
+export const DELTA_AUTO_TRADE_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XAUTUSD", "PAXGUSD"] as const
 export type DeltaAutoTradeSymbol = (typeof DELTA_AUTO_TRADE_SYMBOLS)[number]
 export const DELTA_AUTO_TRADE_MARGIN_PCTS = [10, 25, 50, 75, 100] as const
-export type DeltaAutoTradeMarginPct = (typeof DELTA_AUTO_TRADE_MARGIN_PCTS)[number]
+/** Any whole percent 1-100 is valid; DELTA_AUTO_TRADE_MARGIN_PCTS is just the UI preset list. */
+export type DeltaAutoTradeMarginPct = number
 
 export type DeltaAutoTradeMode = "single" | "broadcast"
 
@@ -22,6 +23,8 @@ export type DeltaAutoTradeConfig = {
   leverageBySymbol?: DeltaLeverageBySymbol
   lotSizeBySymbol?: DeltaLotSizeBySymbol
   attachTvBrackets?: boolean
+  /** Market-close Delta when TV sends a close fill (in addition to bracket SL/TP). */
+  closeOnTvExit?: boolean
 }
 
 export type DeltaAutoTradePreferences = {
@@ -38,6 +41,7 @@ export const DEFAULT_DELTA_AUTO_TRADE_CONFIG: DeltaAutoTradeConfig = {
   symbols: ["BTCUSD"],
   marginPct: 25,
   attachTvBrackets: true,
+  closeOnTvExit: true,
 }
 
 export function isDeltaAutoTradeSymbol(value: string): value is DeltaAutoTradeSymbol {
@@ -46,9 +50,7 @@ export function isDeltaAutoTradeSymbol(value: string): value is DeltaAutoTradeSy
 
 function normalizeMarginPct(value: unknown): DeltaAutoTradeMarginPct {
   const n = Number(value)
-  if (DELTA_AUTO_TRADE_MARGIN_PCTS.includes(n as DeltaAutoTradeMarginPct)) {
-    return n as DeltaAutoTradeMarginPct
-  }
+  if (Number.isSafeInteger(n) && n >= 1 && n <= 100) return n
   return DEFAULT_DELTA_AUTO_TRADE_CONFIG.marginPct
 }
 
@@ -142,6 +144,7 @@ export function normalizeDeltaAutoTradeConfig(
     leverageBySymbol: normalizeLeverageBySymbol(input?.leverageBySymbol),
     lotSizeBySymbol: normalizeLotSizeBySymbol(input?.lotSizeBySymbol),
     attachTvBrackets: input?.attachTvBrackets !== false,
+    closeOnTvExit: input?.closeOnTvExit !== false,
   }
 }
 

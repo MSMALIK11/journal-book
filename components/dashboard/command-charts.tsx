@@ -59,6 +59,8 @@ export function CommandCharts({ loading, analytics, symbol, extensionLive, recen
     label: format(parseISO(point.date), "MMM d"),
   }))
   const peak = equity.at(-1)?.equity ?? 0
+  const returnPct = analytics?.overview.returnPct ?? null
+  const initialCapital = analytics?.overview.initialCapital ?? null
   const months = (analytics?.byMonth ?? []).slice(-6).map((month) => ({
     key: month.key,
     label: monthLabel(month.key),
@@ -81,6 +83,21 @@ export function CommandCharts({ loading, analytics, symbol, extensionLive, recen
           <div>
             <p className="hud-label">Equity Curve</p>
             <p className="mt-1 text-lg font-semibold text-emerald-400">{currency.format(peak)}</p>
+            {loading ? null : returnPct === null ? (
+              <p className="mt-0.5 text-[10px] text-muted-foreground">
+                Set initial capital to see return %
+              </p>
+            ) : (
+              <p
+                className={cn(
+                  "mt-0.5 text-[10px] font-medium",
+                  returnPct >= 0 ? "text-emerald-400/80" : "text-rose-400/80",
+                )}
+              >
+                {returnPct >= 0 ? "+" : ""}
+                {returnPct.toFixed(2)}% on {currency.format(initialCapital ?? 0)}
+              </p>
+            )}
           </div>
           <Button asChild variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground">
             <Link href="/analytics">

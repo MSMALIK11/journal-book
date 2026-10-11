@@ -21,6 +21,11 @@ function normalizeSymbol(symbol: string): string {
 
 export async function POST(request: NextRequest) {
   try {
+    const origin = request.headers.get("origin")
+    if (origin && origin !== request.nextUrl.origin) {
+      return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
+    }
+
     const session = await getSession(request)
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
@@ -81,7 +86,8 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("Failed to close Delta position:", error)
     const message = error instanceof Error ? error.message : "Unable to close position"
-    const status = message.includes("Live trading is disabled") ? 403 : 400
+    const status =
+      message.includes("Live trading is disabled") || message.includes("Enable live trading") ? 403 : 400
     return NextResponse.json({ error: message }, { status })
   }
 }

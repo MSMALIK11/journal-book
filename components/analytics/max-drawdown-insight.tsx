@@ -61,6 +61,20 @@ export function MaxDrawdownInsight({ episode, maxDrawdown, maxDrawdownPct }: Pro
           <Badge variant="outline" className="border-cyan-400/20">
             {episode.trades.length} trade{episode.trades.length === 1 ? "" : "s"} in this drawdown
           </Badge>
+          {episode.durationDays > 0 ? (
+            <Badge variant="outline" className="border-amber-400/30 text-amber-300">
+              {episode.durationDays} day{episode.durationDays === 1 ? "" : "s"} peak → trough
+            </Badge>
+          ) : null}
+          {episode.recovered ? (
+            <Badge variant="outline" className="border-emerald-400/30 text-emerald-300">
+              Recovered in {episode.recoveryDays} day{episode.recoveryDays === 1 ? "" : "s"}
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="border-rose-400/30 text-rose-300">
+              Still underwater
+            </Badge>
+          )}
         </div>
 
         {episode.trades.length > 0 ? (

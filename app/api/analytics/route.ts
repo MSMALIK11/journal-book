@@ -4,8 +4,9 @@ import User from "@/app/api/models/User"
 import { computeAnalytics, computePeriodComparison } from "@/lib/trading/analytics"
 import {
   ANALYTICS_TRADE_SELECT,
+  EXIT_ATTRIBUTION_LOOKBACK_DAYS,
   buildTradeQuery,
-  fetchClosedTrades,
+  fetchClosedTradesWithMeta,
   previousPeriodDates,
   validateDateRange,
 } from "@/lib/trading/trade-query"
@@ -19,7 +20,7 @@ export async function GET(request: NextRequest) {
 
     await connectDB()
 
-    const { accountId } = await getAccountContext(request, session.sub)
+    const { accountId, account } = await getAccountContext(request, session.sub)
     const { searchParams } = new URL(request.url)
     const source = searchParams.get("source") || "all"
     const strategy = searchParams.get("strategy")
@@ -32,28 +33,48 @@ export async function GET(request: NextRequest) {
 
     const user = await User.findById(session.sub).select("timezone").lean()
     const timezone = user?.timezone || "Asia/Karachi"
+    const initialCapital =
+      typeof account.initialCapital === "number" && account.initialCapital > 0
+        ? account.initialCapital
+        : null
 
     const queryParams = { source, strategy, instrument, startDate, endDate }
-    const query = buildTradeQuery(session.sub, accountId, queryParams)
+    // Days mean calendar days in the user's timezone, and a trade belongs to the day it closed,
+    // so the entry_date bound has to reach further back than the window itself.
+    const queryOptions = { timezone, exitAttributionLookbackDays: EXIT_ATTRIBUTION_LOOKBACK_DAYS }
+    const attribution = { startDate, endDate, lookbackDays: EXIT_ATTRIBUTION_LOOKBACK_DAYS }
 
-    const trades = await fetchClosedTrades(query, ANALYTICS_TRADE_SELECT)
-    const analytics = computeAnalytics(trades, { timezone })
+    const { trades, meta } = await fetchClosedTradesWithMeta(
+      buildTradeQuery(session.sub, accountId, queryParams, queryOptions),
+      ANALYTICS_TRADE_SELECT,
+    )
+    const analytics = computeAnalytics(trades, { timezone, initialCapital, attribution })
+    analytics.meta = meta
 
     if (startDate && endDate) {
       const previous = previousPeriodDates(startDate, endDate)
-      const previousTrades = await fetchClosedTrades(
-        buildTradeQuery(session.sub, accountId, {
-          ...queryParams,
-          startDate: previous.startDate,
-          endDate: previous.endDate,
-        }),
+      const { trades: previousTrades } = await fetchClosedTradesWithMeta(
+        buildTradeQuery(
+          session.sub,
+          accountId,
+          { ...queryParams, startDate: previous.startDate, endDate: previous.endDate },
+          queryOptions,
+        ),
         ANALYTICS_TRADE_SELECT,
       )
-      const previousAnalytics = computeAnalytics(previousTrades, { timezone })
+      const previousAnalytics = computeAnalytics(previousTrades, {
+        timezone,
+        initialCapital,
+        attribution: {
+          startDate: previous.startDate,
+          endDate: previous.endDate,
+          lookbackDays: EXIT_ATTRIBUTION_LOOKBACK_DAYS,
+        },
+      })
       analytics.comparison = computePeriodComparison(
         analytics.overview,
         previousAnalytics.overview,
-        previous.label,
+        `${previous.label} (by exit date)`,
       )
     }
 

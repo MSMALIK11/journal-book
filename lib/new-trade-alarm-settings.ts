@@ -3,6 +3,7 @@ export type TradeAlarmSoundMode = "once" | "manual"
 export type TradeAlarmSoundId =
   | "urgent-simple-tone-loop"
   | "classic-alarm"
+  | "iphone-notification"
 
 export type TradeAlarmSoundOption = {
   id: TradeAlarmSoundId
@@ -26,6 +27,13 @@ export const TRADE_ALARM_SOUNDS: TradeAlarmSoundOption[] = [
     name: "Classic alarm",
     description: "Traditional alarm clock style ring.",
     src: "/sounds/alarms/classic-alarm.mp3",
+    loopFriendly: false,
+  },
+  {
+    id: "iphone-notification",
+    name: "iPhone SMS tone",
+    description: "Classic iPhone message notification — short and clear.",
+    src: "/sounds/alarms/iphone-notification.mp3",
     loopFriendly: false,
   },
 ]

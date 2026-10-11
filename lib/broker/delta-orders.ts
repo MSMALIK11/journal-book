@@ -55,6 +55,9 @@ export function getDeltaSymbolCandidates(symbol: string): string[] {
   if (["XAUUSD", "XAUUSDT", "XAU", "GOLD", "XAUT", "XAUTUSD"].includes(normalized)) {
     candidates.push("XAUTUSD")
   }
+  if (["PAXGUSD", "PAXGUSDT", "PAXG"].includes(normalized)) {
+    candidates.push("PAXGUSD")
+  }
   if (normalized === "BTC") candidates.push("BTCUSD")
   if (normalized === "ETH") candidates.push("ETHUSD")
   if (normalized === "SOL") candidates.push("SOLUSD")
@@ -76,9 +79,7 @@ export function resolveDeltaProductId(symbol: string, environment: DeltaEnvironm
     }
   }
   const fallback =
-    environment === "live"
-      ? (process.env.DELTA_LIVE_FALLBACK_PRODUCT_ID ?? process.env.DELTA_FALLBACK_PRODUCT_ID)
-      : process.env.DELTA_FALLBACK_PRODUCT_ID
+    environment === "live" ? process.env.DELTA_LIVE_FALLBACK_PRODUCT_ID : process.env.DELTA_FALLBACK_PRODUCT_ID
   return fallback ? Number(fallback) : null
 }
 

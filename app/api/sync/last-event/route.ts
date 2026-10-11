@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { getAlertDismissEvents } from "@/lib/sync-alert-dismiss"
 import { getTradeSyncEvents } from "@/lib/sync-last-event"
 import { getSession } from "@/lib/session"
 
@@ -9,9 +10,12 @@ export async function GET(request: NextRequest) {
     const session = await getSession(request)
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-    const { event, events } = await getTradeSyncEvents(session.sub)
+    const [{ event, events }, alertDismiss] = await Promise.all([
+      getTradeSyncEvents(session.sub),
+      getAlertDismissEvents(session.sub),
+    ])
     return NextResponse.json(
-      { event, events },
+      { event, events, alertDismiss: alertDismiss.event, alertDismissEvents: alertDismiss.events },
       { headers: { "Cache-Control": "no-store" } },
     )
   } catch (error) {

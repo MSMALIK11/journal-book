@@ -23,6 +23,9 @@ const TV_TO_DELTA: Record<string, DeltaAutoTradeSymbol> = {
   GOLD: "XAUTUSD",
   XAUT: "XAUTUSD",
   XAUTUSD: "XAUTUSD",
+  PAXGUSD: "PAXGUSD",
+  PAXGUSDT: "PAXGUSD",
+  PAXG: "PAXGUSD",
 }
 
 export function mapTvInstrumentToDelta(instrument: string): DeltaAutoTradeSymbol | null {

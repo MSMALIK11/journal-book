@@ -502,7 +502,7 @@ JBSync.normalizeChartSymbol = function normalizeChartSymbol(raw) {
   decoded = decoded.replace(/%3A/gi, ":")
   if (decoded.includes(":")) decoded = decoded.split(":").pop().trim()
   let normalized = decoded.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
-  const suffix = normalized.match(/(XAUUSD|XAGUSD|BTCUSDT|BTCUSD|ETHUSDT|USOIL)$/i)
+  const suffix = normalized.match(/(XAUUSD|XAGUSD|PAXGUSDT|PAXGUSD|BTCUSDT|BTCUSD|ETHUSDT|ETHUSD|SOLUSDT|SOLUSD|USOIL)$/i)
   if (suffix && normalized.length > suffix[1].length + 2) return suffix[1]
   const encodedColon = normalized.match(/3A([A-Z0-9]{3,12})$/i)
   if (encodedColon) return encodedColon[1]
@@ -522,15 +522,15 @@ JBSync.readChartSymbolFromTab = async function readChartSymbolFromTab(tab) {
   let fromPage = ""
   try {
     await chrome.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: false },
+      target: { tabId: tab.id, allFrames: true },
       world: "MAIN",
       files: ["src/lib/symbol-utils.js"],
     })
-    const [injection] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: false },
+    const injections = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
       world: "MAIN",
       func: async () => {
-        for (let attempt = 0; attempt < 12; attempt += 1) {
+        const readOnce = () => {
           try {
             const chart = window.tvWidget?.activeChart?.()
             const sym = chart?.symbol?.() || chart?.symbolExt?.()
@@ -570,17 +570,25 @@ JBSync.readChartSymbolFromTab = async function readChartSymbolFromTab(tab) {
             if (fromTitle) return fromTitle
           }
 
-          await new Promise((resolve) => setTimeout(resolve, 150))
+          const symbolParam = location.href.match(/symbol=([^&]+)/i)
+          if (symbolParam && typeof JBSymbol !== "undefined") {
+            return JBSymbol.normalize(decodeURIComponent(symbolParam[1]))
+          }
+          return ""
         }
 
-        const symbolParam = location.href.match(/symbol=([^&]+)/i)
-        if (symbolParam && typeof JBSymbol !== "undefined") {
-          return JBSymbol.normalize(decodeURIComponent(symbolParam[1]))
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          const sym = readOnce()
+          if (sym) return sym
+          await new Promise((resolve) => setTimeout(resolve, 120))
         }
-        return typeof JBSymbol !== "undefined" ? JBSymbol.fromTitle(document.title) : ""
+        return readOnce()
       },
     })
-    fromPage = JBSync.normalizeChartSymbol(injection?.result || "")
+    for (const injection of injections || []) {
+      const sym = JBSync.normalizeChartSymbol(injection?.result || "")
+      if (sym) fromPage = sym
+    }
   } catch {
     fromPage = ""
   }
@@ -630,7 +638,11 @@ JBSync.priceMatchesInstrument = function priceMatchesInstrument(price, symbol) {
   if (/SOL/.test(s)) return price >= 1 && price <= 5000
   if (/^(USOIL|UKOIL|WTI|CRUDE|OIL|CL)/.test(s)) return price >= 10 && price <= 500
   if (/NIFTY|SENSEX|BANKNIF|NSEI/.test(s)) return price >= 1000 && price <= 200000
-  if (/^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX)/.test(s)) {
+  if (
+    /^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX|DJI|DJIA|DOW|INDU|YM|MYM|US2000|RUT|TVC)/.test(
+      s,
+    )
+  ) {
     return price >= 100 && price <= 200000
   }
 
@@ -648,6 +660,7 @@ JBSync.filterTradesForChart = function filterTradesForChart(trades, chartSymbol)
 
   return (trades || []).filter((trade) => {
     const tradeInst = JBSync.normalizeChartSymbol(trade.instrument)
+    if (tradeInst && tradeInst !== "UNKNOWN" && tradeInst === symbol) return true
     if (JBSync.priceMatchesInstrument(trade.entry?.price, symbol)) return true
     if (tradeInst && tradeInst !== "UNKNOWN") {
       return JBSync.priceMatchesInstrument(trade.entry?.price, tradeInst)
@@ -695,9 +708,9 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
   }
 
   const scrapeMode = importAll || options.mode === "full" ? "full" : "light"
-  // Polls only need the chart frame — scanning every iframe is expensive.
-  const allFrames = scrapeMode === "full"
-  const target = { tabId: tab.id, allFrames }
+  // Chart + Strategy Tester often live in a nested frame; empty frames bail out in jbMainScrape.
+  const chartTarget = { tabId: tab.id, allFrames: true }
+  const target = chartTarget
 
   if (scrapeMode === "full") {
     await JBSync.markImportAllLock(true)
@@ -706,7 +719,7 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
   }
 
   await chrome.scripting.executeScript({
-    target: { tabId: tab.id, allFrames: false },
+    target: { tabId: tab.id, allFrames: true },
     world: "MAIN",
     func: (sym) => {
       const prev = String(window.__JB_CAPTURED_CHART_SYMBOL__ || window.__JB_CHART_SYMBOL__ || "")
@@ -752,7 +765,7 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
         })
       } else {
         const mainExtractions = await chrome.scripting.executeScript({
-          target,
+          target: chartTarget,
           world: "MAIN",
           files: ["src/content/extract-trades.js"],
         })
@@ -937,7 +950,13 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
     }
 
     if (!trades.length) {
-      result.error = best?.error || bestGrid?.error || "No trades found. Open List of trades, scroll the table, retry."
+      const preFilter = merged.size
+      if (preFilter > 0 && chartSymbol) {
+        result.error = `Scraped ${preFilter} row(s) but none matched chart ${chartSymbol} — switch to the correct symbol tab and retry.`
+      } else {
+        result.error =
+          best?.error || bestGrid?.error || "No trades found. Open List of trades, scroll the table, retry."
+      }
     }
 
     return result
@@ -991,7 +1010,11 @@ JBSync.inferAssetType = function inferAssetType(symbol, fallback) {
   const normalized = (symbol || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase()
   if (/^(XAU|XAG|GOLD|SILVER|PAXG)/.test(normalized)) return "metal"
   if (/^(USOIL|UKOIL|WTI|CRUDE|CRUDEOIL|OIL|CL)/.test(normalized)) return "commodity"
-  if (/NIFTY|SENSEX|BANKNIF|NSEI|US30|US100|US500|NAS100|SPX|GER40|DE40|UK100|JP225|DAX|NDX|SPX500/.test(normalized)) {
+  if (
+    /NIFTY|SENSEX|BANKNIF|NSEI|US30|US100|US500|NAS100|SPX|GER40|DE40|UK100|JP225|DAX|NDX|SPX500|DJI|DJIA|DOW|INDU|YM|MYM|US2000|RUT|TVC/.test(
+      normalized,
+    )
+  ) {
     return "index"
   }
   if (/^(EUR|GBP|USDJPY|USDCHF|AUDUSD|USDCAD|NZDUSD)/.test(normalized)) return "forex"
@@ -1725,8 +1748,8 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
 JBSync.readCapturedTradesFromTab = async function readCapturedTradesFromTab(tab) {
   if (!tab?.id) return { trades: [], chartSymbol: "" }
   try {
-    const [injection] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: false },
+    const injections = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
       world: "MAIN",
       func: () => {
         const symbol = String(window.__JB_CHART_SYMBOL__ || window.__JB_CAPTURED_CHART_SYMBOL__ || "")
@@ -1735,13 +1758,21 @@ JBSync.readCapturedTradesFromTab = async function readCapturedTradesFromTab(tab)
         const trades = Array.isArray(window.__JB_CAPTURED_TRADES__)
           ? window.__JB_CAPTURED_TRADES__.map((t) => ({ ...t }))
           : []
-        return { trades, chartSymbol: symbol }
+        return { trades, chartSymbol: symbol, frameUrl: location.href }
       },
     })
-    return {
-      trades: injection?.result?.trades || [],
-      chartSymbol: injection?.result?.chartSymbol || "",
+
+    const merged = new Map()
+    let chartSymbol = ""
+    for (const injection of injections || []) {
+      const payload = injection?.result
+      if (!payload) continue
+      if (payload.chartSymbol && !chartSymbol) chartSymbol = payload.chartSymbol
+      for (const trade of payload.trades || []) {
+        merged.set(JBSync.tradeKey(trade), trade)
+      }
     }
+    return { trades: [...merged.values()], chartSymbol }
   } catch {
     return { trades: [], chartSymbol: "" }
   }

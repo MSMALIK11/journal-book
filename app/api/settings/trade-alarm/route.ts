@@ -12,7 +12,7 @@ import { z } from "zod"
 const tradeAlarmSchema = z.object({
   enabled: z.boolean().optional(),
   soundMode: z.enum(["once", "manual"]).optional(),
-  soundId: z.enum(["urgent-simple-tone-loop", "classic-alarm"]).optional(),
+  soundId: z.enum(["urgent-simple-tone-loop", "classic-alarm", "iphone-notification"]).optional(),
 })
 
 export async function GET(request: NextRequest) {

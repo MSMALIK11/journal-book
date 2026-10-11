@@ -7,6 +7,13 @@ import { useActiveAccount } from "@/hooks/use-active-account"
 import { useTradeSyncEvent } from "@/hooks/use-trade-sync-event"
 import { authFetch } from "@/lib/client-auth"
 import {
+  applyServerReadKeysToSeen,
+  dismissAlertsByKeys,
+  isTradeAlarmDismissed,
+  tradeAlertDismissKeys,
+} from "@/lib/client-alert-dismiss"
+import { useTradingAlerts } from "@/hooks/use-trading-alerts"
+import {
   DEFAULT_TRADE_ALARM_PREFERENCES,
   TRADE_ALARM_REPEAT_MAX_MS,
   normalizeTradeAlarmPreferences,
@@ -135,6 +142,7 @@ async function tradeStillOpenInDb(
 
 export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
   const { activeAccountId } = useActiveAccount()
+  const { readKeys, refresh } = useTradingAlerts()
   const [alarm, setAlarm] = useState<NewTradeAlarmState | null>(null)
   const [open, setOpen] = useState(false)
   const seenImportKeysRef = useRef<Set<string>>(readSeenKeys())
@@ -142,6 +150,9 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
   const preferencesRef = useRef(DEFAULT_TRADE_ALARM_PREFERENCES)
   const catchupDoneRef = useRef(false)
   const repeatAutoStopRef = useRef<number | null>(null)
+  const alarmRef = useRef<NewTradeAlarmState | null>(null)
+  const openRef = useRef(false)
+  const readKeysRef = useRef<string[]>([])
 
   const { data: preferences = DEFAULT_TRADE_ALARM_PREFERENCES } = useSWR(
     TRADE_ALARM_PREFS_KEY,
@@ -151,6 +162,18 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     preferencesRef.current = preferences
   }, [preferences])
+
+  useEffect(() => {
+    alarmRef.current = alarm
+  }, [alarm])
+
+  useEffect(() => {
+    openRef.current = open
+  }, [open])
+
+  useEffect(() => {
+    readKeysRef.current = readKeys
+  }, [readKeys])
 
   // Browsers block audio until a user gesture — unlock once so alarms can ring.
   useEffect(() => {
@@ -171,21 +194,6 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
     repeatAutoStopRef.current = null
   }, [])
 
-  const stopAlarm = useCallback(() => {
-    clearRepeatAutoStop()
-    stopTradeAlarmSound()
-    setOpen(false)
-    setAlarm(null)
-  }, [clearRepeatAutoStop])
-
-  const startSound = useCallback(
-    (soundId: TradeAlarmPreferences["soundId"], mode: TradeAlarmPreferences["soundMode"]) => {
-      stopTradeAlarmSound()
-      playTradeAlarmSound(soundId, mode)
-    },
-    [],
-  )
-
   const markSeen = useCallback((...keys: string[]) => {
     for (const key of keys) {
       if (!key) continue
@@ -194,6 +202,94 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
     }
     writeSeenKeys(seenImportKeysRef.current)
   }, [])
+
+  const stopAlarm = useCallback(
+    (options?: { sync?: boolean }) => {
+      clearRepeatAutoStop()
+      stopTradeAlarmSound()
+      setOpen(false)
+
+      const current = alarmRef.current
+      setAlarm(null)
+
+      if (options?.sync === false) return
+
+      const tradeId = current?.trade?.id
+      if (!tradeId || tradeId.startsWith("test-") || tradeId.startsWith("manual-test")) return
+
+      const accountId = current?.accountId || activeAccountId || ""
+      if (!accountId) return
+
+      const keys = tradeAlertDismissKeys(accountId, tradeId)
+      markSeen(...keys)
+      void dismissAlertsByKeys(keys, accountId)
+    },
+    [activeAccountId, clearRepeatAutoStop, markSeen],
+  )
+
+  const applyRemoteDismiss = useCallback(
+    (keys: string[]) => {
+      if (!keys.length) return
+
+      const current = alarmRef.current
+      const accountId = current?.accountId || activeAccountId || ""
+      if (!accountId) return
+
+      applyServerReadKeysToSeen(keys, accountId, seenImportKeysRef.current)
+      writeSeenKeys(seenImportKeysRef.current)
+
+      const tradeId = current?.trade?.id
+      if (!openRef.current || !tradeId) return
+
+      const alarmKeys = tradeAlarmKeys(accountId, current.trade)
+      const dismissed =
+        isTradeAlarmDismissed(keys, accountId, tradeId) ||
+        alarmKeys.some((key) => seenImportKeysRef.current.has(key))
+
+      if (dismissed) stopAlarm({ sync: false })
+    },
+    [activeAccountId, stopAlarm],
+  )
+
+  useEffect(() => {
+    applyRemoteDismiss(readKeys)
+  }, [readKeys, activeAccountId, applyRemoteDismiss])
+
+  // DB poll while alarm is open — works across serverless instances / when SSE misses.
+  useEffect(() => {
+    if (!open || !alarm?.trade?.id) return
+
+    const accountId = alarm.accountId || activeAccountId
+    if (!accountId) return
+
+    const tradeId = alarm.trade.id
+    const keys = tradeAlertDismissKeys(accountId, tradeId)
+
+    const checkDismiss = async () => {
+      try {
+        const response = await authFetch(
+          `/api/alerts/dismiss-check?account=${encodeURIComponent(accountId)}&keys=${encodeURIComponent(keys.join(","))}`,
+        )
+        const data = await response.json()
+        if (!response.ok || !data.dismissedKeys?.length) return
+        applyRemoteDismiss(data.dismissedKeys as string[])
+      } catch {
+        // next poll retries
+      }
+    }
+
+    void checkDismiss()
+    const interval = window.setInterval(checkDismiss, 2_000)
+    return () => window.clearInterval(interval)
+  }, [open, alarm, activeAccountId, applyRemoteDismiss])
+
+  const startSound = useCallback(
+    (soundId: TradeAlarmPreferences["soundId"], mode: TradeAlarmPreferences["soundMode"]) => {
+      stopTradeAlarmSound()
+      playTradeAlarmSound(soundId, mode)
+    },
+    [],
+  )
 
   const isClaimed = useCallback((keys: string[]) => {
     return keys.some(
@@ -266,6 +362,15 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         return
       }
 
+      if (
+        !payload.force &&
+        trade.id &&
+        isTradeAlarmDismissed(readKeysRef.current, targetAccountId, trade.id)
+      ) {
+        releaseKeys(earlyKeys)
+        return
+      }
+
       if (!payload.force && trade.id) {
         const stillOpen = await tradeStillOpenInDb(targetAccountId, trade.id)
         if (stillOpen === false) {
@@ -285,18 +390,17 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
       let advice = buildFallbackTradeAdvice({ isUpdate: false })
       setAlarm({
         trade,
+        accountId: targetAccountId,
         accountName: payload.accountName,
         importedCount: payload.imported || 1,
         advice,
       })
       setOpen(true)
       clearRepeatAutoStop()
-      if (prefs.soundMode === "manual") {
-        repeatAutoStopRef.current = window.setTimeout(() => {
-          repeatAutoStopRef.current = null
-          stopAlarm()
-        }, TRADE_ALARM_REPEAT_MAX_MS)
-      }
+      repeatAutoStopRef.current = window.setTimeout(() => {
+        repeatAutoStopRef.current = null
+        stopAlarm()
+      }, TRADE_ALARM_REPEAT_MAX_MS)
       void unlockTradeAlarmAudio().finally(() => {
         startSound(prefs.soundId, prefs.soundMode)
       })
@@ -331,7 +435,14 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
       accountId?: string
       accountName?: string
       latestTrade?: ImportedTradeSnapshot
+      dismissedKeys?: string[]
     }) => {
+      if (data.type === "alerts_updated") {
+        const sameAccount = !data.accountId || !activeAccountId || data.accountId === activeAccountId
+        if (sameAccount && data.dismissedKeys?.length) applyRemoteDismiss(data.dismissedKeys)
+        if (sameAccount) void refresh()
+        return
+      }
       if (data.type !== "trades_updated") return
       if (data.kind === "close" || data.latestTrade?.is_open === false) return
       if (!shouldConsiderAlarm(data)) return
@@ -346,10 +457,30 @@ export function NewTradeAlarmProvider({ children }: { children: ReactNode }) {
         eventAt: data.at,
       })
     },
-    [activeAccountId, triggerAlarm],
+    [activeAccountId, applyRemoteDismiss, refresh, triggerAlarm],
   )
 
   useTradeSyncEvent(onSyncEvent)
+
+  // Push notification tap → open trade alarm (mobile PWA).
+  useEffect(() => {
+    function onPushTradeAlarm(event: Event) {
+      const detail = (event as CustomEvent<{
+        accountId?: string
+        latestTrade?: ImportedTradeSnapshot
+      }>).detail
+      if (!detail?.latestTrade) return
+      void triggerAlarm({
+        accountId: detail.accountId || activeAccountId || "",
+        imported: 1,
+        latestTrade: detail.latestTrade,
+        eventId: `push-${detail.latestTrade.id}-${Date.now()}`,
+        force: true,
+      })
+    }
+    document.addEventListener("jb-open-trade-alarm", onPushTradeAlarm)
+    return () => document.removeEventListener("jb-open-trade-alarm", onPushTradeAlarm)
+  }, [activeAccountId, triggerAlarm])
 
   // Settings / Live Sync "Test alarm" button → full modal + sound path.
   useEffect(() => {

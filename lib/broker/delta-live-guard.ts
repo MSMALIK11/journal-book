@@ -6,9 +6,12 @@ export function isServerLiveTradingBlocked(): boolean {
   return process.env.DELTA_LIVE_ENABLED === "false"
 }
 
-/** Live access is controlled by enabled accounts + order ticket — only server kill switch applies here. */
-export async function isUserLiveTradingEnabled(_userId: string): Promise<boolean> {
-  return !isServerLiveTradingBlocked()
+/** Per-user live opt-in — must be explicitly enabled on the Delta Live page. */
+export async function isUserLiveTradingEnabled(userId: string): Promise<boolean> {
+  if (isServerLiveTradingBlocked()) return false
+  await connectDB()
+  const user = await User.findById(userId).select("deltaLiveTradingEnabled").lean()
+  return user?.deltaLiveTradingEnabled === true
 }
 
 export async function setUserLiveTradingEnabled(userId: string, enabled: boolean): Promise<boolean> {
@@ -20,8 +23,12 @@ export async function setUserLiveTradingEnabled(userId: string, enabled: boolean
   return enabled
 }
 
-export async function assertLiveTradingEnabled(_userId: string): Promise<void> {
+export async function assertLiveTradingEnabled(userId: string): Promise<void> {
   if (isServerLiveTradingBlocked()) {
     throw new Error("Live trading is disabled on this server")
+  }
+  const enabled = await isUserLiveTradingEnabled(userId)
+  if (!enabled) {
+    throw new Error("Enable live trading on the Delta Live page before placing orders")
   }
 }

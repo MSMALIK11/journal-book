@@ -36,6 +36,10 @@ function failedAccountResults(accountResults?: DeltaAutoTradeAccountResult[]): D
   return (accountResults ?? []).filter((r) => !r.ok)
 }
 
+function bracketFailedResults(accountResults?: DeltaAutoTradeAccountResult[]): DeltaAutoTradeAccountResult[] {
+  return (accountResults ?? []).filter((r) => r.ok && r.bracketStatus === "failed")
+}
+
 function accountResultContext(
   environment: DeltaEnvironment,
   input: DeltaTradeNotificationInput,
@@ -139,6 +143,23 @@ export async function persistDeltaTradeNotifications(
         priority: 240,
       })
     }
+  }
+
+  const bracketFailures = bracketFailedResults(input.accountResults)
+  for (const result of bracketFailures) {
+    payloads.push({
+      key: `${baseKey}:${result.accountId}:bracket-failed`,
+      category: "delta_trade",
+      severity: "danger",
+      title: `SL/TP attach failed · ${result.label}`,
+      message:
+        result.bracketError ??
+        `${input.symbol ?? "Position"} opened without stop loss — set SL manually in Delta.`,
+      metric: input.symbol,
+      action: "Open Delta and attach SL/TP immediately, or close the naked position.",
+      context: accountResultContext(environment, input, result, bracketFailures),
+      priority: 260,
+    })
   }
 
   if (input.status === "partial") {

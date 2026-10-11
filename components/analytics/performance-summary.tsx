@@ -1,6 +1,6 @@
 "use client"
 
-import type { AnalyticsRecords, AnalyticsResult } from "@/lib/trading/analytics"
+import { formatProfitFactor, type AnalyticsRecords, type AnalyticsResult } from "@/lib/trading/analytics"
 import { HudPanel } from "@/components/dashboard/hud-panel"
 
 const currency = new Intl.NumberFormat("en-US", {
@@ -17,10 +17,7 @@ type Props = {
 }
 
 export function PerformanceSummary({ overview, records, bestSession, weakestDay }: Props) {
-  const pf =
-    overview.profitFactor === Infinity
-      ? "∞"
-      : overview.profitFactor.toFixed(1)
+  const pf = formatProfitFactor(overview.profitFactor, 1)
 
   const headline = `${overview.netPnl >= 0 ? "Net profit" : "Net loss"} ${currency.format(Math.abs(overview.netPnl))} across ${overview.closedTrades} closed trades · ${overview.winRate.toFixed(0)}% win rate · Profit factor ${pf}`
 

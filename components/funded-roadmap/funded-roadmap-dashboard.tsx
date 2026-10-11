@@ -50,6 +50,7 @@ import {
   type StrategyProfile,
   type WeekdayFilter,
 } from "@/lib/trading/funded-roadmap"
+import { formatProfitFactor } from "@/lib/trading/analytics"
 import { cn } from "@/lib/utils"
 
 const SETTINGS_PREFIX = "jb-funded-roadmap-v1"
@@ -371,7 +372,7 @@ export function FundedRoadmapDashboard() {
   }
 
   const current = data.stages[currentStageIndex] ?? data.stages[0]
-  const pf = data.profile.profitFactor === Infinity ? "∞" : data.profile.profitFactor.toFixed(2)
+  const pf = formatProfitFactor(data.profile.profitFactor)
   const lowN = data.profile.closedTrades < 100
   const realizedPnl = data.realizedPnl ?? 0
   const targetMet = Boolean(current && current.profitTarget > 0 && realizedPnl >= current.profitTarget)
@@ -1030,7 +1031,7 @@ function CompareCard({ title, row }: { title: string; row?: CompareSnapshot }) {
         <dl className="mt-3 space-y-1 text-xs text-muted-foreground">
           <Row label="Win rate" value={`${row.winRate.toFixed(1)}%`} />
           <Row label="RR" value={formatRr(row.avgRrRatio)} />
-          <Row label="PF" value={row.profitFactor === Infinity ? "∞" : row.profitFactor.toFixed(2)} />
+          <Row label="PF" value={formatProfitFactor(row.profitFactor)} />
           <Row label="Expectancy" value={`${row.expectancyR.toFixed(2)}R`} />
           <Row label="Max DD" value={`${row.maxDrawdownPct.toFixed(1)}%`} />
           <Row label="Trades" value={String(row.closedTrades)} />

@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import type { WeeklyBucket } from "@/lib/trading/analytics"
+import { formatR, type WeeklyBucket } from "@/lib/trading/analytics"
 
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -157,6 +157,7 @@ export function WeeklyProfitLoss({ byWeek }: Props) {
                 <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Profit</TableHead>
                 <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Loss</TableHead>
                 <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Net P&amp;L</TableHead>
+                <TableHead className="text-right text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Avg R</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -174,6 +175,17 @@ export function WeeklyProfitLoss({ byWeek }: Props) {
                     className={`text-right font-medium ${week.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}
                   >
                     {currency.format(week.netPnl)}
+                  </TableCell>
+                  <TableCell
+                    className={`text-right ${
+                      week.avgR == null
+                        ? "text-muted-foreground"
+                        : week.avgR >= 0
+                          ? "text-emerald-400"
+                          : "text-rose-400"
+                    }`}
+                  >
+                    {formatR(week.avgR)}
                   </TableCell>
                 </TableRow>
               ))}

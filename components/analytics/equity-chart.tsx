@@ -34,9 +34,10 @@ type Props = {
   equityCurve: EquityPoint[]
   maxDrawdown: number
   maxDrawdownPct: number
+  initialCapital?: number | null
 }
 
-export function EquityChart({ equityCurve, maxDrawdown, maxDrawdownPct }: Props) {
+export function EquityChart({ equityCurve, maxDrawdown, maxDrawdownPct, initialCapital }: Props) {
   const chartData = equityCurve.map((point) => ({
     ...point,
     label: format(parseISO(point.date), "MMM d, yyyy"),
@@ -59,7 +60,14 @@ export function EquityChart({ equityCurve, maxDrawdown, maxDrawdownPct }: Props)
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <HudPanel>
-        <HudPanelHeader title="Equity Curve" description="Cumulative P&L by trade exit" />
+        <HudPanelHeader
+          title="Equity Curve"
+          description={
+            initialCapital
+              ? `Capital-basis equity (initial capital ${currency.format(initialCapital)})`
+              : "Cumulative P&L by trade exit"
+          }
+        />
         <div className="p-4">
           <ChartContainer config={equityConfig} className="h-[280px] w-full">
             <LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>

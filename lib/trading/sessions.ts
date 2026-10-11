@@ -162,8 +162,60 @@ export function getZonedParts(date: Date, timezone: string) {
   }
 }
 
-export const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const
+function pad2(value: number): string {
+  return String(value).padStart(2, "0")
+}
 
+/** Milliseconds that must be added to UTC to read wall-clock time in `timezone` at `instant`. */
+export function zonedOffsetMs(instant: Date, timezone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(instant)
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((p) => p.type === type)?.value ?? 0)
+  const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"))
+  return asUtc - Math.floor(instant.getTime() / 1000) * 1000
+}
+
+/** Move a yyyy-MM-dd key by whole calendar days. */
+export function shiftDayKey(dayKey: string, days: number): string | null {
+  const [y, m, d] = dayKey.split("-").map(Number)
+  if (!y || !m || !d) return null
+  const shifted = new Date(Date.UTC(y, m - 1, d + days))
+  if (Number.isNaN(shifted.getTime())) return null
+  return `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(shifted.getUTCDate())}`
+}
+
+/**
+ * The UTC instant that is local midnight at the start of `dayKey` in `timezone`.
+ * Two passes because the offset at the guess differs from the offset at true
+ * midnight when a DST shift lands inside the day.
+ */
+export function localDayStartUtc(dayKey: string, timezone: string): Date | null {
+  const [y, m, d] = dayKey.split("-").map(Number)
+  if (!y || !m || !d) return null
+  const naive = Date.UTC(y, m - 1, d)
+  const guess = naive - zonedOffsetMs(new Date(naive), timezone)
+  const corrected = naive - zonedOffsetMs(new Date(guess), timezone)
+  const date = new Date(corrected)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+/** Exclusive end of `dayKey` — the instant local midnight starts the next day. */
+export function localDayEndUtc(dayKey: string, timezone: string): Date | null {
+  const next = shiftDayKey(dayKey, 1)
+  if (!next) return null
+  return localDayStartUtc(next, timezone)
+}
+
+export const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const
 export function normalizeWeekday(short: string): string {
   const map: Record<string, string> = {
     Mon: "Mon",

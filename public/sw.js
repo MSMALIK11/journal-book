@@ -1,6 +1,8 @@
 /* Trading Journal PWA — push alerts + offline shell hint */
-const CACHE = "jb-pwa-v1"
-const SHELL = ["/", "/live-sync", "/manifest.webmanifest", "/icons/icon.svg"]
+const CACHE = "jb-pwa-v2"
+const SHELL = ["/", "/live-sync", "/manifest.webmanifest", "/icons/icon.svg", "/icons/icon-192.png", "/icons/apple-touch-icon.png"]
+const NOTIFY_ICON = "/icons/icon-192.png"
+const NOTIFY_SOUND = "/sounds/alarms/urgent-simple-tone-loop.mp3"
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -54,11 +56,13 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(payload.title, {
       body: payload.body,
-      icon: "/icons/icon.svg",
-      badge: "/icons/icon.svg",
+      icon: NOTIFY_ICON,
+      badge: NOTIFY_ICON,
       tag: payload.tag || "jb-trade",
       renotify: true,
       vibrate: [180, 80, 180, 80, 240],
+      silent: false,
+      sound: NOTIFY_SOUND,
       data: { url: payload.url || "/live-sync" },
       actions: [{ action: "open", title: "Open Live Sync" }],
     }),
@@ -70,11 +74,14 @@ self.addEventListener("notificationclick", (event) => {
   const path = event.notification.data?.url || "/live-sync"
   const target = new URL(path, self.location.origin).href
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
-      for (const client of clients) {
-        if (client.url.startsWith(self.location.origin) && "focus" in client) {
-          return client.focus()
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if (!client.url.startsWith(self.location.origin)) continue
+        if ("navigate" in client) {
+          return client.navigate(target).then((navigated) => navigated?.focus?.() ?? client.focus())
         }
+        client.postMessage({ type: "jb-push-navigate", url: path })
+        if ("focus" in client) return client.focus()
       }
       if (self.clients.openWindow) return self.clients.openWindow(target)
     }),

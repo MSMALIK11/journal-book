@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import connectDB from "@/app/api/db/mongoose"
 import { getDeltaEnvironmentFromRequest } from "@/lib/broker/delta-api-params"
 import {
-  fetchAccountAvailableMargin,
+  fetchAccountAvailableMarginShared,
   formatIneligibleReason,
 } from "@/lib/broker/delta-broadcast-sizing"
 import { getSession } from "@/lib/session"
@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
 
     const settled = await Promise.allSettled(
       accountIds.map(async (accountId) => {
-        const result = await fetchAccountAvailableMargin({
+        const result = await fetchAccountAvailableMarginShared({
           userId: session.sub,
           accountId,
           environment,

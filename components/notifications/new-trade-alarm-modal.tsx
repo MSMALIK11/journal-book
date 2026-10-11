@@ -19,6 +19,7 @@ import type { ImportedTradeSnapshot } from "@/lib/sync-events"
 
 export type NewTradeAlarmState = {
   trade: ImportedTradeSnapshot
+  accountId?: string
   accountName?: string
   importedCount: number
   advice: TradeMomentAdvice

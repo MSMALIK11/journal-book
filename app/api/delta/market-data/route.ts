@@ -6,6 +6,10 @@ import { getDeltaCredentialsByAccountId, getDeltaCredentialsForUser } from "@/li
 import { normalizeDeltaProduct } from "@/lib/broker/delta-product"
 import { getDeltaOrderMaxSize } from "@/lib/broker/delta-orders"
 import { getDeltaAutoTradeConfig, getLeverageForSymbol } from "@/lib/delta/auto-trade-settings"
+import {
+  getCachedPositionLeverage,
+  setCachedPositionLeverage,
+} from "@/lib/broker/delta-leverage-cache"
 import User from "@/app/api/models/User"
 import { getSession } from "@/lib/session"
 
@@ -40,25 +44,34 @@ export async function GET(request: NextRequest) {
       const config = getDeltaAutoTradeConfig(user?.deltaAutoTradePreferences, environment)
       leverage = getLeverageForSymbol(config, symbol, product.defaultLeverage)
 
-      const creds = accountId
-        ? (await getDeltaCredentialsByAccountId(session.sub, accountId, environment))?.creds
-        : await getDeltaCredentialsForUser(session.sub, environment)
-      if (creds) {
-        try {
-          const positions = await getPositions(creds, environment)
-          const match = Array.isArray(positions.result)
-            ? positions.result.find((p) => {
-                if (!p || typeof p !== "object") return false
-                const row = p as Record<string, unknown>
-                return String(row.product_symbol ?? row.symbol ?? "").toUpperCase() === symbol
-              })
-            : null
-          if (match && typeof match === "object" && "leverage" in match) {
-            const lv = Number((match as { leverage?: unknown }).leverage)
-            if (Number.isFinite(lv) && lv > 0) leverage = lv
+      const leverageKey = { userId: session.sub, environment, accountId, symbol }
+      const cachedLeverage = getCachedPositionLeverage(leverageKey)
+      if (cachedLeverage != null) {
+        leverage = cachedLeverage
+      } else {
+        const creds = accountId
+          ? (await getDeltaCredentialsByAccountId(session.sub, accountId, environment))?.creds
+          : await getDeltaCredentialsForUser(session.sub, environment)
+        if (creds) {
+          try {
+            const positions = await getPositions(creds, environment)
+            const match = Array.isArray(positions.result)
+              ? positions.result.find((p) => {
+                  if (!p || typeof p !== "object") return false
+                  const row = p as Record<string, unknown>
+                  return String(row.product_symbol ?? row.symbol ?? "").toUpperCase() === symbol
+                })
+              : null
+            if (match && typeof match === "object" && "leverage" in match) {
+              const lv = Number((match as { leverage?: unknown }).leverage)
+              if (Number.isFinite(lv) && lv > 0) {
+                leverage = lv
+                setCachedPositionLeverage(leverageKey, lv)
+              }
+            }
+          } catch {
+            /* use saved or default leverage */
           }
-        } catch {
-          /* use saved or default leverage */
         }
       }
     }

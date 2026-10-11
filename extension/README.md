@@ -19,7 +19,7 @@ Chrome extension that scrapes TradingView Strategy Tester **List of Trades** and
 ## Usage
 
 - **Refresh — add new trades** (popup): checks your journal for existing trades, syncs only new ones (old data stays).
-- **Import all (full backtest)** (popup): scrolls the full table and syncs/updates every trade.
+- **Import all (full backtest)** (popup): scrolls the virtualized List of trades in the main chart frame (stops when Key stats total is reached, ~2 min max). Large backtests (800+ trades) need List of trades visible — status should move to “Syncing N trades…” within a couple of minutes.
 - **Live Sync dashboard**: open `/live-sync` and click **Refresh** after syncing from the extension.
 
 ## Troubleshooting

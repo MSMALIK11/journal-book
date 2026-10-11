@@ -33,7 +33,8 @@ export type FundedRiskConfig = {
 export type StrategyProfile = {
   winRate: number
   avgRrRatio: number | null
-  profitFactor: number
+  /** null = no losing trade in the sample (infinite profit factor). */
+  profitFactor: number | null
   expectancyR: number
   expectancyUsd: number
   closedTrades: number
@@ -831,7 +832,7 @@ export type CompareSnapshot = {
   label: string
   winRate: number
   avgRrRatio: number | null
-  profitFactor: number
+  profitFactor: number | null
   expectancyR: number
   maxDrawdownPct: number
   closedTrades: number

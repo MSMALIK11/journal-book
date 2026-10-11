@@ -18,6 +18,7 @@ export type TradeSyncEventDetail = {
   latestTrade?: ImportedTradeSnapshot
   created?: { id: string; name: string }[]
   primaryAccountId?: string
+  dismissedKeys?: string[]
 }
 
 type Options = {
@@ -55,6 +56,7 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
   const seenEventIdsRef = useRef<Set<string>>(new Set())
   const lastLogicalKeyRef = useRef<string | null>(null)
   const lastServerEventIdRef = useRef<string | null>(null)
+  const lastAlertDismissIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     onEventRef.current = onEvent
@@ -105,6 +107,7 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
     let stopped = false
     let sseUp = false
     let primed = false
+    let alertDismissPrimed = false
 
     function onDomSync(event: Event) {
       const detail = (event as CustomEvent<TradeSyncEventDetail>).detail
@@ -120,11 +123,36 @@ export function useTradeSyncListener({ enabled = true, onEvent, onConnectionChan
 
     document.addEventListener("jb-trades-synced", onDomSync)
 
+    function handleAlertDismissPoll(data: {
+      alertDismiss?: { eventId?: string; accountId?: string; dismissedKeys?: string[] }
+    }) {
+      const dismiss = data.alertDismiss
+      if (!dismiss?.eventId || !dismiss.dismissedKeys?.length) return
+      if (dismiss.eventId === lastAlertDismissIdRef.current) return
+
+      if (!alertDismissPrimed) {
+        alertDismissPrimed = true
+        lastAlertDismissIdRef.current = dismiss.eventId
+        return
+      }
+
+      lastAlertDismissIdRef.current = dismiss.eventId
+      handleEvent({
+        type: "alerts_updated",
+        eventId: dismiss.eventId,
+        accountId: dismiss.accountId,
+        dismissedKeys: dismiss.dismissedKeys,
+      })
+    }
+
     async function pollLastEvent() {
       try {
         const response = await authFetch("/api/sync/last-event")
         const data = await response.json()
         if (!response.ok) return
+
+        handleAlertDismissPoll(data)
+
         const events = asEventList(data)
         if (!events.length) return
 

@@ -15,6 +15,11 @@ const closeAllSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
+    const origin = request.headers.get("origin")
+    if (origin && origin !== request.nextUrl.origin) {
+      return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
+    }
+
     const session = await getSession(request)
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
