@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
+import { useRouter, useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import useSWRInfinite from "swr/infinite"
 import { format, isToday, parseISO } from "date-fns"
@@ -47,6 +48,7 @@ import { formatExtensionSyncSummary, requestTvChartRefresh } from "@/lib/client-
 import { useActiveAccount } from "@/hooks/use-active-account"
 import { useTradeSyncEvent } from "@/hooks/use-trade-sync-event"
 import { useLiveSyncAutoRefresh } from "@/hooks/use-live-sync-auto-refresh"
+import { usePullToRefresh } from "@/hooks/use-pull-to-refresh"
 import { useToast } from "@/hooks/use-toast"
 import {
   DEFAULT_LIVE_SYNC_POLL_SECONDS,
@@ -150,12 +152,17 @@ const fetcher = async (url: string) => {
 
 export function LiveSyncDashboard() {
   const { toast } = useToast()
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const { activeAccount, activeAccountId, revalidateSyncedData } = useActiveAccount()
   const [clearOpen, setClearOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [bridgeReady, setBridgeReady] = useState(false)
   const [pollSeconds, setPollSeconds] = useState(DEFAULT_LIVE_SYNC_POLL_SECONDS)
   const [isRefreshingTv, setIsRefreshingTv] = useState(false)
+  const [highlightTradeId, setHighlightTradeId] = useState<string | null>(null)
+  const handledPushTradeRef = useRef<string | null>(null)
+  const pushRefreshTradeRef = useRef<string | null>(null)
 
   const getTradesKey = useCallback(
     (pageIndex: number, previousPage: SyncTradesPage | null) => {
@@ -220,6 +227,62 @@ export function LiveSyncDashboard() {
   const summary = tradePages?.[0]?.summary
   const feedScrollRef = useRef<HTMLDivElement>(null)
   const feedSentinelRef = useRef<HTMLDivElement>(null)
+
+  usePullToRefresh(feedScrollRef, {
+    enabled: true,
+    onRefresh: refreshSyncedViews,
+  })
+
+  useEffect(() => {
+    const tradeId = searchParams.get("trade")
+    const kind = searchParams.get("kind")
+    if (!tradeId) return
+
+    setHighlightTradeId(tradeId)
+    if (handledPushTradeRef.current === tradeId) return
+
+    const trade = trades.find((row) => row.id === tradeId)
+    if (!trade) {
+      if (pushRefreshTradeRef.current !== tradeId) {
+        pushRefreshTradeRef.current = tradeId
+        void refreshSyncedViews()
+      }
+      return
+    }
+
+    handledPushTradeRef.current = tradeId
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-trade-id="${tradeId}"]`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" })
+    })
+
+    if (kind === "open" && isLiveOpen(trade)) {
+      document.dispatchEvent(
+        new CustomEvent("jb-open-trade-alarm", {
+          detail: {
+            accountId: searchParams.get("account") || activeAccountId || "",
+            latestTrade: {
+              id: trade.id,
+              instrument: trade.instrument,
+              trade_type: trade.trade_type,
+              entry_date: trade.entry_date,
+              entry_price: trade.entry_price,
+              signal: trade.signal ?? "Open",
+              is_open: true,
+            },
+          },
+        }),
+      )
+    }
+
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("trade")
+    params.delete("kind")
+    params.delete("account")
+    const query = params.toString()
+    router.replace(query ? `/live-sync?${query}` : "/live-sync", { scroll: false })
+  }, [activeAccountId, refreshSyncedViews, router, searchParams, trades])
 
   useEffect(() => {
     const root = feedScrollRef.current
@@ -741,7 +804,14 @@ export function LiveSyncDashboard() {
                   </TableRow>
                 )}
                 {trades.map((trade) => (
-                  <TableRow key={trade.id} className="border-cyan-400/10 hover:bg-cyan-400/5">
+                  <TableRow
+                    key={trade.id}
+                    data-trade-id={trade.id}
+                    className={cn(
+                      "border-cyan-400/10 hover:bg-cyan-400/5",
+                      highlightTradeId === trade.id && "bg-cyan-400/15 ring-1 ring-inset ring-cyan-400/40",
+                    )}
+                  >
                     <TableCell className="font-medium">{trade.instrument}</TableCell>
                     <TableCell>
                       <Badge

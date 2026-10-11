@@ -34,6 +34,8 @@ export type BroadcastSizingSuccess = {
   lots: number
   markPrice: number
   leverage: number
+  /** Set when margin-% sizing was capped by the per-order limit. */
+  clampNote?: string
 }
 
 export type BroadcastSizingFailure = {
@@ -104,6 +106,30 @@ export async function fetchAccountAvailableMargin(input: {
   }
 }
 
+type AccountMarginResult = Awaited<ReturnType<typeof fetchAccountAvailableMargin>>
+
+const inflightMargins = new Map<string, Promise<AccountMarginResult>>()
+
+/**
+ * Wallet reads are per-account and idempotent within a moment, so concurrent ticket refreshes and
+ * auto-trade sizing share one in-flight read instead of hammering Delta. No TTL — the entry lives
+ * only while a request is running, so a post-order refresh always sees fresh margin.
+ */
+export function fetchAccountAvailableMarginShared(input: {
+  userId: string
+  accountId: string
+  environment: DeltaEnvironment
+}): Promise<AccountMarginResult> {
+  const key = `${input.userId}|${input.environment}|${input.accountId}`
+  const existing = inflightMargins.get(key)
+  if (existing) return existing
+  const work = fetchAccountAvailableMargin(input).finally(() => {
+    inflightMargins.delete(key)
+  })
+  inflightMargins.set(key, work)
+  return work
+}
+
 export async function classifyAccountMargins(input: {
   userId: string
   environment: DeltaEnvironment
@@ -113,7 +139,7 @@ export async function classifyAccountMargins(input: {
   const minMargin = input.minMarginUsd ?? 0
   const results = await Promise.all(
     input.accountIds.map(async (accountId) => {
-      const result = await fetchAccountAvailableMargin({
+      const result = await fetchAccountAvailableMarginShared({
         userId: input.userId,
         accountId,
         environment: input.environment,
@@ -198,6 +224,7 @@ export async function resolveAutoTradeSizing(input: {
   const maxSize = getDeltaOrderMaxSize(input.environment)
   const fixedLots = getLotSizeForSymbol(input.config, input.symbol)
   let lots: number
+  let clampNote: string | undefined
 
   if (fixedLots != null) {
     if (fixedLots > maxSize) {
@@ -226,7 +253,7 @@ export async function resolveAutoTradeSizing(input: {
     }
   } else {
     const minMargin = Math.min(...eligible.map((a) => a.marginUsd))
-    lots = computeOrderTicketLots({
+    const computed = computeOrderTicketLots({
       availableMarginUsd: minMargin,
       pct: input.marginPct,
       contractValue: product.contractValue,
@@ -234,7 +261,10 @@ export async function resolveAutoTradeSizing(input: {
       leverage,
       maxNotionalUsd: product.maxLeverageNotional > 0 ? product.maxLeverageNotional : undefined,
     })
-    lots = Math.min(lots, maxSize)
+    if (computed > maxSize) {
+      clampNote = `Calculated ${computed} Lot from ${input.marginPct}% margin capped at ${maxSize} Lot per-order limit`
+    }
+    lots = Math.min(computed, maxSize)
   }
 
   if (eligible.length === 0) {
@@ -255,7 +285,7 @@ export async function resolveAutoTradeSizing(input: {
     }
   }
 
-  return { ok: true, eligible, ineligible, lots, markPrice, leverage }
+  return { ok: true, eligible, ineligible, lots, markPrice, leverage, clampNote }
 }
 
 export async function resolveManualBroadcastAccounts(input: {
@@ -298,7 +328,7 @@ export async function resolveManualBroadcastAccounts(input: {
 
   const marginResults = await Promise.all(
     input.accountIds.map(async (accountId) => {
-      const result = await fetchAccountAvailableMargin({
+      const result = await fetchAccountAvailableMarginShared({
         userId: input.userId,
         accountId,
         environment: input.environment,

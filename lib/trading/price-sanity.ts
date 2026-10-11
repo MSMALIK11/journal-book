@@ -39,7 +39,11 @@ export function priceMatchesInstrument(price: number | null | undefined, instrum
   if (/SOL/.test(s)) return price >= 1 && price <= 5000
   if (/^(USOIL|UKOIL|WTI|CRUDE|OIL|CL)/.test(s)) return price >= 10 && price <= 500
   if (/NIFTY|SENSEX|BANKNIF|NSEI/.test(s)) return price >= 1000 && price <= 200000
-  if (/^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX)/.test(s)) {
+  if (
+    /^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX|DJI|DJIA|DOW|INDU|YM|MYM|US2000|RUT|TVC)/.test(
+      s,
+    )
+  ) {
     return price >= 100 && price <= 200000
   }
 

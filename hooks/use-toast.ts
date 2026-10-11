@@ -8,14 +8,16 @@ import type {
   ToastProps,
 } from "@/components/ui/toast"
 
-const TOAST_LIMIT = 1
-const TOAST_REMOVE_DELAY = 1000000
+const TOAST_LIMIT = 4
+const TOAST_REMOVE_DELAY = 1_000
+const DEFAULT_TOAST_DURATION_MS = 7_000
 
 type ToasterToast = ToastProps & {
   id: string
   title?: React.ReactNode
   description?: React.ReactNode
   action?: ToastActionElement
+  duration?: number
 }
 
 const actionTypes = {
@@ -57,6 +59,14 @@ interface State {
 }
 
 const toastTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+const toastDismissTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+
+function clearDismissTimer(toastId: string) {
+  const timer = toastDismissTimeouts.get(toastId)
+  if (!timer) return
+  clearTimeout(timer)
+  toastDismissTimeouts.delete(toastId)
+}
 
 const addToRemoveQueue = (toastId: string) => {
   if (toastTimeouts.has(toastId)) {
@@ -142,7 +152,7 @@ function dispatch(action: Action) {
 
 type Toast = Omit<ToasterToast, "id">
 
-function toast({ ...props }: Toast) {
+function toast({ duration = DEFAULT_TOAST_DURATION_MS, ...props }: Toast) {
   const id = genId()
 
   const update = (props: ToasterToast) =>
@@ -150,19 +160,29 @@ function toast({ ...props }: Toast) {
       type: "UPDATE_TOAST",
       toast: { ...props, id },
     })
-  const dismiss = () => dispatch({ type: "DISMISS_TOAST", toastId: id })
+  const dismiss = () => {
+    clearDismissTimer(id)
+    dispatch({ type: "DISMISS_TOAST", toastId: id })
+  }
 
   dispatch({
     type: "ADD_TOAST",
     toast: {
       ...props,
       id,
+      duration,
       open: true,
       onOpenChange: (open) => {
         if (!open) dismiss()
       },
     },
   })
+
+  // Controlled `open` bypasses Radix auto-close — schedule dismiss ourselves.
+  if (duration > 0) {
+    const timer = setTimeout(dismiss, duration)
+    toastDismissTimeouts.set(id, timer)
+  }
 
   return {
     id: id,

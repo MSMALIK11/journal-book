@@ -9,6 +9,7 @@ import {
   Calculator,
   FileText,
   Home,
+  Layers,
   LogOut,
   Menu,
   Map,
@@ -36,6 +37,7 @@ const navigation = [
   { name: "Trade History", href: "/trades", icon: FileText },
   { name: "Strategy", href: "/strategy", icon: FileText },
   { name: "Analytics", href: "/analytics", icon: BarChart3, description: "Backtest & performance insights" },
+  { name: "Portfolio", href: "/analytics/portfolio", icon: Layers, description: "All accounts + concurrent exposure" },
   { name: "Funded Roadmap", href: "/funded-roadmap", icon: Map, description: "Challenge path $5K to $1M" },
   { name: "Research", href: "/research", icon: Microscope, description: "Patterns & trading style" },
   { name: "News", href: "/news", icon: Newspaper, description: "Forex Factory economic calendar" },
@@ -86,7 +88,9 @@ export function Sidebar() {
                 ? pathname === "/delta"
                 : item.href === "/trades"
                   ? pathname === "/trades"
-                  : pathname === item.href || pathname.startsWith(`${item.href}/`)
+                  : item.href === "/analytics"
+                    ? pathname === "/analytics"
+                    : pathname === item.href || pathname.startsWith(`${item.href}/`)
 
             return (
               <Link

@@ -5,6 +5,7 @@ import { RefreshCw } from "lucide-react"
 import { NeonPulseLoader } from "@/components/ui/neon-pulse-loader"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DeltaIntegrationsTab } from "@/components/delta/delta-integrations-tab"
 import { DeltaPositionsTab } from "@/components/delta/delta-positions-tab"
@@ -52,6 +53,8 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
   const [singleAccountId, setSingleAccountId] = useState<string | null>(null)
   const [broadcastAccountIds, setBroadcastAccountIds] = useState<string[]>([])
   const [configReady, setConfigReady] = useState(false)
+  const [userLiveEnabled, setUserLiveEnabled] = useState(false)
+  const [liveSettingsLoading, setLiveSettingsLoading] = useState(isLive)
   const syncedAccountsRef = useRef(false)
 
   const {
@@ -90,8 +93,60 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
     enabled: configured && enabledAccountIds.length > 0,
   })
 
-  const tradingAllowed = !serverLiveBlocked && configured
+  const tradingAllowed = !serverLiveBlocked && configured && (!isLive || userLiveEnabled)
   const loading = accountsLoading && !accountsData
+
+  useEffect(() => {
+    if (!isLive) {
+      setUserLiveEnabled(true)
+      setLiveSettingsLoading(false)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      setLiveSettingsLoading(true)
+      try {
+        const response = await authFetch("/api/delta/live-settings")
+        const data = await response.json()
+        if (!cancelled && response.ok) setUserLiveEnabled(Boolean(data.enabled))
+      } catch {
+        if (!cancelled) setUserLiveEnabled(false)
+      } finally {
+        if (!cancelled) setLiveSettingsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [isLive])
+
+  async function toggleUserLiveTrading(enabled: boolean) {
+    setLiveSettingsLoading(true)
+    try {
+      const response = await authFetch("/api/delta/live-settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Failed to update live trading")
+      setUserLiveEnabled(Boolean(data.enabled))
+      toast({
+        title: data.enabled ? "Live trading enabled" : "Live trading disabled",
+        description: data.enabled
+          ? "Orders and auto-trade can now run on Delta live."
+          : "Live orders and auto-trade are paused.",
+      })
+    } catch (error) {
+      toast({
+        title: "Could not update live trading",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      })
+    } finally {
+      setLiveSettingsLoading(false)
+    }
+  }
 
   // Warm every tradable symbol once so the order ticket never waits on a fetch.
   const prefetchAccountId =
@@ -231,6 +286,34 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
         </div>
       ) : null}
 
+      {isLive && envOverride ? (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2.5 text-xs text-amber-200">
+          Server env override is active — all live orders use one API key, not your selected accounts.
+        </div>
+      ) : null}
+
+      {isLive && !serverLiveBlocked ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-500/25 bg-rose-500/5 px-4 py-3">
+          <div>
+            <p className="text-sm font-medium text-rose-100">Live trading arm</p>
+            <p className="text-xs text-muted-foreground">
+              {userLiveEnabled
+                ? "Real orders and auto-trade are allowed on production."
+                : "Enable before placing live orders or turning on auto-trade."}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">{userLiveEnabled ? "Armed" : "Disarmed"}</span>
+            <Switch
+              checked={userLiveEnabled}
+              disabled={liveSettingsLoading}
+              onCheckedChange={(checked) => void toggleUserLiveTrading(checked)}
+              className={cn(userLiveEnabled && "data-[state=checked]:bg-rose-600")}
+            />
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/50 pb-5">
         <div className="space-y-2.5">
           <div className="flex items-center gap-2.5">
@@ -280,7 +363,7 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             value="trading"
             className="flex-1 rounded-md text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm"
           >
-            Configuration
+            Trade
           </TabsTrigger>
           <TabsTrigger
             value="positions"

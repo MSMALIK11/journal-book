@@ -15,6 +15,7 @@ type AlertsResponse = {
   topAction: AlertItem | null
   history: AlertItem[]
   unreadCount: number
+  readKeys: string[]
   zones: MomentZoneSnapshot
   verdict: CoachingVerdict | null
   timezone: string
@@ -87,7 +88,7 @@ export function useTradingAlerts(options?: UseTradingAlertsOptions) {
   const swrKey = activeAccountId ? `/api/alerts?limit=50&account=${activeAccountId}&v=${switchVersion}` : null
 
   const { data, error, isLoading, mutate } = useSWR<AlertsResponse>(swrKey, fetcher, {
-    dedupingInterval: 45_000,
+    dedupingInterval: 2_000,
     revalidateOnFocus: false,
     keepPreviousData: true,
   })
@@ -107,14 +108,14 @@ export function useTradingAlerts(options?: UseTradingAlertsOptions) {
 
   const refresh = useCallback(async () => {
     try {
-      await mutate()
+      await mutate(undefined, { revalidate: true })
     } catch {
       // silent
     }
   }, [mutate])
 
   const markRead = useCallback(
-    async (options: { ids?: string[]; all?: boolean }) => {
+    async (options: { ids?: string[]; keys?: string[]; all?: boolean }) => {
       if (!activeAccountId) return
       await authFetch("/api/alerts/read", {
         method: "POST",
@@ -189,6 +190,7 @@ export function useTradingAlerts(options?: UseTradingAlertsOptions) {
     topAction: data?.topAction ?? null,
     history: data?.history ?? [],
     unreadCount: data?.unreadCount ?? 0,
+    readKeys: data?.readKeys ?? [],
     zones: data?.zones ?? null,
     verdict: data?.verdict ?? null,
     timezone: data?.timezone ?? null,

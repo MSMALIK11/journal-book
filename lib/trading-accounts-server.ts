@@ -70,6 +70,7 @@ export function formatAccount(account: {
   isDefault: boolean
   color?: string
   pnlSource?: AccountPnlSource
+  initialCapital?: number | null
   createdAt?: Date
   updatedAt?: Date
   tradeCount?: number
@@ -82,6 +83,10 @@ export function formatAccount(account: {
     isDefault: account.isDefault,
     color: account.color,
     pnlSource: normalizePnlSource(account.pnlSource),
+    initialCapital:
+      typeof account.initialCapital === "number" && account.initialCapital > 0
+        ? account.initialCapital
+        : null,
     tradeCount: account.tradeCount ?? 0,
     createdAt: account.createdAt?.toISOString(),
     updatedAt: account.updatedAt?.toISOString(),

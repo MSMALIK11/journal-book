@@ -30,15 +30,37 @@ function parseSymbols(value: string) {
     .filter(Boolean)
 }
 
+/** Blank clears the capital; anything else must be a sane USD amount. */
+function parseInitialCapital(value: string): number | null | undefined {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const next = Number(trimmed.replace(/,/g, ""))
+  if (!Number.isFinite(next) || next < 0 || next > 1_000_000_000_000) return undefined
+  return next
+}
+
 function AccountRow({ account, onChanged }: { account: TradingAccountSummary; onChanged: () => void }) {
   const { toast } = useToast()
   const [name, setName] = useState(account.name)
   const [symbolsText, setSymbolsText] = useState(account.symbols.join(", "))
+  const [capitalText, setCapitalText] = useState(
+    account.initialCapital ? String(account.initialCapital) : "",
+  )
   const [useTvPnl, setUseTvPnl] = useState((account.pnlSource ?? "tv") === "tv")
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
   async function save() {
+    const initialCapital = parseInitialCapital(capitalText)
+    if (initialCapital === undefined) {
+      toast({
+        title: "Invalid initial capital",
+        description: "Enter a number between 0 and 1,000,000,000,000, or leave it blank.",
+        variant: "destructive",
+      })
+      return
+    }
+    setCapitalText(initialCapital === null ? "" : String(initialCapital))
     setSaving(true)
     try {
       const response = await authFetch(`/api/accounts/${account.id}`, {
@@ -48,6 +70,7 @@ function AccountRow({ account, onChanged }: { account: TradingAccountSummary; on
           name,
           symbols: parseSymbols(symbolsText),
           pnlSource: useTvPnl ? "tv" : "calculated",
+          initialCapital,
         }),
       })
       const data = await response.json()
@@ -184,6 +207,23 @@ function AccountRow({ account, onChanged }: { account: TradingAccountSummary; on
             placeholder="BTCUSDT, BTCUSD, XAUUSD"
             className="border-cyan-400/20 bg-transparent"
           />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`capital-${account.id}`}>Initial capital (USD)</Label>
+          <Input
+            id={`capital-${account.id}`}
+            value={capitalText}
+            onChange={(e) => setCapitalText(e.target.value)}
+            type="number"
+            min={0}
+            step={100}
+            inputMode="decimal"
+            placeholder="5000"
+            className="border-cyan-400/20 bg-transparent"
+          />
+          <p className="text-xs text-muted-foreground">
+            Set this to show return % — P&amp;L divided by starting capital. Leave blank to hide it.
+          </p>
         </div>
         <div className="flex items-start justify-between gap-4 rounded-lg border border-cyan-400/10 px-4 py-3">
           <div className="space-y-1">

@@ -28,7 +28,6 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useActiveAccount } from "@/hooks/use-active-account"
 import { authFetch } from "@/lib/client-auth"
-import type { EquityPoint } from "@/lib/trading/analytics"
 import {
   DEFAULT_FUNDED_RULES,
   FUNDED_FIRM_PRESETS,
@@ -37,7 +36,6 @@ import {
   type RiskMode,
 } from "@/lib/trading/funded-presets"
 import {
-  buildChallengeAssessment,
   formatDays,
   formatRr,
   type CompareSnapshot,
@@ -52,6 +50,7 @@ import {
   type StrategyProfile,
   type WeekdayFilter,
 } from "@/lib/trading/funded-roadmap"
+import { formatProfitFactor } from "@/lib/trading/analytics"
 import { cn } from "@/lib/utils"
 
 const SETTINGS_PREFIX = "jb-funded-roadmap-v1"
@@ -83,7 +82,6 @@ type RoadmapResponse = Omit<FundedRoadmapModel, "assessment"> & {
   sourceLabel: DataSourceLabel
   filterLabel: string
   snapshot: CompareSnapshot
-  equityCurve: EquityPoint[]
   rules: FundedChallengeRules
 }
 
@@ -145,11 +143,15 @@ function formatTrades(value: number | null | undefined) {
   return Math.round(value).toLocaleString("en-US")
 }
 
+function fmtRisk(value: number | null | undefined) {
+  return value == null || !Number.isFinite(value) ? "—" : value.toFixed(2)
+}
+
 function statusClass(status: StageStatus) {
   if (status === "At Risk") return "border-rose-400/40 text-rose-200"
   if (status === "Ready") return "border-emerald-400/40 text-emerald-200"
   if (status === "Current") return "border-cyan-400/40 text-cyan-200"
-  if (status === "Completed") return "border-emerald-400/20 text-emerald-300/80"
+  if (status === "Prior") return "border-emerald-400/20 text-emerald-300/80"
   return "border-white/10 text-muted-foreground"
 }
 
@@ -370,7 +372,7 @@ export function FundedRoadmapDashboard() {
   }
 
   const current = data.stages[currentStageIndex] ?? data.stages[0]
-  const pf = data.profile.profitFactor === Infinity ? "∞" : data.profile.profitFactor.toFixed(2)
+  const pf = formatProfitFactor(data.profile.profitFactor)
   const lowN = data.profile.closedTrades < 100
   const realizedPnl = data.realizedPnl ?? 0
   const targetMet = Boolean(current && current.profitTarget > 0 && realizedPnl >= current.profitTarget)
@@ -381,11 +383,7 @@ export function FundedRoadmapDashboard() {
   const progressRatio =
     current && current.profitTarget > 0 ? (realizedPnl / current.profitTarget) * 100 : 0
   const nextStage = data.stages[currentStageIndex + 1]
-  const assessment =
-    data.assessment ??
-    (current
-      ? buildChallengeAssessment(current, data.profile, data.recommendation, data.rules)
-      : null)
+  const assessment = data.assessment ?? null
 
   return (
     <FundedRoadmapHelpProvider>
@@ -601,31 +599,45 @@ export function FundedRoadmapDashboard() {
               </label>
               {(
                 [
-                  ["profitTargetPct", "Profit target %"],
-                  ["maxDrawdownPct", "Max drawdown %"],
-                  ["dailyDrawdownPct", "Daily drawdown %"],
-                  ["minTradingDays", "Min trading days"],
-                  ["profitSplitPct", "Profit split %"],
+                  ["profitTargetPct", "Profit target %", 1, 100],
+                  ["maxDrawdownPct", "Max drawdown %", 1, 100],
+                  ["dailyDrawdownPct", "Daily drawdown %", 0.25, 100],
+                  ["minTradingDays", "Min trading days", 1, 365],
+                  ["profitSplitPct", "Profit split %", 1, 100],
                 ] as const
-              ).map(([key, label]) => (
+              ).map(([key, label, min, max]) => (
                 <label key={key} className="space-y-1 text-xs text-muted-foreground">
                   {label}
                   <Input
                     type="number"
                     value={rules[key]}
-                    onChange={(event) =>
-                      setRules((current) => ({ ...current, [key]: Number(event.target.value) || 0 }))
-                    }
+                    min={min}
+                    max={max}
+                    step={key === "dailyDrawdownPct" ? 0.25 : 1}
+                    onChange={(event) => {
+                      const parsed = Number(event.target.value)
+                      setRules((current) => ({
+                        ...current,
+                        [key]: Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : min,
+                      }))
+                    }}
                     className="border-cyan-400/20 bg-transparent text-foreground"
                   />
                 </label>
               ))}
             </div>
-            <p className="text-xs text-muted-foreground">
-              Recommended {data.recommendation.recommended.toFixed(2)}% · Conservative{" "}
-              {data.recommendation.conservative.toFixed(2)}% · Aggressive {data.recommendation.aggressive.toFixed(2)}%.{" "}
-              {data.recommendation.note}
-            </p>
+            {data.recommendation ? (
+              <p className="text-xs text-muted-foreground">
+                Recommended {fmtRisk(data.recommendation.recommended)}% · Conservative{" "}
+                {fmtRisk(data.recommendation.conservative)}% · Aggressive{" "}
+                {fmtRisk(data.recommendation.aggressive)}%. {data.recommendation.note}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Risk recommendation needs % of equity mode — fixed $ risk does not scale with each stage, so
+                no level can be graded safe or unsafe.
+              </p>
+            )}
           </div>
         </HudPanel>
 
@@ -768,7 +780,7 @@ export function FundedRoadmapDashboard() {
       <HudPanel>
         <HudPanelHeader
           title="Target probability"
-          description={`${current?.shortLabel ?? "$5K"} challenge · 1,000 simulations of your actual R-multiples`}
+          description={`${current?.shortLabel ?? "$5K"} challenge · ${(current?.monteCarlo.simulations ?? 1000).toLocaleString("en-US")} simulations of your actual R-multiples`}
           action={<FundedRoadmapTermHelp term="target-probability" label="What is target probability?" />}
         />
         <div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
@@ -922,7 +934,7 @@ function PlaybookCard({
   accountName: string
   stage: StageProjection
   nextStageLabel?: string
-  recommendation: RiskRecommendation
+  recommendation: RiskRecommendation | null
   profile: StrategyProfile
   rules: FundedChallengeRules
 }) {
@@ -958,8 +970,12 @@ function PlaybookCard({
           <p className="text-xs text-muted-foreground">Avoid</p>
           <p className="mt-1 text-sm font-medium text-rose-200">
             {avoidHighRisk
-              ? `Do not use ${recommendation.aggressive.toFixed(2)}% risk — stress DD breaks the cap.`
-              : `Stay near ${recommendation.recommended.toFixed(2)}% · conservative ${recommendation.conservative.toFixed(2)}%.`}
+              ? recommendation?.aggressive != null
+                ? `Do not use ${recommendation.aggressive.toFixed(2)}% risk — stress DD breaks the cap.`
+                : "Stress DD breaks the cap — cut risk until the drawdown simulation stays inside the limit."
+              : recommendation?.recommended != null
+                ? `Stay near ${recommendation.recommended.toFixed(2)}% · conservative ${fmtRisk(recommendation.conservative)}%.`
+                : "Not enough stop-loss R history to grade risk levels — size conservatively."}
           </p>
         </div>
         <div>
@@ -974,7 +990,7 @@ function PlaybookCard({
         Why: {profile.winRate.toFixed(1)}% WR · {profile.expectancyR >= 0 ? "+" : ""}
         {profile.expectancyR.toFixed(2)}R expectancy on {profile.closedTrades} closed trades across{" "}
         {profile.tradingDays} active trading days. Conservative timeline is at least {rules.minTradingDays}{" "}
-        calendar days per challenge stage. {recommendation.note}
+        calendar days per challenge stage. {recommendation?.note}
       </p>
     </HudPanel>
   )
@@ -1015,7 +1031,7 @@ function CompareCard({ title, row }: { title: string; row?: CompareSnapshot }) {
         <dl className="mt-3 space-y-1 text-xs text-muted-foreground">
           <Row label="Win rate" value={`${row.winRate.toFixed(1)}%`} />
           <Row label="RR" value={formatRr(row.avgRrRatio)} />
-          <Row label="PF" value={row.profitFactor === Infinity ? "∞" : row.profitFactor.toFixed(2)} />
+          <Row label="PF" value={formatProfitFactor(row.profitFactor)} />
           <Row label="Expectancy" value={`${row.expectancyR.toFixed(2)}R`} />
           <Row label="Max DD" value={`${row.maxDrawdownPct.toFixed(1)}%`} />
           <Row label="Trades" value={String(row.closedTrades)} />

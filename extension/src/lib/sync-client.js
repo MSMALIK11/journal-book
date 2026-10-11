@@ -57,12 +57,18 @@ JBSync.buildExternalId = function buildExternalId(trade) {
   if (Number.isFinite(entryMs) && entryMs > 0) {
     return `tv:${slug}:${symbol}:${entryMs}:${trade.direction}`
   }
-  return `tv:${slug}:${trade.tradeNumber}`
+  return `tv:${slug}:${symbol}:${trade.tradeNumber}`
+}
+
+JBSync.legacyExternalId = function legacyExternalId(trade) {
+  const slug = JBSync.strategySlug(trade.strategy || "")
+  const symbol = (trade.instrument || "UNKNOWN").replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+  return `tv:${slug}:${symbol}:${trade.tradeNumber}`
 }
 
 JBSync.tradeKnownOnServer = function tradeKnownOnServer(trade, knownIds) {
   if (knownIds.has(JBSync.buildExternalId(trade))) return true
-  return knownIds.has(`tv:${JBSync.strategySlug(trade.strategy || "")}:${trade.tradeNumber}`)
+  return knownIds.has(JBSync.legacyExternalId(trade))
 }
 
 JBSync.isTypedExitTrade = function isTypedExitTrade(trade) {
@@ -335,7 +341,7 @@ JBSync.fetchKnownTradeSnapshot = async function fetchKnownTradeSnapshot(config, 
 
 JBSync.tradeNeedsRefresh = function tradeNeedsRefresh(trade, snapshot) {
   const extId = JBSync.buildExternalId(trade)
-  const legacyId = `tv:${JBSync.strategySlug(trade.strategy || "")}:${trade.tradeNumber}`
+  const legacyId = JBSync.legacyExternalId(trade)
   const fp = JBSync.tradeFingerprint(trade)
   const known =
     snapshot.ids.has(extId) ||
@@ -502,7 +508,7 @@ JBSync.normalizeChartSymbol = function normalizeChartSymbol(raw) {
   decoded = decoded.replace(/%3A/gi, ":")
   if (decoded.includes(":")) decoded = decoded.split(":").pop().trim()
   let normalized = decoded.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
-  const suffix = normalized.match(/(XAUUSD|XAGUSD|BTCUSDT|BTCUSD|ETHUSDT|USOIL)$/i)
+  const suffix = normalized.match(/(XAUUSD|XAGUSD|PAXGUSDT|PAXGUSD|BTCUSDT|BTCUSD|ETHUSDT|ETHUSD|SOLUSDT|SOLUSD|USOIL)$/i)
   if (suffix && normalized.length > suffix[1].length + 2) return suffix[1]
   const encodedColon = normalized.match(/3A([A-Z0-9]{3,12})$/i)
   if (encodedColon) return encodedColon[1]
@@ -522,15 +528,15 @@ JBSync.readChartSymbolFromTab = async function readChartSymbolFromTab(tab) {
   let fromPage = ""
   try {
     await chrome.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: false },
+      target: { tabId: tab.id, allFrames: true },
       world: "MAIN",
       files: ["src/lib/symbol-utils.js"],
     })
-    const [injection] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: false },
+    const injections = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
       world: "MAIN",
       func: async () => {
-        for (let attempt = 0; attempt < 12; attempt += 1) {
+        const readOnce = () => {
           try {
             const chart = window.tvWidget?.activeChart?.()
             const sym = chart?.symbol?.() || chart?.symbolExt?.()
@@ -570,17 +576,25 @@ JBSync.readChartSymbolFromTab = async function readChartSymbolFromTab(tab) {
             if (fromTitle) return fromTitle
           }
 
-          await new Promise((resolve) => setTimeout(resolve, 150))
+          const symbolParam = location.href.match(/symbol=([^&]+)/i)
+          if (symbolParam && typeof JBSymbol !== "undefined") {
+            return JBSymbol.normalize(decodeURIComponent(symbolParam[1]))
+          }
+          return ""
         }
 
-        const symbolParam = location.href.match(/symbol=([^&]+)/i)
-        if (symbolParam && typeof JBSymbol !== "undefined") {
-          return JBSymbol.normalize(decodeURIComponent(symbolParam[1]))
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          const sym = readOnce()
+          if (sym) return sym
+          await new Promise((resolve) => setTimeout(resolve, 120))
         }
-        return typeof JBSymbol !== "undefined" ? JBSymbol.fromTitle(document.title) : ""
+        return readOnce()
       },
     })
-    fromPage = JBSync.normalizeChartSymbol(injection?.result || "")
+    for (const injection of injections || []) {
+      const sym = JBSync.normalizeChartSymbol(injection?.result || "")
+      if (sym) fromPage = sym
+    }
   } catch {
     fromPage = ""
   }
@@ -589,10 +603,9 @@ JBSync.readChartSymbolFromTab = async function readChartSymbolFromTab(tab) {
     typeof JBSymbol !== "undefined" && JBSymbol.fromTitle
       ? JBSync.normalizeChartSymbol(JBSymbol.fromTitle(tab.title || ""))
       : ""
-  // Visible title wins when the URL/widget is still on the previous symbol.
-  if (titleSymbol && fromPage && titleSymbol !== fromPage) return titleSymbol
-  if (fromPage) return fromPage
+  // Tab title is what the user sees; URL ?symbol= often lags after switching charts.
   if (titleSymbol) return titleSymbol
+  if (fromPage) return fromPage
   return JBSync.symbolFromTabUrl(tab.url)
 }
 
@@ -630,7 +643,11 @@ JBSync.priceMatchesInstrument = function priceMatchesInstrument(price, symbol) {
   if (/SOL/.test(s)) return price >= 1 && price <= 5000
   if (/^(USOIL|UKOIL|WTI|CRUDE|OIL|CL)/.test(s)) return price >= 10 && price <= 500
   if (/NIFTY|SENSEX|BANKNIF|NSEI/.test(s)) return price >= 1000 && price <= 200000
-  if (/^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX)/.test(s)) {
+  if (
+    /^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX|DJI|DJIA|DOW|INDU|YM|MYM|US2000|RUT|TVC)/.test(
+      s,
+    )
+  ) {
     return price >= 100 && price <= 200000
   }
 
@@ -648,6 +665,7 @@ JBSync.filterTradesForChart = function filterTradesForChart(trades, chartSymbol)
 
   return (trades || []).filter((trade) => {
     const tradeInst = JBSync.normalizeChartSymbol(trade.instrument)
+    if (tradeInst && tradeInst !== "UNKNOWN" && tradeInst === symbol) return true
     if (JBSync.priceMatchesInstrument(trade.entry?.price, symbol)) return true
     if (tradeInst && tradeInst !== "UNKNOWN") {
       return JBSync.priceMatchesInstrument(trade.entry?.price, tradeInst)
@@ -656,13 +674,48 @@ JBSync.filterTradesForChart = function filterTradesForChart(trades, chartSymbol)
   })
 }
 
+JBSync.inferChartSymbolFromTrades = function inferChartSymbolFromTrades(trades, chartSymbol) {
+  const normalized = JBSync.normalizeChartSymbol(chartSymbol)
+  const list = trades || []
+  if (!list.length) return normalized
+
+  const sample = list.find((t) => Number.isFinite(t?.entry?.price)) || list[0]
+  const price = sample?.entry?.price
+  if (normalized && JBSync.priceMatchesInstrument(price, normalized)) return normalized
+
+  const inst = JBSync.normalizeChartSymbol(sample?.instrument)
+  if (inst && inst !== "UNKNOWN" && JBSync.priceMatchesInstrument(price, inst)) return inst
+
+  for (const trade of list) {
+    const p = trade?.entry?.price
+    const candidate = JBSync.normalizeChartSymbol(trade?.instrument)
+    if (candidate && candidate !== "UNKNOWN" && JBSync.priceMatchesInstrument(p, candidate)) {
+      return candidate
+    }
+  }
+  return normalized
+}
+
 JBSync.applyChartSymbol = function applyChartSymbol(trades, chartSymbol) {
   const normalized = JBSync.normalizeChartSymbol(chartSymbol)
   if (!normalized) return trades
-  const filtered = JBSync.filterTradesForChart(trades, normalized)
+  let filtered = JBSync.filterTradesForChart(trades, normalized)
+  if (!filtered.length && (trades || []).length) {
+    const inferred = JBSync.inferChartSymbolFromTrades(trades, normalized)
+    if (inferred && inferred !== normalized) {
+      filtered = JBSync.filterTradesForChart(trades, inferred)
+    }
+    if (!filtered.length) {
+      filtered = (trades || []).filter((trade) => {
+        const inst = JBSync.normalizeChartSymbol(trade.instrument) || inferred || normalized
+        return JBSync.priceMatchesInstrument(trade.entry?.price, inst)
+      })
+    }
+  }
+  const stamp = JBSync.inferChartSymbolFromTrades(filtered.length ? filtered : trades, normalized)
   for (const trade of filtered) {
-    if (JBSync.priceMatchesInstrument(trade.entry?.price, normalized)) {
-      trade.instrument = normalized
+    if (JBSync.priceMatchesInstrument(trade.entry?.price, stamp)) {
+      trade.instrument = stamp
     }
   }
   return filtered
@@ -695,9 +748,9 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
   }
 
   const scrapeMode = importAll || options.mode === "full" ? "full" : "light"
-  // Polls only need the chart frame — scanning every iframe is expensive.
-  const allFrames = scrapeMode === "full"
-  const target = { tabId: tab.id, allFrames }
+  // Chart + Strategy Tester often live in a nested frame; empty frames bail out in jbMainScrape.
+  const chartTarget = { tabId: tab.id, allFrames: true }
+  const target = chartTarget
 
   if (scrapeMode === "full") {
     await JBSync.markImportAllLock(true)
@@ -706,7 +759,7 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
   }
 
   await chrome.scripting.executeScript({
-    target: { tabId: tab.id, allFrames: false },
+    target: { tabId: tab.id, allFrames: true },
     world: "MAIN",
     func: (sym) => {
       const prev = String(window.__JB_CAPTURED_CHART_SYMBOL__ || window.__JB_CHART_SYMBOL__ || "")
@@ -752,7 +805,7 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
         })
       } else {
         const mainExtractions = await chrome.scripting.executeScript({
-          target,
+          target: chartTarget,
           world: "MAIN",
           files: ["src/content/extract-trades.js"],
         })
@@ -775,10 +828,31 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
       frameDebug.push({ method: "main-world", injectionError: error.message })
     }
 
-    // isolated-world scraper — light mode only peeks top of List of trades.
-    const injections = await chrome.scripting.executeScript({
+    // Load scraper, then invoke via func so Chrome awaits the async result.
+    await chrome.scripting.executeScript({
       target,
       files: ["src/content/main-scraper.js"],
+    })
+    const injections = await chrome.scripting.executeScript({
+      target,
+      func: () => {
+        const run = globalThis.__JB_MAIN_SCRAPE__
+        if (typeof run !== "function") {
+          return {
+            trades: [],
+            error: "Scraper not loaded — reload extension and refresh TradingView (F5).",
+            debug: { scraperMissing: true },
+          }
+        }
+        return run().catch((err) => ({
+          trades: [],
+          strategy: "TradingView Strategy",
+          instrument: globalThis.__JB_CHART_SYMBOL__ || "UNKNOWN",
+          frameUrl: location.href,
+          debug: { scraperCrash: true, message: String(err?.message || err) },
+          error: String(err?.message || err),
+        }))
+      },
     })
 
     for (const injection of injections || []) {
@@ -864,12 +938,9 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
       }
     }
 
-    const trades = JBSync.markLatestPaintedOpens(
-      JBSync.applyChartSymbol(
-        mergedTrades.sort((a, b) => b.tradeNumber - a.tradeNumber),
-        chartSymbol,
-      ),
-    )
+    const sorted = mergedTrades.sort((a, b) => b.tradeNumber - a.tradeNumber)
+    const resolvedSymbol = JBSync.inferChartSymbolFromTrades(sorted, chartSymbol) || chartSymbol
+    const trades = JBSync.markLatestPaintedOpens(JBSync.applyChartSymbol(sorted, resolvedSymbol))
     const best = frameDebug.sort((a, b) => b.trades - a.trades)[0]
     const bestGrid = injections?.find((i) => i.result)?.result
 
@@ -922,9 +993,10 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
     const result = {
       trades,
       strategy: bestGrid?.strategy || "TradingView Strategy",
-      instrument: chartSymbol || bestGrid?.instrument || trades[0]?.instrument || "",
+      instrument: resolvedSymbol || chartSymbol || bestGrid?.instrument || trades[0]?.instrument || "",
       debug: {
         chartSymbol: chartSymbol || null,
+        resolvedSymbol: resolvedSymbol || null,
         tabId: tab.id,
         tabTitle: tab.title || null,
         tabUrl: tab.url || null,
@@ -937,7 +1009,13 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
     }
 
     if (!trades.length) {
-      result.error = best?.error || bestGrid?.error || "No trades found. Open List of trades, scroll the table, retry."
+      const preFilter = merged.size
+      if (preFilter > 0 && chartSymbol) {
+        result.error = `Scraped ${preFilter} row(s) but none matched chart ${chartSymbol} — switch to the correct symbol tab and retry.`
+      } else {
+        result.error =
+          best?.error || bestGrid?.error || "No trades found. Open List of trades, scroll the table, retry."
+      }
     }
 
     return result
@@ -991,24 +1069,44 @@ JBSync.inferAssetType = function inferAssetType(symbol, fallback) {
   const normalized = (symbol || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase()
   if (/^(XAU|XAG|GOLD|SILVER|PAXG)/.test(normalized)) return "metal"
   if (/^(USOIL|UKOIL|WTI|CRUDE|CRUDEOIL|OIL|CL)/.test(normalized)) return "commodity"
-  if (/NIFTY|SENSEX|BANKNIF|NSEI|US30|US100|US500|NAS100|SPX|GER40|DE40|UK100|JP225|DAX|NDX|SPX500/.test(normalized)) {
+  if (
+    /NIFTY|SENSEX|BANKNIF|NSEI|US30|US100|US500|NAS100|SPX|GER40|DE40|UK100|JP225|DAX|NDX|SPX500|DJI|DJIA|DOW|INDU|YM|MYM|US2000|RUT|TVC/.test(
+      normalized,
+    )
+  ) {
     return "index"
   }
   if (/^(EUR|GBP|USDJPY|USDCHF|AUDUSD|USDCAD|NZDUSD)/.test(normalized)) return "forex"
   return fallback || "crypto"
 }
 
+JBSync.resolveTradeInstrument = function resolveTradeInstrument(trade, chartSymbol) {
+  const chart = JBSync.normalizeChartSymbol(chartSymbol)
+  const scraped = JBSync.normalizeChartSymbol(trade?.instrument)
+  const price = trade?.entry?.price
+  if (scraped && scraped !== "UNKNOWN" && JBSync.priceMatchesInstrument(price, scraped)) {
+    return scraped
+  }
+  if (chart && JBSync.priceMatchesInstrument(price, chart)) {
+    return chart
+  }
+  if (scraped && scraped !== "UNKNOWN") return scraped
+  return chart || scraped || "UNKNOWN"
+}
+
 JBSync.normalizeTrades = function normalizeTrades(trades, assetType, chartSymbol) {
-  const symbol = JBSync.normalizeChartSymbol(chartSymbol)
-  if (!symbol) {
+  const chart = JBSync.normalizeChartSymbol(chartSymbol)
+  if (!chart) {
     throw new Error("Missing chart symbol — open the TradingView chart tab and retry.")
   }
-  return trades.map((trade) => ({
+  return trades.map((trade) => {
+    const instrument = JBSync.resolveTradeInstrument(trade, chart)
+    return {
     tradeNumber: trade.tradeNumber,
     direction: trade.direction,
-    instrument: symbol,
+    instrument,
     strategy: trade.strategy,
-    assetType: JBSync.inferAssetType(symbol, assetType),
+    assetType: JBSync.inferAssetType(instrument, assetType),
     entry: {
       datetime: JBSync.normalizeDatetime(trade.entry.datetime),
       price: trade.entry.price,
@@ -1025,7 +1123,8 @@ JBSync.normalizeTrades = function normalizeTrades(trades, assetType, chartSymbol
     netPnl: trade.netPnl,
     returnPct: trade.returnPct,
     commission: trade.commission,
-  }))
+  }
+  })
 }
 
 JBSync.postJson = async function postJson(url, token, body) {
@@ -1040,7 +1139,12 @@ JBSync.postJson = async function postJson(url, token, body) {
   })
 
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`)
+  if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error(data.error || "Unauthorized — regenerate sync key in journal Profile → TradingView Sync")
+    }
+    throw new Error(data.error || `Request failed (${response.status})`)
+  }
   return data
 }
 
@@ -1656,7 +1760,11 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     throw new Error("Missing chart symbol for captured trades — refresh TradingView chart (F5).")
   }
 
-  const stamped = list.map((trade) => ({ ...trade, instrument: symbol, strategy: trade.strategy || "TradingView Strategy" }))
+  const stamped = list.map((trade) => ({
+    ...trade,
+    instrument: JBSync.resolveTradeInstrument(trade, symbol),
+    strategy: trade.strategy || "TradingView Strategy",
+  }))
 
   const newOrUpdated = stamped.filter((trade) => JBSync.tradeNeedsRefresh(trade, snapshot))
   const seen = new Set(newOrUpdated.map((trade) => trade.tradeNumber))
@@ -1725,8 +1833,8 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
 JBSync.readCapturedTradesFromTab = async function readCapturedTradesFromTab(tab) {
   if (!tab?.id) return { trades: [], chartSymbol: "" }
   try {
-    const [injection] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: false },
+    const injections = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
       world: "MAIN",
       func: () => {
         const symbol = String(window.__JB_CHART_SYMBOL__ || window.__JB_CAPTURED_CHART_SYMBOL__ || "")
@@ -1735,13 +1843,21 @@ JBSync.readCapturedTradesFromTab = async function readCapturedTradesFromTab(tab)
         const trades = Array.isArray(window.__JB_CAPTURED_TRADES__)
           ? window.__JB_CAPTURED_TRADES__.map((t) => ({ ...t }))
           : []
-        return { trades, chartSymbol: symbol }
+        return { trades, chartSymbol: symbol, frameUrl: location.href }
       },
     })
-    return {
-      trades: injection?.result?.trades || [],
-      chartSymbol: injection?.result?.chartSymbol || "",
+
+    const merged = new Map()
+    let chartSymbol = ""
+    for (const injection of injections || []) {
+      const payload = injection?.result
+      if (!payload) continue
+      if (payload.chartSymbol && !chartSymbol) chartSymbol = payload.chartSymbol
+      for (const trade of payload.trades || []) {
+        merged.set(JBSync.tradeKey(trade), trade)
+      }
     }
+    return { trades: [...merged.values()], chartSymbol }
   } catch {
     return { trades: [], chartSymbol: "" }
   }

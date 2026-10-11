@@ -362,6 +362,14 @@ const DEMO_PRODUCT_FALLBACKS: Record<string, Record<string, unknown>> = {
     default_leverage: "10",
     max_leverage_notional: "10000",
   },
+  PAXGUSD: {
+    id: 169532,
+    symbol: "PAXGUSD",
+    contract_value: "0.001",
+    contract_unit_currency: "PAXG",
+    default_leverage: "10",
+    max_leverage_notional: "10000",
+  },
 }
 
 function deltaSymbolCandidates(symbol: string): string[] {
@@ -372,6 +380,9 @@ function deltaSymbolCandidates(symbol: string): string[] {
   }
   if (["XAUUSD", "XAUUSDT", "XAU", "GOLD", "XAUT", "XAUTUSD"].includes(normalized)) {
     candidates.push("XAUTUSD")
+  }
+  if (["PAXGUSD", "PAXGUSDT", "PAXG"].includes(normalized)) {
+    candidates.push("PAXGUSD")
   }
   if (normalized === "BTC") candidates.push("BTCUSD")
   if (normalized === "ETH") candidates.push("ETHUSD")

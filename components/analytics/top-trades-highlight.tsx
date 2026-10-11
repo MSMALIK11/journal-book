@@ -25,6 +25,8 @@ type Props = {
   topLosers: TopTradeEntry[]
   extremes: TradeExtremes
   timezone?: string
+  grossProfit?: number
+  grossLoss?: number
 }
 
 function formatTradeDate(iso: string | null, timezone?: string) {
@@ -58,10 +60,12 @@ function TradeTable({
   trades,
   variant,
   timezone,
+  gross,
 }: {
   trades: TopTradeEntry[]
   variant: "win" | "loss"
   timezone?: string
+  gross: number | null
 }) {
   if (!trades.length) {
     return (
@@ -81,12 +85,15 @@ function TradeTable({
             <TableHead className="text-muted-foreground">Side</TableHead>
             <TableHead className="text-muted-foreground">Entry → Exit</TableHead>
             <TableHead className="text-right text-muted-foreground">P&L</TableHead>
+            <TableHead className="text-right text-muted-foreground">% of gross</TableHead>
             <TableHead className="text-right text-muted-foreground">Return</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {trades.map((trade, index) => {
             const isLong = trade.trade_type === "Buy"
+            const share =
+              gross && gross > 0 ? (Math.abs(trade.net_pnl) / gross) * 100 : null
             return (
               <TableRow key={trade.id || `${trade.instrument}-${trade.entry_date}-${index}`} className="border-cyan-400/10">
                 <TableCell className="text-muted-foreground">{index + 1}</TableCell>
@@ -116,6 +123,9 @@ function TradeTable({
                   {variant === "win" ? "+" : ""}
                   {currency.format(trade.net_pnl)}
                 </TableCell>
+                <TableCell className="text-right text-muted-foreground">
+                  {share === null ? "—" : `${share.toFixed(0)}%`}
+                </TableCell>
                 <TableCell className="text-right text-muted-foreground">{formatReturn(trade.return_pct)}</TableCell>
               </TableRow>
             )
@@ -126,7 +136,14 @@ function TradeTable({
   )
 }
 
-export function TopTradesHighlight({ topWinners, topLosers, extremes, timezone }: Props) {
+export function TopTradesHighlight({
+  topWinners,
+  topLosers,
+  extremes,
+  timezone,
+  grossProfit,
+  grossLoss,
+}: Props) {
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
@@ -154,17 +171,27 @@ export function TopTradesHighlight({ topWinners, topLosers, extremes, timezone }
         <HudPanel>
           <HudPanelHeader
             title="Top 10 winning trades"
-            subtitle="Best single-trade results in this filter"
+            description="Best single-trade results in this filter"
           />
-          <TradeTable trades={topWinners} variant="win" timezone={timezone} />
+          <TradeTable
+            trades={topWinners}
+            variant="win"
+            timezone={timezone}
+            gross={grossProfit ?? null}
+          />
         </HudPanel>
 
         <HudPanel>
           <HudPanelHeader
             title="Top 10 losing trades"
-            subtitle="Worst single-trade drawdowns — your max loss per trade"
+            description="Worst single-trade drawdowns — your max loss per trade"
           />
-          <TradeTable trades={topLosers} variant="loss" timezone={timezone} />
+          <TradeTable
+            trades={topLosers}
+            variant="loss"
+            timezone={timezone}
+            gross={grossLoss ?? null}
+          />
         </HudPanel>
       </div>
     </div>

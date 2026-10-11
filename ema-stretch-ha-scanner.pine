@@ -1,5 +1,5 @@
 //@version=5
-strategy("EMA Stretch Long + Short Reversal and HA Scanner", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, calc_on_every_tick=true, pyramiding=0)
+strategy("EMA Stretch Long + Short Reversal and HA Scanner", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, calc_on_every_tick=false, process_orders_on_close=true, pyramiding=0)
 
 //────────────────────────────────────────────
 // STRATEGY SETTINGS
@@ -50,7 +50,7 @@ avoidShortTopWick = input.bool(false, "Avoid Short With Top Wick", group=filterG
 //────────────────────────────────────────────
 scannerGroup = "Heikin Ashi Multi Pair Scanner"
 
-confirmedOnly = input.bool(false, "Confirmed Closed Candle Only", group=scannerGroup)
+confirmedOnly = input.bool(true, "Confirmed Closed Candle Only", group=scannerGroup, tooltip="ON = scanner + table use only closed candles (stable after refresh). OFF = current bar updates at close only.")
 slTpTimeframe = input.timeframe("", "SL/TP Column Timeframe (empty = chart)", group=scannerGroup)
 
 enableGOLD = input.bool(true, "Enable GOLD", group=scannerGroup)
@@ -138,22 +138,19 @@ getLongSignal(_ema) =>
     hasBottomWick = bottomWick > syminfo.mintick
     wickValid = not avoidLongBottomWick or not hasBottomWick
 
-    // Wait after raw reversal when EMA confirmation is missing.
-    var bool waitingForLongEma = false
-    bool finalLongSignal = false
+    // Stateless EMA confirmation — safe inside request.security (no var repaint).
+    immediate = rawLongSignal and emaValid and bodyValid and wickValid
+    rawWithoutEma = rawLongSignal and not emaValid
+    barsSincePending = ta.barssince(rawWithoutEma)
+    delayedConfirm =
+         not na(barsSincePending) and
+         barsSincePending >= 1 and
+         barsSincePending <= 5 and
+         emaValid and
+         bodyValid and
+         wickValid
 
-    if rawLongSignal
-        if emaValid
-            finalLongSignal := bodyValid and wickValid
-            waitingForLongEma := false
-        else
-            waitingForLongEma := true
-    else if waitingForLongEma and emaValid
-        if bodyValid and wickValid
-            finalLongSignal := true
-            waitingForLongEma := false
-
-    finalLongSignal
+    immediate or delayedConfirm
 
 //────────────────────────────────────────────
 // SHORT SIGNAL
@@ -194,34 +191,36 @@ getShortSignal(_ema) =>
     hasTopWick = topWick > syminfo.mintick
     wickValid = not avoidShortTopWick or not hasTopWick
 
-    // Wait after raw reversal when EMA confirmation is missing.
-    var bool waitingForShortEma = false
-    bool finalShortSignal = false
+    // Stateless EMA confirmation — safe inside request.security (no var repaint).
+    immediate = rawShortSignal and emaValid and bodyValid and wickValid
+    rawWithoutEma = rawShortSignal and not emaValid
+    barsSincePending = ta.barssince(rawWithoutEma)
+    delayedConfirm =
+         not na(barsSincePending) and
+         barsSincePending >= 1 and
+         barsSincePending <= 5 and
+         emaValid and
+         bodyValid and
+         wickValid
 
-    if rawShortSignal
-        if emaValid
-            finalShortSignal := bodyValid and wickValid
-            waitingForShortEma := false
-        else
-            waitingForShortEma := true
-    else if waitingForShortEma and emaValid
-        if bodyValid and wickValid
-            finalShortSignal := true
-            waitingForShortEma := false
-
-    finalShortSignal
+    immediate or delayedConfirm
 
 //────────────────────────────────────────────
 // CURRENT CHART HA SIGNALS
 //────────────────────────────────────────────
-[longSignal, shortSignal] = request.security(
+[longSignalRaw, shortSignalRaw] = request.security(
      ticker.heikinashi(syminfo.tickerid),
      timeframe.period,
      [
          getLongSignal(ta.ema(close, emaLen)),
          getShortSignal(ta.ema(close, emaLen))
      ],
+     gaps=barmerge.gaps_off,
      lookahead=barmerge.lookahead_off)
+
+// Strategy evaluates at bar close (process_orders_on_close) — use the closed HA bar directly.
+longSignal = longSignalRaw
+shortSignal = shortSignalRaw
 
 //────────────────────────────────────────────
 // LONG AND SHORT STRATEGY
@@ -238,10 +237,11 @@ var int lastClosedTradeBar = na
 if strategy.position_size == 0 and strategy.position_size[1] != 0
     lastClosedTradeBar := bar_index
 
+entryPx = close
 longStop = low[1]
-longRisk = close - longStop
+longRisk = entryPx - longStop
 shortStop = high[1]
-shortRisk = shortStop - close
+shortRisk = shortStop - entryPx
 
 cooldownOk = tradeCooldownBars == 0 or na(lastClosedTradeBar) or bar_index - lastClosedTradeBar > tradeCooldownBars
 // Flat = respect cooldown. In a position = allow opposite reversal.
@@ -255,8 +255,8 @@ shortAllowed = enableShort and shortSignal and strategy.position_size >= 0 and c
 longFire = longAllowed and longRisk > syminfo.mintick
 shortFire = shortAllowed and shortRisk > syminfo.mintick
 
-if longFire
-    longTarget = close + longRisk * rr
+if longFire and barstate.isconfirmed
+    longTarget = entryPx + longRisk * rr
     chartTradeStop := longStop
     chartTradeTarget := longTarget
     lastLongEntryBar := bar_index
@@ -272,8 +272,8 @@ if longFire
          stop=longStop,
          limit=longTarget)
 
-else if shortFire
-    shortTarget = close - shortRisk * rr
+else if shortFire and barstate.isconfirmed
+    shortTarget = entryPx - shortRisk * rr
     chartTradeStop := shortStop
     chartTradeTarget := shortTarget
     lastShortEntryBar := bar_index
@@ -298,27 +298,40 @@ if strategy.position_size == 0 and not longSignal and not shortSignal
 //────────────────────────────────────────────
 todayStart = time("D")
 
-float todayProfit = 0.0
-float todayLoss = 0.0
-float todayNet = 0.0
-int todayWins = 0
-int todayLosses = 0
+var float todayProfit = 0.0
+var float todayLoss = 0.0
+var float todayNet = 0.0
+var int todayWins = 0
+var int todayLosses = 0
 
-if strategy.closedtrades > 0
-    for tradeIndex = 0 to strategy.closedtrades - 1
-        tradeExitTime = strategy.closedtrades.exit_time(tradeIndex)
+if barstate.isconfirmed
+    float nextProfit = 0.0
+    float nextLoss = 0.0
+    float nextNet = 0.0
+    int nextWins = 0
+    int nextLosses = 0
 
-        if not na(todayStart) and tradeExitTime >= todayStart
-            tradePnl = strategy.closedtrades.profit(tradeIndex)
+    if strategy.closedtrades > 0
+        for tradeIndex = 0 to strategy.closedtrades - 1
+            tradeExitTime = strategy.closedtrades.exit_time(tradeIndex)
 
-            todayNet += tradePnl
+            if not na(todayStart) and tradeExitTime >= todayStart
+                tradePnl = strategy.closedtrades.profit(tradeIndex)
 
-            if tradePnl > 0
-                todayProfit += tradePnl
-                todayWins += 1
-            else if tradePnl < 0
-                todayLoss += math.abs(tradePnl)
-                todayLosses += 1
+                nextNet += tradePnl
+
+                if tradePnl > 0
+                    nextProfit += tradePnl
+                    nextWins += 1
+                else if tradePnl < 0
+                    nextLoss += math.abs(tradePnl)
+                    nextLosses += 1
+
+    todayProfit := nextProfit
+    todayLoss := nextLoss
+    todayNet := nextNet
+    todayWins := nextWins
+    todayLosses := nextLosses
 
 formatMoney(_value) =>
     str.tostring(_value, "#.##")
@@ -328,19 +341,27 @@ formatMoney(_value) =>
 //────────────────────────────────────────────
 f_scannerRow() =>
     _ema = ta.ema(close, emaLen)
-    longSig = confirmedOnly ? getLongSignal(_ema)[1] : getLongSignal(_ema)
-    shortSig = confirmedOnly ? getShortSignal(_ema)[1] : getShortSignal(_ema)
+    longNow = getLongSignal(_ema)
+    shortNow = getShortSignal(_ema)
+    // Same anti-flicker rule as chart: closed candle unless bar just confirmed with confirmedOnly off.
+    useConfirmed = confirmedOnly or not barstate.isconfirmed
+    longSig = useConfirmed ? longNow[1] : longNow
+    shortSig = useConfirmed ? shortNow[1] : shortNow
     float stop = na
     float target = na
 
     if longSig
-        stop := low[1]
-        risk = close - stop
-        target := risk > syminfo.mintick ? close + risk * rr : na
+        sigStop = useConfirmed ? low[2] : low[1]
+        sigEntry = useConfirmed ? close[1] : close
+        stop := sigStop
+        risk = sigEntry - sigStop
+        target := risk > syminfo.mintick ? sigEntry + risk * rr : na
     else if shortSig
-        stop := high[1]
-        risk = stop - close
-        target := risk > syminfo.mintick ? close - risk * rr : na
+        sigStop = useConfirmed ? high[2] : high[1]
+        sigEntry = useConfirmed ? close[1] : close
+        stop := sigStop
+        risk = sigStop - sigEntry
+        target := risk > syminfo.mintick ? sigEntry - risk * rr : na
 
     [longSig, shortSig, stop, target]
 
@@ -349,6 +370,7 @@ getScannerRow(_symbol, _timeframe) =>
          ticker.heikinashi(_symbol),
          _timeframe,
          f_scannerRow(),
+         gaps=barmerge.gaps_off,
          lookahead=barmerge.lookahead_off)
 
 slTpTf = slTpTimeframe == "" ? timeframe.period : slTpTimeframe
@@ -705,7 +727,7 @@ plot(ema5, color=color.green, title="Fast EMA", linewidth=2)
 plot(ema20, color=color.red, title="Slow EMA", linewidth=2)
 
 plotshape(
-     longFire,
+     longFire and barstate.isconfirmed,
      title="Long Signal",
      style=shape.labelup,
      location=location.belowbar,
@@ -715,7 +737,7 @@ plotshape(
      size=size.tiny)
 
 plotshape(
-     shortFire,
+     shortFire and barstate.isconfirmed,
      title="Short Signal",
      style=shape.labeldown,
      location=location.abovebar,
@@ -728,11 +750,11 @@ plotshape(
 // ALERTS
 //────────────────────────────────────────────
 alertcondition(
-     longFire,
+     longFire and barstate.isconfirmed,
      title="Bullish HA EMA Reversal",
      message="LONG Heikin Ashi EMA reversal on {{ticker}} {{interval}}")
 
 alertcondition(
-     shortFire,
+     shortFire and barstate.isconfirmed,
      title="Bearish HA EMA Reversal",
      message="SHORT Heikin Ashi EMA reversal on {{ticker}} {{interval}}")

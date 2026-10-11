@@ -39,7 +39,7 @@ async function jbMainScrape() {
   function isTvPointTimesSizeSymbol(sym) {
     return (
       sym === "USDJPY" ||
-      /^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX|NIFTY|SENSEX|BANKNIFTY|NSEI|BANKNIF)/.test(
+      /^(US30|US100|US500|NAS100|SPX500|GER40|DE40|UK100|JP225|DAX|NDX|SPX|DJI|DJIA|DOW|INDU|YM|MYM|US2000|RUT|TVC|NIFTY|SENSEX|BANKNIFTY|NSEI|BANKNIF)/.test(
         sym,
       )
     )
@@ -110,8 +110,39 @@ async function jbMainScrape() {
     return fill
   }
 
+  function deepQueryAll(selector, root = document) {
+    const results = []
+    const visit = (node) => {
+      if (!node) return
+      try {
+        results.push(...node.querySelectorAll(selector))
+      } catch {
+        // ignore closed shadow roots
+      }
+      node.querySelectorAll("*").forEach((el) => {
+        if (el.shadowRoot) visit(el.shadowRoot)
+      })
+    }
+    visit(root)
+    return results
+  }
+
   function getBacktestingRoot() {
-    return document.querySelector('[data-name="backtesting"]') || document.querySelector("#bottom-area") || document.body
+    return (
+      deepQueryAll('[data-name="backtesting"]')[0] ||
+      document.querySelector("#bottom-area") ||
+      document.body
+    )
+  }
+
+  function countVisibleTradeRows() {
+    let total = 0
+    for (const table of findKaTables(document.body)) {
+      total += table.querySelectorAll(
+        "tbody tr.ka-row[data-row-id], tbody tr[data-row-id], tbody tr.ka-row, tbody tr",
+      ).length
+    }
+    return total
   }
 
   function getStrategyName(root) {
@@ -420,15 +451,172 @@ async function jbMainScrape() {
   }
 
   function findKaTables(root) {
-    return [...root.querySelectorAll("table.ka-table, table[data-selector='table']")]
+    const direct = [...root.querySelectorAll("table.ka-table, table[data-selector='table']")]
+    if (direct.length) return direct
+
+    return deepQueryAll("table.ka-table, table[data-selector='table'], table", root).filter((table) => {
+      if (table.querySelector('[data-qa-id="column-trade-number"]')) return true
+      if (table.querySelector("tbody tr[data-row-id], tbody tr.ka-row")) return true
+      const text = table.textContent || ""
+      return /trade\s*number|entry|exit/i.test(text) && /\d+\s*(long|short)/i.test(text)
+    })
   }
 
   function findTableScroller(root) {
-    return (
+    const scoped =
       root.querySelector(".ka-table-wrapper") ||
       root.querySelector('[class*="tableWrapper"]') ||
       root.querySelector('[class*="ka-table"]')?.parentElement
-    )
+    if (scoped) return scoped
+
+    const table = findKaTables(root)[0]
+    if (!table) return null
+    let node = table.parentElement
+    while (node && node !== document.body) {
+      const style = window.getComputedStyle(node)
+      if (node.scrollHeight > node.clientHeight + 8 && /(auto|scroll|overlay)/.test(style.overflowY)) {
+        return node
+      }
+      node = node.parentElement
+    }
+    return table.parentElement
+  }
+
+  function parseFromFlatLines(root, instrument, strategy) {
+    const lines = (root.innerText || "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+    const trades = new Map()
+
+    for (let i = 0; i < lines.length; i++) {
+      const header = lines[i].match(/^(\d+)\s+(long|short)$/i)
+      if (!header) continue
+
+      const tradeNumber = Number.parseInt(header[1], 10)
+      const direction = header[2].toLowerCase()
+
+      for (let j = i + 1; j < Math.min(i + 14, lines.length); j++) {
+        if (/^\d+\s+(long|short)$/i.test(lines[j])) break
+        if (/^entry$/i.test(lines[j])) {
+          const datetime = lines[j + 1] || ""
+          const signal = lines[j + 2] || ""
+          const price = parseNumber(lines[j + 3])
+          if (!datetime || price == null) break
+          const existing =
+            trades.get(tradeNumber) || { tradeNumber, direction, instrument, strategy, entry: null, exit: null }
+          existing.entry = { datetime, price, signal, size: parseSize(lines[j + 4]) }
+          trades.set(tradeNumber, existing)
+          break
+        }
+        if (/^exit$/i.test(lines[j])) {
+          const datetime = lines[j + 1] || ""
+          const signal = lines[j + 2] || ""
+          const price = parseNumber(lines[j + 3])
+          if (!datetime || price == null) break
+          const existing =
+            trades.get(tradeNumber) || { tradeNumber, direction, instrument, strategy, entry: null, exit: null }
+          existing.exit = { datetime, price, signal }
+          existing.netPnl = parseSignedNumber(lines[j + 5])
+          trades.set(tradeNumber, existing)
+          break
+        }
+      }
+    }
+    return [...trades.values()].filter((t) => t.entry)
+  }
+
+  function readExpectedTradeCount(root) {
+    const blob = (root?.innerText || document.body?.innerText || "").replace(/\s+/g, " ")
+    const slash = blob.match(/\b(\d[\d,]*)\s*\/\s*(\d[\d,]*)\b/)
+    if (slash) {
+      const total = Number.parseInt(slash[2].replace(/,/g, ""), 10)
+      if (Number.isFinite(total) && total > 0) return total
+    }
+    const labeled = blob.match(/Total trades[^\d]*(\d[\d,]*)/i)
+    if (labeled) {
+      const total = Number.parseInt(labeled[1].replace(/,/g, ""), 10)
+      if (Number.isFinite(total) && total > 0) return total
+    }
+    return null
+  }
+
+  function maxCollectedTradeNumber(collected) {
+    let max = 0
+    for (const key of collected.keys()) {
+      const num = Number(key)
+      if (Number.isFinite(num) && num > max) max = num
+    }
+    return max
+  }
+
+  /** Full import scroll — capped ~2 min, stops when Key stats total (e.g. 579/808) is reached. */
+  async function walkFullVirtualTable(scroller, ingest, collected, root) {
+    const deadline = Date.now() + 120_000
+    const expected = readExpectedTradeCount(root)
+    const stepPx = () => Math.max(48, Math.floor(scroller.clientHeight * 0.55))
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+
+    const complete = () => {
+      if (Date.now() > deadline) return true
+      if (!expected) return false
+      if (collected.size >= expected) return true
+      if (maxCollectedTradeNumber(collected) >= expected) return true
+      return false
+    }
+
+    scroller.scrollTop = 0
+    await wait(120)
+    ingest()
+
+    let stable = 0
+    let lastSize = collected.size
+    for (let i = 0; i < 240 && stable < 6 && !complete(); i++) {
+      scroller.scrollTop = Math.min(scroller.scrollTop + stepPx(), scroller.scrollHeight)
+      await wait(50)
+      ingest()
+      if (collected.size !== lastSize) {
+        stable = 0
+        lastSize = collected.size
+      } else if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4) {
+        stable += 1
+      }
+    }
+
+    for (let bounce = 0; bounce < 3 && !complete(); bounce++) {
+      scroller.scrollTop = scroller.scrollHeight
+      await wait(140)
+      ingest()
+    }
+
+    scroller.scrollTop = scroller.scrollHeight
+    await wait(100)
+    ingest()
+    for (let i = 0; i < 160 && !complete(); i++) {
+      scroller.scrollTop = Math.max(0, scroller.scrollTop - stepPx())
+      await wait(40)
+      ingest()
+    }
+
+    scroller.scrollTop = 0
+    await wait(80)
+    ingest()
+
+    while (
+      expected &&
+      maxCollectedTradeNumber(collected) < expected &&
+      collected.size < expected &&
+      Date.now() < deadline
+    ) {
+      for (let i = 0; i < 100 && !complete(); i++) {
+        scroller.scrollTop = Math.min(scroller.scrollTop + stepPx(), scroller.scrollHeight)
+        await wait(50)
+        ingest()
+      }
+      scroller.scrollTop = scroller.scrollHeight
+      await wait(160)
+      ingest()
+    }
   }
 
   function parseKaTableRows(tables, instrument, strategy) {
@@ -632,6 +820,20 @@ async function jbMainScrape() {
     return { trades, tablesFound: tables.length, rowCount }
   }
 
+  if (countVisibleTradeRows() === 0) {
+    const bodyLen = (document.body?.innerText || "").length
+    const hasBacktest = Boolean(deepQueryAll('[data-name="backtesting"]').length)
+    if (bodyLen < 250 && !hasBacktest && !/list of trades/i.test(document.body?.innerText || "")) {
+      return {
+        trades: [],
+        strategy: "TradingView Strategy",
+        instrument: getInstrumentSymbol(),
+        frameUrl: location.href,
+        debug: { skipFrame: true, reason: "empty-frame", bodyLen },
+      }
+    }
+  }
+
   let root = getBacktestingRoot()
   // Only click around if the trade table isn't already visible (saves ~1s on every poll).
   const alreadyHasRows = findKaTables(root).some(
@@ -671,23 +873,16 @@ async function jbMainScrape() {
     ingest()
 
     if (scrapeMode === "full") {
-      // Manual Import All — walk the whole virtualized table.
-      const maxSteps = 300
-      let stable = 0
-      let last = collected.size
-      for (let i = 0; i < maxSteps && stable < 8; i++) {
-        scroller.scrollTop += Math.max(60, scroller.clientHeight * 0.75)
-        await new Promise((r) => setTimeout(r, 80))
-        ingest()
-        if (collected.size === last) stable += 1
-        else {
-          stable = 0
-          last = collected.size
-        }
+      const beforeWalk = collected.size
+      const backtestRoot = getBacktestingRoot()
+      const expectedTrades = readExpectedTradeCount(backtestRoot)
+      await walkFullVirtualTable(scroller, ingest, collected, backtestRoot)
+      lastStats = {
+        ...lastStats,
+        fullScanAdded: collected.size - beforeWalk,
+        expectedTrades,
+        maxTradeNumber: maxCollectedTradeNumber(collected),
       }
-      scroller.scrollTop = scroller.scrollHeight
-      await new Promise((r) => setTimeout(r, 200))
-      ingest()
     } else {
       // Poll/instant — only peek a couple viewports below the top. Never full-scan.
       for (let i = 0; i < 2; i++) {
@@ -700,6 +895,13 @@ async function jbMainScrape() {
   }
 
   let trades = [...collected.values()].sort((a, b) => b.tradeNumber - a.tradeNumber)
+
+  if (!trades.length) {
+    for (const t of parseFromFlatLines(getBacktestingRoot(), instrument, strategy)) {
+      collected.set(t.tradeNumber, t)
+    }
+    trades = [...collected.values()].sort((a, b) => b.tradeNumber - a.tradeNumber)
+  }
 
   // Poll only needs the newest slice (opens + latest exits). Cap hard.
   if (scrapeMode === "light" && trades.length > 40) {
@@ -732,11 +934,5 @@ async function jbMainScrape() {
   }
 }
 
-jbMainScrape().catch((err) => ({
-  trades: [],
-  strategy: "TradingView Strategy",
-  instrument: window.__JB_CHART_SYMBOL__ || "UNKNOWN",
-  frameUrl: location.href,
-  debug: { scraperCrash: true, message: String(err?.message || err) },
-  error: String(err?.message || err),
-}))
+// Registered for sync-client func injection (file scripts cannot use top-level return).
+globalThis.__JB_MAIN_SCRAPE__ = jbMainScrape

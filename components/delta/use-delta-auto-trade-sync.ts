@@ -34,7 +34,6 @@ type UseDeltaAutoTradeSyncInput = {
   singleAccountId: string | null
   broadcastAccountIds: string[]
   symbol: string
-  marginPct: number | null
   persistReady?: boolean
 }
 
@@ -50,7 +49,6 @@ export function useDeltaAutoTradeSync({
   singleAccountId,
   broadcastAccountIds,
   symbol,
-  marginPct,
   persistReady = true,
 }: UseDeltaAutoTradeSyncInput) {
   const isLive = environment === "live"
@@ -58,6 +56,7 @@ export function useDeltaAutoTradeSync({
   const [saving, setSaving] = useState(false)
   const [enabled, setEnabled] = useState(false)
   const [attachTvBrackets, setAttachTvBrackets] = useState(true)
+  const [closeOnTvExit, setCloseOnTvExit] = useState(true)
   const [enabledSymbols, setEnabledSymbols] = useState<DeltaAutoTradeSymbol[]>(["BTCUSD"])
   const [leverageBySymbol, setLeverageBySymbol] = useState<DeltaLeverageBySymbol>({})
   const [lotSizeBySymbol, setLotSizeBySymbol] = useState<DeltaLotSizeBySymbol>({})
@@ -72,6 +71,7 @@ export function useDeltaAutoTradeSync({
   const applyConfig = useCallback((config: DeltaAutoTradeConfig) => {
     setEnabled(config.enabled)
     setAttachTvBrackets(config.attachTvBrackets !== false)
+    setCloseOnTvExit(config.closeOnTvExit !== false)
     const nextSymbols = config.symbols.length > 0 ? config.symbols : [config.symbol]
     // Keep the previous array when the contents match, otherwise a new reference on
     // every response would retrigger the debounced save and loop forever.
@@ -83,6 +83,8 @@ export function useDeltaAutoTradeSync({
 
   const ticketSymbol = symbol.toUpperCase()
 
+  // marginPct is deliberately NOT part of the generic payload — only saveMarginPct
+  // writes it, so ticket % clicks can never rewrite bot sizing.
   const buildPayload = useCallback(
     (partial: Partial<DeltaAutoTradeConfig>): Partial<DeltaAutoTradeConfig> => ({
       tradeMode,
@@ -90,11 +92,11 @@ export function useDeltaAutoTradeSync({
       broadcastAccountIds,
       symbols: enabledSymbols,
       symbol: isDeltaAutoTradeSymbol(ticketSymbol) ? ticketSymbol : undefined,
-      marginPct: (marginPct ?? savedMarginPct) as DeltaAutoTradeMarginPct,
       attachTvBrackets,
+      closeOnTvExit,
       ...partial,
     }),
-    [attachTvBrackets, broadcastAccountIds, enabledSymbols, marginPct, savedMarginPct, singleAccountId, ticketSymbol, tradeMode],
+    [attachTvBrackets, broadcastAccountIds, closeOnTvExit, enabledSymbols, singleAccountId, ticketSymbol, tradeMode],
   )
 
   const patchSettings = useCallback(
@@ -119,33 +121,38 @@ export function useDeltaAutoTradeSync({
     [applyConfig, buildPayload, environment],
   )
 
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
+  const loadConfig = useCallback(
+    async (signal?: { cancelled: boolean }) => {
       setLoading(true)
       try {
         const response = await authFetch(deltaApiPath("/api/delta/auto-trade-settings", environment))
         const data = await response.json()
         if (!response.ok) throw new Error(data.error || "Failed to load auto-trade settings")
-        if (cancelled) return
+        if (signal?.cancelled) return
         const config = data.config as DeltaAutoTradeConfig
         applyConfig(config)
         setServerBlocked(Boolean(data.serverLiveBlocked) || serverLiveBlocked)
         setLastLog(Array.isArray(data.recentLogs) && data.recentLogs.length > 0 ? data.recentLogs[0] : null)
       } catch {
-        if (!cancelled) setEnabled(false)
+        if (!signal?.cancelled) setEnabled(false)
       } finally {
-        if (!cancelled) {
+        if (!signal?.cancelled) {
           skipNextPersistRef.current = true
           hydratedRef.current = true
           setLoading(false)
         }
       }
-    })()
+    },
+    [applyConfig, environment, serverLiveBlocked],
+  )
+
+  useEffect(() => {
+    const signal = { cancelled: false }
+    void loadConfig(signal)
     return () => {
-      cancelled = true
+      signal.cancelled = true
     }
-  }, [applyConfig, environment, serverLiveBlocked])
+  }, [loadConfig])
 
   const patchSettingsRef = useRef(patchSettings)
   patchSettingsRef.current = patchSettings
@@ -162,10 +169,21 @@ export function useDeltaAutoTradeSync({
       void patchSettingsRef.current({}).catch(() => undefined)
     }, 400)
     return () => window.clearTimeout(timer)
-  }, [attachTvBrackets, enabled, persistReady, tradeMode, singleAccountId, broadcastKey, marginPct, ticketSymbol])
+  }, [attachTvBrackets, closeOnTvExit, enabled, persistReady, tradeMode, singleAccountId, broadcastKey, ticketSymbol])
 
   async function toggleEnabled(checked: boolean) {
     if (checked && !canEnable) return
+    if (checked && isLive) {
+      const liveResponse = await authFetch("/api/delta/live-settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      })
+      const liveData = await liveResponse.json()
+      if (!liveResponse.ok) {
+        throw new Error(liveData.error || "Enable live trading on the Delta Live page first")
+      }
+    }
     await patchSettings({ enabled: checked })
   }
 
@@ -174,11 +192,23 @@ export function useDeltaAutoTradeSync({
     await patchSettings({ attachTvBrackets: checked })
   }
 
+  async function toggleCloseOnTvExit(checked: boolean) {
+    setCloseOnTvExit(checked)
+    await patchSettings({ closeOnTvExit: checked })
+  }
+
   async function setSymbols(next: DeltaAutoTradeSymbol[]) {
     const unique = DELTA_AUTO_TRADE_SYMBOLS.filter((s) => next.includes(s))
     if (unique.length === 0) return
     setEnabledSymbols(unique)
     await patchSettings({ symbols: unique })
+  }
+
+  async function saveMarginPct(pct: number) {
+    if (!Number.isFinite(pct)) return
+    const next = Math.min(100, Math.max(1, Math.round(pct)))
+    setSavedMarginPct(next)
+    await patchSettings({ marginPct: next })
   }
 
   const savedLeverage = isDeltaAutoTradeSymbol(ticketSymbol) ? leverageBySymbol[ticketSymbol] ?? null : null
@@ -232,6 +262,8 @@ export function useDeltaAutoTradeSync({
     enabled,
     attachTvBrackets,
     toggleAttachTvBrackets,
+    closeOnTvExit,
+    toggleCloseOnTvExit,
     enabledSymbols,
     setSymbols,
     leverageBySymbol,
@@ -239,9 +271,11 @@ export function useDeltaAutoTradeSync({
     saveLotSize,
     savedLeverage,
     savedMarginPct,
+    saveMarginPct,
     hasSavedLeverage,
     saveLeverage,
     lastLog,
+    reload: () => loadConfig(),
     serverLiveBlocked: serverBlocked,
     canEnable,
     toggleEnabled,

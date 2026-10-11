@@ -21,6 +21,8 @@ export type TradingAccountSummary = {
   color?: string
   /** Default `tv` — Strategy Tester Profit on import. */
   pnlSource?: "tv" | "calculated"
+  /** Starting capital used as the return % denominator. */
+  initialCapital?: number | null
   tradeCount?: number
 }
 

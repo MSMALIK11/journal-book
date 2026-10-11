@@ -41,7 +41,7 @@ function mean(values: number[]) {
   return values.reduce((sum, value) => sum + value, 0) / values.length
 }
 
-function resolveSpec(trade: FundedTrade) {
+export function resolveTradeSpec(trade: FundedTrade) {
   const symbol = canonicalInstrumentSymbol(String(trade.instrument || ""))
   const configured = INSTRUMENTS[symbol]
   if (configured) return configured
@@ -64,95 +64,83 @@ function stopLossR(trade: FundedTrade): number | null {
     entryPrice: entry,
     stopLoss: stop,
     size: Number.isFinite(size) && size > 0 ? size : 1,
-    instrument: resolveSpec(trade),
+    instrument: resolveTradeSpec(trade),
   })
   return calculateRR(trade.net_pnl, risk.amount)
 }
 
-function buildDistribution(rMultiples: number[]) {
-  const definitions = [
-    { bucket: "< -2R", min: Number.NEGATIVE_INFINITY, max: -2 },
-    { bucket: "-2R to -1R", min: -2, max: -1 },
-    { bucket: "-1R to 0R", min: -1, max: 0 },
-    { bucket: "0R to 1R", min: 0, max: 1 },
-    { bucket: "1R to 2R", min: 1, max: 2 },
-    { bucket: "2R to 3R", min: 2, max: 3 },
-    { bucket: "> 3R", min: 3, max: Number.POSITIVE_INFINITY },
-  ]
+export type ClosedFundedTrade = FundedTrade & { net_pnl: number }
 
-  return definitions.map((def) => ({
-    bucket: def.bucket,
-    count: rMultiples.filter((value) => {
-      if (def.min === Number.NEGATIVE_INFINITY) return value < def.max
-      if (def.max === Number.POSITIVE_INFINITY) return value >= def.min
-      return value >= def.min && value < def.max
-    }).length,
-  }))
+export type RMultipleSample = {
+  method: RMethod
+  /** Same order and length as the trades passed in; null where R cannot be resolved. */
+  values: (number | null)[]
+  stopLossSampleSize: number
+  medianLoss: number
 }
 
-/** Map closed-trade P&L to R using the funded challenge's planned 1R (risk $). */
-export function computeChallengeRStats(trades: FundedTrade[], oneR: number): RMultipleStats {
-  if (!(oneR > 0)) {
-    return {
-      method: "challenge_r",
-      sampleSize: 0,
-      stopLossSampleSize: 0,
-      rMultiples: [],
-      avgWinR: 0,
-      avgLossR: 0,
-      expectancyR: 0,
-      avgRrRatio: null,
-      winRate: 0,
-      lossRate: 0,
-      distribution: buildDistribution([]),
-    }
-  }
+/**
+ * Split the R basis decision from the aggregation so callers can keep R aligned
+ * with their own trade order (analytics buckets) while funded-roadmap stays identical.
+ */
+export function toRMultiples(closed: ClosedFundedTrade[]): RMultipleSample {
+  const stopLossValues = closed.map((trade) => {
+    const value = stopLossR(trade)
+    return value !== null && Number.isFinite(value) ? value : null
+  })
+  const stopLossSampleSize = stopLossValues.filter((value) => value !== null).length
+  const medianLoss = median(
+    closed.filter((trade) => trade.net_pnl < 0).map((trade) => Math.abs(trade.net_pnl)),
+  )
+  const method: RMethod = stopLossSampleSize >= STOP_LOSS_MIN_TRADES ? "stop_loss" : "median_loss"
+  const values =
+    method === "stop_loss"
+      ? stopLossValues
+      : closed.map((trade) => (medianLoss > 0 ? trade.net_pnl / medianLoss : 0))
 
-  const rMultiples = trades
-    .filter((trade): trade is FundedTrade & { net_pnl: number } => typeof trade.net_pnl === "number")
-    .map((trade) => trade.net_pnl / oneR)
-    .filter((value) => Number.isFinite(value))
-
-  const wins = rMultiples.filter((value) => value > 0)
-  const losing = rMultiples.filter((value) => value < 0)
-  const n = rMultiples.length
-  const winRate = n ? wins.length / n : 0
-  const lossRate = n ? losing.length / n : 0
-  const avgWinR = mean(wins)
-  const avgLossR = mean(losing)
-  const expectancyR = n ? winRate * avgWinR + lossRate * avgLossR : 0
-  const avgRrRatio = avgLossR < 0 ? Math.abs(avgWinR / avgLossR) : null
-
-  return {
-    method: "challenge_r",
-    sampleSize: n,
-    stopLossSampleSize: 0,
-    rMultiples,
-    avgWinR,
-    avgLossR,
-    expectancyR,
-    avgRrRatio,
-    winRate,
-    lossRate,
-    distribution: buildDistribution(rMultiples),
-  }
+  return { method, values, stopLossSampleSize, medianLoss }
 }
 
-export function computeRMultipleStats(trades: FundedTrade[]): RMultipleStats {
-  const closed = trades.filter((trade): trade is FundedTrade & { net_pnl: number } => typeof trade.net_pnl === "number")
-  const slValues = closed
-    .map((trade) => stopLossR(trade))
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+export function summarizeRMultiples(sample: RMultipleSample): RMultipleStats {
+  return aggregateR(
+    sample.method,
+    sample.values.filter((value): value is number => value !== null),
+    sample.stopLossSampleSize,
+  )
+}
 
-  const losses = closed.filter((trade) => trade.net_pnl < 0).map((trade) => Math.abs(trade.net_pnl))
-  const medianLoss = median(losses)
-  const fallback = closed
-    .map((trade) => (medianLoss > 0 ? trade.net_pnl / medianLoss : 0))
-    .filter((value) => Number.isFinite(value))
+/** Open-ended bounds live only in this module — Infinity would not survive JSON. */
+export const R_BUCKET_DEFINITIONS = [
+  { bucket: "< -2R", min: Number.NEGATIVE_INFINITY, max: -2 },
+  { bucket: "-2R to -1R", min: -2, max: -1 },
+  { bucket: "-1R to 0R", min: -1, max: 0 },
+  { bucket: "0R to 1R", min: 0, max: 1 },
+  { bucket: "1R to 2R", min: 1, max: 2 },
+  { bucket: "2R to 3R", min: 2, max: 3 },
+  { bucket: "> 3R", min: 3, max: Number.POSITIVE_INFINITY },
+]
 
-  const method: RMethod = slValues.length >= STOP_LOSS_MIN_TRADES ? "stop_loss" : "median_loss"
-  const rMultiples = method === "stop_loss" ? slValues : fallback
+export function rBucketIndex(value: number): number {
+  if (value < -2) return 0
+  if (value < -1) return 1
+  if (value < 0) return 2
+  if (value < 1) return 3
+  if (value < 2) return 4
+  if (value < 3) return 5
+  return 6
+}
 
+export function buildDistribution(rMultiples: number[]) {
+  const counts = R_BUCKET_DEFINITIONS.map(() => 0)
+  for (const value of rMultiples) counts[rBucketIndex(value)] += 1
+  return R_BUCKET_DEFINITIONS.map((def, index) => ({ bucket: def.bucket, count: counts[index] }))
+}
+
+function aggregateR(
+  method: RMethod,
+  rMultiples: number[],
+  stopLossSampleSize: number,
+): RMultipleStats {
   const wins = rMultiples.filter((value) => value > 0)
   const losing = rMultiples.filter((value) => value < 0)
   const n = rMultiples.length
@@ -166,7 +154,7 @@ export function computeRMultipleStats(trades: FundedTrade[]): RMultipleStats {
   return {
     method,
     sampleSize: n,
-    stopLossSampleSize: slValues.length,
+    stopLossSampleSize,
     rMultiples,
     avgWinR,
     avgLossR,
@@ -176,4 +164,26 @@ export function computeRMultipleStats(trades: FundedTrade[]): RMultipleStats {
     lossRate,
     distribution: buildDistribution(rMultiples),
   }
+}
+
+/** Map closed-trade P&L to R using the funded challenge's planned 1R (risk $). */
+export function computeChallengeRStats(trades: FundedTrade[], oneR: number): RMultipleStats {
+  if (!(oneR > 0)) return aggregateR("challenge_r", [], 0)
+
+  const rMultiples = trades
+    .filter((trade): trade is FundedTrade & { net_pnl: number } => typeof trade.net_pnl === "number")
+    .map((trade) => trade.net_pnl / oneR)
+    .filter((value) => Number.isFinite(value))
+
+  return aggregateR("challenge_r", rMultiples, 0)
+}
+
+export function computeRMultipleStats(trades: FundedTrade[]): RMultipleStats {
+  return summarizeRMultiples(
+    toRMultiples(
+      trades.filter(
+        (trade): trade is FundedTrade & { net_pnl: number } => typeof trade.net_pnl === "number",
+      ),
+    ),
+  )
 }

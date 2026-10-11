@@ -8,6 +8,7 @@ export interface ITradingAccount extends AccountPnlSettings {
   symbols: string[]
   isDefault: boolean
   color?: string
+  initialCapital?: number | null
   createdAt?: Date
   updatedAt?: Date
 }
@@ -41,6 +42,11 @@ const TradingAccountSchema = new mongoose.Schema<ITradingAccount>(
       type: String,
       enum: ["tv", "calculated"],
       default: "tv",
+    },
+    initialCapital: {
+      type: Number,
+      min: 0,
+      default: null,
     },
   },
   { timestamps: true },

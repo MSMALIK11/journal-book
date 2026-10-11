@@ -26,6 +26,7 @@ export type AlertCategory =
   | "session_boundary"
   | "new_trade"
   | "delta_trade"
+  | "user_dismiss"
 
 export interface ITradingAlert {
   _id?: string
@@ -77,6 +78,7 @@ const TradingAlertSchema = new Schema<ITradingAlert>(
         "session_boundary",
         "new_trade",
         "delta_trade",
+        "user_dismiss",
       ],
       required: true,
     },

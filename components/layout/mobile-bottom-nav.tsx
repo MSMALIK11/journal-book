@@ -4,10 +4,10 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, Calendar, Radio, Settings } from "lucide-react"
+import { BarChart3, Calendar, FileText, Radio, Settings } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-type TabKey = "analytics" | "calendar" | "live-sync" | "settings"
+type TabKey = "analytics" | "calendar" | "trades" | "live-sync" | "settings"
 
 type NavItem = {
   key: TabKey
@@ -31,6 +31,13 @@ const NAV_ITEMS: NavItem[] = [
     href: "/calendar",
     icon: Calendar,
     match: (pathname) => pathname === "/calendar" || pathname.startsWith("/calendar/"),
+  },
+  {
+    key: "trades",
+    name: "Trades",
+    href: "/trades",
+    icon: FileText,
+    match: (pathname) => pathname === "/trades" || pathname.startsWith("/trades/"),
   },
   {
     key: "live-sync",
@@ -251,7 +258,7 @@ function BottomNavBar({ pathname }: { pathname: string }) {
                     </div>
                     <span
                       className={cn(
-                        "mt-1 max-w-[4.75rem] truncate text-[13px] leading-none transition-colors duration-300",
+                        "mt-1 max-w-[3.75rem] truncate text-[11px] leading-none transition-colors duration-300 sm:max-w-[4.75rem] sm:text-[13px]",
                         active
                           ? "font-bold text-primary dark:text-cyan-400"
                           : "font-semibold text-muted-foreground",

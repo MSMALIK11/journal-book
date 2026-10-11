@@ -93,9 +93,12 @@ function strategySlug(strategy: string) {
   )
 }
 
-/** Legacy ID — trade number only (used before v2 dedup). */
-export function buildLegacyExternalId(strategy: string, tradeNumber: number) {
-  return `tv:${strategySlug(strategy)}:${tradeNumber}`
+/** Legacy ID — strategy + symbol + trade number (avoids DJI #591 vs XAUUSD #591 collisions). */
+export function buildLegacyExternalId(strategy: string, tradeNumber: number, instrument?: string) {
+  const slug = strategySlug(strategy)
+  const symbol = (instrument || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+  if (symbol) return `tv:${slug}:${symbol}:${tradeNumber}`
+  return `tv:${slug}:${tradeNumber}`
 }
 
 /**
@@ -119,5 +122,5 @@ export function buildExternalId(
     return `tv:${slug}:${symbol}:${entryMs}:${direction}`
   }
 
-  return buildLegacyExternalId(strategy, tradeNumber ?? 0)
+  return buildLegacyExternalId(strategy, tradeNumber ?? 0, instrument)
 }

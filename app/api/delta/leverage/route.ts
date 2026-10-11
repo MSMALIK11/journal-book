@@ -10,6 +10,7 @@ import {
   listEnabledDeltaAccounts,
 } from "@/lib/broker/delta-credentials"
 import { assertLiveTradingEnabled } from "@/lib/broker/delta-live-guard"
+import { invalidatePositionLeverage } from "@/lib/broker/delta-leverage-cache"
 import { DELTA_LEVERAGE_STEPS, normalizeDeltaProduct } from "@/lib/broker/delta-product"
 import { getSession } from "@/lib/session"
 
@@ -22,6 +23,11 @@ const leverageSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
+    const origin = request.headers.get("origin")
+    if (origin && origin !== request.nextUrl.origin) {
+      return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
+    }
+
     const session = await getSession(request)
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
@@ -112,6 +118,7 @@ export async function POST(request: NextRequest) {
     }
 
     const okCount = results.filter((r) => r.ok).length
+    if (okCount > 0) invalidatePositionLeverage(session.sub, environment, symbol)
     if (okCount === 0) {
       return NextResponse.json(
         {

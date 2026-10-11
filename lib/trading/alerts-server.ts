@@ -26,7 +26,9 @@ import {
   fetchClosedTrades,
   RESEARCH_TRADE_SELECT,
 } from "@/lib/trading/trade-query"
+import { buildTradePushUrl } from "@/lib/pwa/push-url"
 import { sendTradePushToUser } from "@/lib/push/web-push"
+import { recordAlertDismissEvent } from "@/lib/sync-alert-dismiss"
 import { publishAlertsUpdated } from "@/lib/sync-events"
 import { notifyTelegramTradeEvent } from "@/lib/telegram/send-trade-alert"
 import { buildTelegramCoachCaption } from "@/lib/telegram/coach-caption"
@@ -334,7 +336,7 @@ export async function persistNewTradeAlert(
   void sendTradePushToUser(userId, {
     title: `New ${side} · ${trade.instrument}`,
     body: `${side} opened @ ${price}${accountName ? ` · ${accountName}` : ""}`,
-    url: "/live-sync",
+    url: buildTradePushUrl({ tradeId: trade.id, kind: "open", accountId }),
     tag: `open:${trade.id}`,
   }).catch((error) => console.error("Web push open alert failed:", error))
   try {
@@ -429,7 +431,7 @@ export async function persistClosedTradeAlert(
   void sendTradePushToUser(userId, {
     title: `${side} closed · ${trade.instrument}`,
     body: pnl ? `P&L ${pnl}${accountName ? ` · ${accountName}` : ""}` : `Closed @ ${price}`,
-    url: "/live-sync",
+    url: buildTradePushUrl({ tradeId: trade.id, kind: "close", accountId }),
     tag: `close:${trade.id}`,
   }).catch((error) => console.error("Web push close alert failed:", error))
   try {
@@ -549,11 +551,14 @@ export async function getAlertsForAccount(
 
   const deltaAccountIds = [DELTA_DEMO_ALERT_ACCOUNT, DELTA_LIVE_ALERT_ACCOUNT]
 
-  const [stored, journalUnreadCount, recentNewTrades, deltaStored, deltaUnreadCount, recentDeltaTrades] =
+  const [stored, readAlerts, journalUnreadCount, recentNewTrades, deltaStored, deltaUnreadCount, recentDeltaTrades] =
     await Promise.all([
       TradingAlert.find({ userId, accountId, triggeredAt: { $gte: cutoff } })
         .sort({ triggeredAt: -1 })
         .limit(limit)
+        .lean(),
+      TradingAlert.find({ userId, accountId, read: true, triggeredAt: { $gte: cutoff } })
+        .select("key")
         .lean(),
       TradingAlert.countDocuments({ userId, accountId, read: false, triggeredAt: { $gte: cutoff } }),
       TradingAlert.find({
@@ -592,16 +597,23 @@ export async function getAlertsForAccount(
         .lean(),
     ])
 
+  const readKeySet = new Set(readAlerts.map((row) => row.key))
+  const readKeys = [...readKeySet]
+
   const newTradeActive = recentNewTrades.map(formatAlert)
   const deltaActive = recentDeltaTrades.map(formatAlert)
   const mergedActive = [
     ...deltaActive,
     ...newTradeActive,
     ...active.filter((item) => item.category !== "new_trade" && item.category !== "delta_trade"),
-  ]
+  ].filter((item) => !readKeySet.has(item.key))
+
+  const filteredTopAction =
+    topAction && readKeySet.has(topAction.key) ? null : topAction
 
   const mergedHistory = [...stored, ...deltaStored]
     .map(formatAlert)
+    .filter((item) => item.category !== "user_dismiss")
     .sort((a, b) => new Date(b.triggeredAt).getTime() - new Date(a.triggeredAt).getTime())
     .slice(0, limit)
 
@@ -612,9 +624,10 @@ export async function getAlertsForAccount(
 
   return {
     active: mergedActive,
-    topAction,
+    topAction: filteredTopAction,
     history: mergedHistory,
     unreadCount,
+    readKeys,
     zones,
     verdict,
     timezone,
@@ -624,20 +637,48 @@ export async function getAlertsForAccount(
 export async function markAlertsRead(
   userId: string,
   accountId: string,
-  options: { ids?: string[]; all?: boolean },
+  options: { ids?: string[]; keys?: string[]; all?: boolean },
 ) {
   await connectDB()
+  let changed = false
 
   if (options.all) {
-    await TradingAlert.updateMany({ userId, read: false }, { $set: { read: true } })
-    return
-  }
-
-  if (options.ids?.length) {
-    await TradingAlert.updateMany(
+    const result = await TradingAlert.updateMany({ userId, read: false }, { $set: { read: true } })
+    changed = (result.modifiedCount ?? 0) > 0
+  } else if (options.ids?.length) {
+    const result = await TradingAlert.updateMany(
       { userId, _id: { $in: options.ids } },
       { $set: { read: true } },
     )
+    changed = (result.modifiedCount ?? 0) > 0
+  } else if (options.keys?.length) {
+    const now = new Date()
+    const uniqueKeys = [...new Set(options.keys.filter(Boolean))]
+    for (const key of uniqueKeys) {
+      await TradingAlert.findOneAndUpdate(
+        { userId, accountId, key },
+        {
+          $set: { read: true },
+          $setOnInsert: {
+            userId,
+            accountId,
+            key,
+            category: "user_dismiss",
+            severity: "info",
+            title: key,
+            message: "",
+            triggeredAt: now,
+          },
+        },
+        { upsert: true },
+      )
+    }
+    await recordAlertDismissEvent(userId, accountId, uniqueKeys)
+    changed = true
+  }
+
+  if (changed) {
+    publishAlertsUpdated(userId, accountId, options.keys)
   }
 }
 

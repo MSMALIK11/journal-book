@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { format } from "date-fns"
 import { RefreshCw, XCircle } from "lucide-react"
 import {
@@ -73,6 +73,8 @@ export function DeltaPositionsTab({
   onRefreshPositions,
 }: DeltaPositionsTabProps) {
   const { toast } = useToast()
+  const isLive = environment === "live"
+  const [pendingClose, setPendingClose] = useState<PositionRow | null>(null)
 
   const targetLabels = useMemo(() => {
     if (tradeMode === "broadcast") {
@@ -231,15 +233,27 @@ export function DeltaPositionsTab({
                     <TableCell>{formatPrice(row.markPrice)}</TableCell>
                     <TableCell className={pnlClassName(row.unrealizedPnl)}>{formatPrice(row.unrealizedPnl)}</TableCell>
                     <TableCell>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-rose-400"
-                        disabled={busy != null || !tradingAllowed}
-                        onClick={() => void closePosition(row)}
-                      >
-                        Close
-                      </Button>
+                      {isLive ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-rose-400"
+                          disabled={busy != null || !tradingAllowed}
+                          onClick={() => setPendingClose(row)}
+                        >
+                          Close
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-rose-400"
+                          disabled={busy != null || !tradingAllowed}
+                          onClick={() => void closePosition(row)}
+                        >
+                          Close
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))
@@ -297,6 +311,32 @@ export function DeltaPositionsTab({
           </Table>
         </div>
       </HudPanel>
+
+      <AlertDialog open={pendingClose != null} onOpenChange={(open) => !open && setPendingClose(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Close live position?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingClose
+                ? `${pendingClose.accountLabel ?? "Account"} · ${pendingClose.symbol} ${pendingClose.side} · ${pendingClose.size} lot(s) will be closed at market.`
+                : "This will send a reduce-only market order on Delta live."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-rose-600 hover:bg-rose-600/90"
+              onClick={() => {
+                const row = pendingClose
+                setPendingClose(null)
+                if (row) void closePosition(row)
+              }}
+            >
+              Close position
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

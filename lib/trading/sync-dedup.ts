@@ -22,7 +22,7 @@ function sameLiveFill(
   legacyTradeNumber: number,
 ) {
   if (sameEntryPrice(liveOpen.entry_price, mapped.entry_price)) return true
-  const legacyId = buildLegacyExternalId(legacyStrategy, legacyTradeNumber)
+  const legacyId = buildLegacyExternalId(legacyStrategy, legacyTradeNumber, mapped.instrument)
   return Boolean(liveOpen.external_id && liveOpen.external_id === legacyId)
 }
 
@@ -38,12 +38,20 @@ export async function findExistingSyncedTrade(
   legacyTradeNumber: number,
 ) {
   if (mapped.external_id) {
-    const byExternalId = await Trade.findOne({ userId, external_id: mapped.external_id })
+    const byExternalId = await Trade.findOne({
+      userId,
+      external_id: mapped.external_id,
+      instrument: mapped.instrument,
+    })
     if (byExternalId) return byExternalId
   }
 
-  const legacyId = buildLegacyExternalId(legacyStrategy, legacyTradeNumber)
-  const legacyMatch = await Trade.findOne({ userId, external_id: legacyId })
+  const legacyId = buildLegacyExternalId(legacyStrategy, legacyTradeNumber, mapped.instrument)
+  const legacyMatch = await Trade.findOne({
+    userId,
+    external_id: legacyId,
+    instrument: mapped.instrument,
+  })
   if (legacyMatch) {
     const entryDelta = Math.abs(legacyMatch.entry_date.getTime() - mapped.entry_date.getTime())
     if (

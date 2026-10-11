@@ -26,9 +26,10 @@ import {
   getDeltaTickerPrice,
   getPositions,
   parseAverageFillPrice,
+  setProductLeverage,
 } from "@/lib/broker/delta-exchange"
 import { persistDeltaTradeNotifications } from "@/lib/delta/delta-trade-notifications"
-import { isServerLiveTradingBlocked } from "@/lib/broker/delta-live-guard"
+import { isServerLiveTradingBlocked, isUserLiveTradingEnabled } from "@/lib/broker/delta-live-guard"
 import {
   editDeltaBracketForOrder,
   getDeltaSymbolCandidates,
@@ -42,6 +43,7 @@ import { normalizeDeltaPositions } from "@/lib/broker/delta-positions"
 import { mapTvInstrumentToDelta, isEnabledAutoTradeSymbol } from "@/lib/broker/delta-symbol-map"
 import {
   getDeltaAutoTradeConfig,
+  getLeverageForSymbol,
   type DeltaAutoTradeConfig,
 } from "@/lib/delta/auto-trade-settings"
 import {
@@ -53,7 +55,7 @@ import type { LiveFillEvent } from "@/lib/trading/live-fill-alerts"
 
 const ENVIRONMENTS: DeltaEnvironment[] = ["demo", "live"]
 
-const SCALP_FILL_REASONS = new Set(["recent_scalp_open", "recent_scalp_close"])
+const SCALP_OPEN_FILL_REASONS = new Set(["recent_scalp_open"])
 
 function isDuplicateKeyError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false
@@ -117,19 +119,31 @@ async function claimAutoTradeExecution(input: {
   fillReason: string
   kind: "open" | "close"
 }): Promise<boolean> {
+  const query = {
+    userId: new mongoose.Types.ObjectId(input.userId),
+    environment: input.environment,
+    tvTradeId: input.tvTradeId,
+    fillReason: input.fillReason,
+    kind: input.kind,
+  }
+
   try {
     await DeltaAutoTradeLog.create({
-      userId: new mongoose.Types.ObjectId(input.userId),
-      environment: input.environment,
-      tvTradeId: input.tvTradeId,
-      fillReason: input.fillReason,
-      kind: input.kind,
+      ...query,
       status: "skipped",
     })
     return true
   } catch (error) {
-    if (isDuplicateKeyError(error)) return false
-    throw error
+    if (!isDuplicateKeyError(error)) throw error
+
+    const existing = await DeltaAutoTradeLog.findOne(query).select("status").lean()
+    if (!existing || existing.status !== "failed") return false
+
+    await DeltaAutoTradeLog.findOneAndUpdate(query, {
+      $set: { status: "skipped" },
+      $unset: { error: "", accountResults: "", symbol: "", side: "", lots: "" },
+    })
+    return true
   }
 }
 
@@ -273,6 +287,37 @@ function summarizeBracketFromResults(results: DeltaAutoTradeAccountResult[]) {
   }
 }
 
+function deriveOpenTradeStatus(results: DeltaAutoTradeAccountResult[]): DeltaAutoTradeLogStatus {
+  const okCount = results.filter((r) => r.ok).length
+  if (okCount === 0) return "failed"
+  const hasBracketFailure = results.some((r) => r.ok && r.bracketStatus === "failed")
+  if (hasBracketFailure || okCount < results.length) return "partial"
+  return "success"
+}
+
+async function ensureAutoTradeLeverage(input: {
+  userId: string
+  environment: DeltaEnvironment
+  config: DeltaAutoTradeConfig
+  symbol: string
+  accountIds: string[]
+}) {
+  const productMeta = await getDeltaProductMeta(input.symbol, input.environment)
+  const productId = productMeta.id ?? resolveDeltaProductId(input.symbol, input.environment)
+  if (productId == null) return
+
+  const leverage = getLeverageForSymbol(input.config, input.symbol)
+  for (const accountId of input.accountIds) {
+    const resolved = await getDeltaCredentialsByAccountId(input.userId, accountId, input.environment)
+    if (!resolved) continue
+    try {
+      await setProductLeverage(resolved.creds, input.environment, productId, leverage)
+    } catch (error) {
+      console.error(`Delta auto-trade leverage sync failed (${accountId}):`, error)
+    }
+  }
+}
+
 async function executeAutoTradeOpen(input: {
   userId: string
   environment: DeltaEnvironment
@@ -340,6 +385,14 @@ async function executeAutoTradeOpen(input: {
     tvSl: bracketPlan.tvSl,
     tvTp: bracketPlan.tvTp,
   }
+
+  await ensureAutoTradeLeverage({
+    userId: input.userId,
+    environment: input.environment,
+    config: input.config,
+    symbol: input.symbol,
+    accountIds: targetIds,
+  })
 
   if (targetIds.length === 1) {
     const placed = await placeDeltaMarketOrderForAccount({
@@ -409,14 +462,14 @@ async function executeAutoTradeOpen(input: {
     ]
   }
 
+  const status = deriveOpenTradeStatus(results)
   const okCount = results.filter((r) => r.ok).length
-  const status: DeltaAutoTradeLogStatus =
-    okCount === 0 ? "failed" : okCount === results.length ? "success" : "partial"
   const bracketSummary = summarizeBracketFromResults(results)
   const errors = [
     okCount === 0 ? results.map((r) => r.error).filter(Boolean).join("; ") : undefined,
     bracketSummary.bracketErrors,
     bracketPlan.bracketNote,
+    sizing.clampNote,
   ]
     .filter(Boolean)
     .join("; ")
@@ -451,7 +504,10 @@ async function executeAutoTradeOpen(input: {
     lots,
     status,
     accountResults: results,
-    error: okCount === 0 ? results.map((r) => r.error).filter(Boolean).join("; ") : undefined,
+    error:
+      okCount === 0
+        ? results.map((r) => r.error).filter(Boolean).join("; ")
+        : bracketSummary.bracketErrors,
   })
 }
 
@@ -546,10 +602,15 @@ async function processFillForEnvironment(
 ) {
   if (!config.enabled) return
 
-  if (SCALP_FILL_REASONS.has(fill.reason)) return
-
-  if (environment === "live" && isServerLiveTradingBlocked()) {
+  if (fill.kind === "close") {
+    if (config.closeOnTvExit === false) return
+  } else if (SCALP_OPEN_FILL_REASONS.has(fill.reason)) {
     return
+  }
+
+  if (environment === "live") {
+    if (isServerLiveTradingBlocked()) return
+    if (!(await isUserLiveTradingEnabled(userId))) return
   }
 
   const enabledAccounts = await listEnabledDeltaAccounts(userId, environment)
@@ -664,10 +725,15 @@ export async function runDeltaBracketUpdatesForOpenTrades(
   const user = await User.findById(userId).select("deltaAutoTradePreferences").lean()
   if (!user) return
 
+  const liveConfig = getDeltaAutoTradeConfig(user.deltaAutoTradePreferences, "live")
+  const liveAutoTradeActive =
+    liveConfig.enabled && !isServerLiveTradingBlocked() && (await isUserLiveTradingEnabled(userId))
+
   for (const update of updates) {
     if (update.stop_loss == null && update.target == null) continue
 
     for (const environment of ENVIRONMENTS) {
+      if (environment === "demo" && liveAutoTradeActive) continue
       const config = getDeltaAutoTradeConfig(user.deltaAutoTradePreferences, environment)
       if (!config.enabled || config.attachTvBrackets === false) continue
       if (environment === "live" && isServerLiveTradingBlocked()) continue
@@ -741,8 +807,13 @@ export async function runDeltaAutoTradeForFills(userId: string, fills: LiveFillE
   const user = await User.findById(userId).select("deltaAutoTradePreferences").lean()
   if (!user) return
 
+  const liveConfig = getDeltaAutoTradeConfig(user.deltaAutoTradePreferences, "live")
+  const liveAutoTradeActive =
+    liveConfig.enabled && !isServerLiveTradingBlocked() && (await isUserLiveTradingEnabled(userId))
+
   for (const fill of fills) {
     for (const environment of ENVIRONMENTS) {
+      if (environment === "demo" && liveAutoTradeActive) continue
       const config = getDeltaAutoTradeConfig(user.deltaAutoTradePreferences, environment)
       await processFillForEnvironment(userId, environment, fill, config)
     }

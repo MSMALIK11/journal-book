@@ -22,9 +22,15 @@ const chartConfig: ChartConfig = {
 
 type Props = {
   distribution: PnlDistributionBucket[]
+  title?: string
+  description?: string
 }
 
-export function PnlDistributionChart({ distribution }: Props) {
+export function PnlDistributionChart({
+  distribution,
+  title = "P&L distribution",
+  description = "How many trades landed in each profit/loss bucket — spot outsized wins or losses",
+}: Props) {
   const data = distribution.map((bucket) => ({
     ...bucket,
     fill:

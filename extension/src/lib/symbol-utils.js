@@ -4,6 +4,8 @@ var JBSymbol = globalThis.JBSymbol || {}
 JBSymbol.KNOWN_TICKERS = [
   "XAUUSD",
   "XAGUSD",
+  "PAXGUSD",
+  "PAXGUSDT",
   "GOLD",
   "SILVER",
   "BTCUSDT",
@@ -58,6 +60,7 @@ JBSymbol.fromTitle = function fromTitle(title) {
   const first = (title || "").split("—")[0]?.split(",")[0]?.trim() || ""
   if (!first) return ""
 
+  if (/pax\s*gold/i.test(first)) return "PAXGUSD"
   if (/gold/i.test(first)) return "XAUUSD"
   if (/silver/i.test(first)) return "XAGUSD"
   if (/(\bwt\b|crude|\boil\b)/i.test(first)) return "USOIL"
@@ -65,6 +68,7 @@ JBSymbol.fromTitle = function fromTitle(title) {
   if (/fin(ancial)?\s*nifty/i.test(first)) return "FINNIFTY"
   if (/nifty/i.test(first)) return "NIFTY"
   if (/sensex/i.test(first)) return "SENSEX"
+  if (/dow\s*jones|\bdji\b/i.test(first)) return "DJI"
   if (/bitcoin|\bbtc\b/i.test(first)) return "BTCUSD"
   if (/ethereum|\beth\b/i.test(first)) return "ETHUSD"
 
@@ -93,7 +97,7 @@ JBSymbol.normalize = function normalize(raw) {
   if (encodedColon) return encodedColon[1]
 
   const suffix = normalized.match(
-    /(XAUUSD|XAGUSD|BTCUSDT|BTCUSD|ETHUSDT|ETHUSD|SOLUSDT|SOLUSD|USOIL|UKOIL|EURUSD|GBPUSD|USDJPY|USDCHF|AUDUSD|USDCAD|NZDUSD)$/i,
+    /(XAUUSD|XAGUSD|PAXGUSDT|PAXGUSD|BTCUSDT|BTCUSD|ETHUSDT|ETHUSD|SOLUSDT|SOLUSD|USOIL|UKOIL|EURUSD|GBPUSD|USDJPY|USDCHF|AUDUSD|USDCAD|NZDUSD)$/i,
   )
   if (suffix && normalized.length > suffix[1].length + 2) {
     return suffix[1]

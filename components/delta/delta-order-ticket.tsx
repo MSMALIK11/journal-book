@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Bot, ChevronDown, ChevronUp, Loader2, RefreshCw } from "lucide-react"
+import { Bot, ChevronDown, ChevronUp, Loader2, Minus, Plus, RefreshCw } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,6 +38,7 @@ import {
 import type { DeltaTradeMode } from "@/components/delta/delta-account-selector"
 import { deltaApiPath, type DeltaEnvironment } from "@/components/delta/delta-shared"
 import {
+  DELTA_AUTO_TRADE_MARGIN_PCTS,
   DELTA_AUTO_TRADE_SYMBOLS,
   type DeltaAutoTradeSymbol,
 } from "@/lib/delta/auto-trade-settings"
@@ -108,7 +109,6 @@ export function DeltaOrderTicket({
     limitingLabel: string
   } | null>(null)
   const [confirmSide, setConfirmSide] = useState<"buy" | "sell" | null>(null)
-  const [liveConfirmText, setLiveConfirmText] = useState("")
 
   const isLive = environment === "live"
   const accountIdsKey = accountIds.join(",")
@@ -164,7 +164,6 @@ export function DeltaOrderTicket({
     singleAccountId: accountId,
     broadcastAccountIds: accountIds,
     symbol,
-    marginPct: selectedPct,
     persistReady,
   })
   const [autoLotDrafts, setAutoLotDrafts] = useState<Partial<Record<DeltaAutoTradeSymbol, string>>>({})
@@ -181,10 +180,62 @@ export function DeltaOrderTicket({
   const autoSizingSummary = useMemo(() => {
     const parts = autoTrade.enabledSymbols.map((item) => {
       const fixed = autoTrade.lotSizeBySymbol[item]
-      return fixed != null ? `${item} ${fixed} Lot` : `${item} ${selectedPct ?? 25}%`
+      return fixed != null ? `${item} ${fixed} Lot` : `${item} ${autoTrade.savedMarginPct}%`
     })
     return parts.length > 0 ? parts.join(" · ") : "No products selected"
-  }, [autoTrade.enabledSymbols, autoTrade.lotSizeBySymbol, selectedPct])
+  }, [autoTrade.enabledSymbols, autoTrade.lotSizeBySymbol, autoTrade.savedMarginPct])
+
+  const [botPctDraft, setBotPctDraft] = useState<string>("")
+
+  useEffect(() => {
+    setBotPctDraft(String(autoTrade.savedMarginPct))
+  }, [autoTrade.savedMarginPct])
+
+  async function saveBotPct() {
+    const next = Number(botPctDraft)
+    if (!Number.isSafeInteger(next) || next < 1 || next > 100) {
+      toast({
+        title: "Invalid margin %",
+        description: "Enter a whole number from 1 to 100.",
+        variant: "destructive",
+      })
+      setBotPctDraft(String(autoTrade.savedMarginPct))
+      return
+    }
+    if (next === autoTrade.savedMarginPct) return
+    await autoTrade.saveMarginPct(next)
+  }
+
+  const [copyBusy, setCopyBusy] = useState(false)
+
+  async function copyDemoSettings() {
+    setCopyBusy(true)
+    try {
+      const response = await authFetch(deltaApiPath("/api/delta/auto-trade-settings/copy", environment), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Copy failed")
+      await autoTrade.reload()
+      toast({
+        title: "Demo settings copied to live",
+        description:
+          Array.isArray(data.droppedLots) && data.droppedLots.length > 0
+            ? `Lot overrides over the ${data.liveMaxOrderSize} Lot live cap were skipped: ${data.droppedLots.join(", ")}. Bot starts off.`
+            : "Auto-trade bot starts off — pick live accounts and enable it.",
+      })
+    } catch (error) {
+      toast({
+        title: "Copy failed",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      })
+    } finally {
+      setCopyBusy(false)
+    }
+  }
 
   async function saveAutoLotSize(item: DeltaAutoTradeSymbol) {
     const raw = autoLotDrafts[item]?.trim() ?? ""
@@ -289,14 +340,9 @@ export function DeltaOrderTicket({
     setPendingLeverage(nearestLeverageStep(lv))
   }, [autoTrade.loading, autoTrade.hasSavedLeverage, autoTrade.savedLeverage, apiLeverage, symbol])
 
-  useEffect(() => {
-    if (autoTrade.loading) return
-    setSelectedPct(autoTrade.savedMarginPct)
-  }, [autoTrade.loading, autoTrade.savedMarginPct])
-
   // SWR refetches on key change, so this only resets local sizing inputs. Never key this on
   // `marginEntries` — that object gets a fresh identity on every wallet revalidation, which would
-  // silently drop the selected % (and with it the auto-trade margin %) mid-session.
+  // silently drop the selected % mid-session.
   useEffect(() => {
     if (selectedPct != null) return
     setLots(1)
@@ -348,11 +394,20 @@ export function DeltaOrderTicket({
       : null
   const pctCappedByOrderLimit = pctLotsBeforeCap != null && pctLotsBeforeCap > orderSizeCap
 
-  // Only reachable by typing a size manually — % sizing is already clamped.
+  // Manual entry is clamped to the per-order cap so the API can never reject on size.
   const exceedsOrderCap = lots > orderSizeCap
 
+  useEffect(() => {
+    setLots((current) => (current > orderSizeCap ? orderSizeCap : current))
+  }, [orderSizeCap])
+
   function clampManualLots(value: number) {
-    return Math.max(1, Math.floor(value))
+    return Math.min(orderSizeCap, Math.max(1, Math.floor(value)))
+  }
+
+  function stepLots(delta: number) {
+    setLots((current) => Math.min(orderSizeCap, Math.max(1, current + delta)))
+    setSelectedPct(null)
   }
 
   function applyPct(pct: number) {
@@ -626,19 +681,43 @@ export function DeltaOrderTicket({
 
         {/* Lot size input */}
         <div className="space-y-2">
-          <div className="flex overflow-hidden rounded-lg border border-border/70 bg-[#0c0d12]">
+          <div className="flex items-stretch overflow-hidden rounded-lg border border-border/70 bg-[#0c0d12]">
+            <button
+              type="button"
+              aria-label="Decrease lots"
+              disabled={lots <= 1}
+              onClick={() => stepLots(-1)}
+              className="flex w-10 items-center justify-center border-r border-border/60 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
+            >
+              <Minus className="h-4 w-4" />
+            </button>
             <Input
               type="number"
               min={1}
+              max={orderSizeCap}
               step={1}
               value={lots}
               onChange={(e) => handleLotsChange(e.target.value)}
-              className="border-0 bg-transparent text-right text-lg font-medium focus-visible:ring-0"
+              className="border-0 bg-transparent text-center text-lg font-medium focus-visible:ring-0"
             />
+            <button
+              type="button"
+              aria-label="Increase lots"
+              disabled={lots >= orderSizeCap}
+              onClick={() => stepLots(1)}
+              className="flex w-10 items-center justify-center border-l border-border/60 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
             <div className="flex items-center border-l border-border/60 px-4 text-sm text-muted-foreground">
               Lot
               <ChevronDown className="ml-1 h-3.5 w-3.5 opacity-50" />
             </div>
+          </div>
+
+          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+            <span>Max {orderSizeCap} Lot per order</span>
+            {selectedPct != null ? <span>{selectedPct}% of margin</span> : null}
           </div>
 
           <div className="grid grid-cols-5 gap-1">
@@ -659,8 +738,11 @@ export function DeltaOrderTicket({
             ))}
           </div>
 
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
+          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>{formatUnderlying(underlyingSize, contractUnit)}</span>
+            <span className="text-foreground/80">
+              Mark {price > 0 ? `${formatUsd(price)} USD` : "—"}
+            </span>
             <span>
               1 Lot = {contractValue} {contractUnit}
             </span>
@@ -806,6 +888,31 @@ export function DeltaOrderTicket({
             </p>
           ) : null}
 
+          {autoTrade.lastLog ? (
+            <p
+              className="truncate text-[11px] text-muted-foreground"
+              title={autoTrade.lastLog.error ?? undefined}
+            >
+              Last {autoTrade.lastLog.kind} ·{" "}
+              {[autoTrade.lastLog.symbol, autoTrade.lastLog.lots != null ? `${autoTrade.lastLog.lots} Lot` : null]
+                .filter(Boolean)
+                .join(" ")}
+              {" · "}
+              <span
+                className={cn(
+                  autoTrade.lastLog.status === "success" && "text-emerald-400",
+                  autoTrade.lastLog.status === "failed" && "text-rose-400",
+                  autoTrade.lastLog.status === "partial" && "text-amber-300",
+                )}
+              >
+                {autoTrade.lastLog.status}
+              </span>
+              {autoTrade.formatLogTime(autoTrade.lastLog.createdAt)
+                ? ` · ${autoTrade.formatLogTime(autoTrade.lastLog.createdAt)}`
+                : ""}
+            </p>
+          ) : null}
+
           <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-2.5 py-2">
             <div>
               <p className="text-xs font-medium">TV distance SL/TP</p>
@@ -828,23 +935,105 @@ export function DeltaOrderTicket({
             />
           </div>
 
+          <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-2.5 py-2">
+            <div>
+              <p className="text-xs font-medium">Close on TV exit</p>
+              <p className="text-[11px] text-muted-foreground">
+                Market-close Delta when TV close alert fires
+              </p>
+            </div>
+            <Switch
+              checked={autoTrade.closeOnTvExit}
+              disabled={autoTrade.loading || autoTrade.saving}
+              onCheckedChange={(checked) => {
+                void autoTrade.toggleCloseOnTvExit(checked).catch((error) => {
+                  toast({
+                    title: "Could not update close setting",
+                    description: error instanceof Error ? error.message : "Unknown error",
+                    variant: "destructive",
+                  })
+                })
+              }}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <div>
+              <p className="text-xs font-medium">Bot sizing %</p>
+              <p className="text-[11px] text-muted-foreground">
+                Margin % for products without a fixed Lot. Ticket % above only sizes the manual ticket.
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {DELTA_AUTO_TRADE_MARGIN_PCTS.map((pct) => (
+                <button
+                  key={pct}
+                  type="button"
+                  disabled={autoTrade.loading || autoTrade.saving}
+                  onClick={() => {
+                    void autoTrade.saveMarginPct(pct).catch((error) => {
+                      toast({
+                        title: "Could not update margin %",
+                        description: error instanceof Error ? error.message : "Unknown error",
+                        variant: "destructive",
+                      })
+                    })
+                  }}
+                  className={cn(
+                    "flex-1 rounded-md py-1.5 text-xs font-medium transition-colors",
+                    autoTrade.savedMarginPct === pct
+                      ? "bg-violet-600/20 text-violet-300 ring-1 ring-violet-500/40"
+                      : "text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+                  )}
+                >
+                  {pct}%
+                </button>
+              ))}
+              <Input
+                type="number"
+                min={1}
+                max={100}
+                step={1}
+                inputMode="numeric"
+                aria-label="Auto-trade margin percent"
+                value={botPctDraft}
+                disabled={autoTrade.loading || autoTrade.saving}
+                onChange={(event) => setBotPctDraft(event.target.value)}
+                onBlur={() => {
+                  void saveBotPct().catch((error) => {
+                    toast({
+                      title: "Could not update margin %",
+                      description: error instanceof Error ? error.message : "Unknown error",
+                      variant: "destructive",
+                    })
+                  })
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur()
+                }}
+                className="h-7 w-16 shrink-0"
+              />
+            </div>
+          </div>
+
           <p className="text-[11px] text-muted-foreground">
-            Tick the products to auto-trade. A blank Lot box sizes from {selectedPct ?? 25}% margin.
+            Tick the products to auto-trade. A blank Lot box sizes from {autoTrade.savedMarginPct}% margin.
           </p>
 
           <div className="space-y-1.5">
             {DELTA_AUTO_TRADE_SYMBOLS.map((item) => {
               const checked = autoTrade.enabledSymbols.includes(item)
               const lastEnabled = checked && autoTrade.enabledSymbols.length === 1
+              const staleLot = autoTrade.lotSizeBySymbol[item]
               return (
-                <div
-                  key={item}
-                  className={cn(
-                    "flex items-center gap-2 rounded-md border px-2.5 py-1.5",
-                    checked ? "border-border/60 bg-background/40" : "border-border/40 opacity-60",
-                  )}
-                >
-                  <Checkbox
+                <div key={item} className="space-y-1">
+                  <div
+                    className={cn(
+                      "flex items-center gap-2 rounded-md border px-2.5 py-1.5",
+                      checked ? "border-border/60 bg-background/40" : "border-border/40 opacity-60",
+                    )}
+                  >
+                    <Checkbox
                     className="shrink-0"
                     checked={checked}
                     disabled={autoTrade.loading || autoTrade.saving || lastEnabled}
@@ -890,10 +1079,39 @@ export function DeltaOrderTicket({
                     className="h-7 w-16 shrink-0 px-2 text-right text-xs"
                   />
                   <span className="w-6 shrink-0 text-[10px] text-muted-foreground">Lot</span>
+                  </div>
+                  {staleLot != null && staleLot > maxOrderSize ? (
+                    <p className="pl-2 text-[10px] text-amber-300">
+                      Saved {staleLot} Lot exceeds the {maxOrderSize} Lot per-order limit — auto-trades
+                      for {item} will be rejected until lowered.
+                    </p>
+                  ) : null}
                 </div>
               )
             })}
           </div>
+
+          {isLive ? (
+            <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-2.5 py-2">
+              <div>
+                <p className="text-xs font-medium">Copy demo settings</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Symbols, sizing %, leverage & Lot overrides. Bot starts off; accounts not copied.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  autoTrade.loading || autoTrade.saving || copyBusy || autoTrade.serverLiveBlocked
+                }
+                onClick={() => void copyDemoSettings()}
+              >
+                {copyBusy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                Copy
+              </Button>
+            </div>
+          ) : null}
 
           {isLive && autoTrade.serverLiveBlocked ? (
             <p className="text-[11px] text-rose-300">Live auto-trade blocked on this server.</p>
@@ -916,7 +1134,6 @@ export function DeltaOrderTicket({
             (tradeMode === "broadcast" && accountIds.length === 0)
           }
           onClick={() => {
-            setLiveConfirmText("")
             setConfirmSide("buy")
           }}
         >
@@ -935,7 +1152,6 @@ export function DeltaOrderTicket({
             (tradeMode === "broadcast" && accountIds.length === 0)
           }
           onClick={() => {
-            setLiveConfirmText("")
             setConfirmSide("sell")
           }}
         >
@@ -960,7 +1176,6 @@ export function DeltaOrderTicket({
         onOpenChange={(open) => {
           if (!open) {
             setConfirmSide(null)
-            setLiveConfirmText("")
           }
         }}
       >
@@ -981,25 +1196,9 @@ export function DeltaOrderTicket({
               {isLive ? " This order uses real money on Delta India production." : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {isLive ? (
-            <div className="space-y-2 px-1">
-              <Label htmlFor="live-confirm" className="text-xs text-rose-300">
-                Type LIVE to confirm
-              </Label>
-              <Input
-                id="live-confirm"
-                value={liveConfirmText}
-                onChange={(e) => setLiveConfirmText(e.target.value)}
-                placeholder="LIVE"
-                className="border-rose-500/40"
-                autoComplete="off"
-              />
-            </div>
-          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={isLive && liveConfirmText.trim().toUpperCase() !== "LIVE"}
               onClick={() => confirmSide && void placeOrder(confirmSide)}
               className={isLive ? "bg-rose-600 hover:bg-rose-600/90" : undefined}
             >

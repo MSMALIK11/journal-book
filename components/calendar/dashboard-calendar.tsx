@@ -85,7 +85,11 @@ export function DashboardCalendar({ trades }: { trades: CalendarTrade[] }) {
           <div>
             <p className="text-sm font-semibold tracking-wide">{format(currentMonth, "MMMM yyyy")}</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {monthTrades.length} trades ·{" "}
+              {closed.length} closed ·{" "}
+              <span className="text-emerald-400">{wins.length}W</span>
+              <span> · </span>
+              <span className="text-rose-400">{losses.length}L</span>
+              <span> · </span>
               <span className={monthPnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
                 {monthPnl > 0 ? "+" : ""}
                 {money.format(monthPnl)}

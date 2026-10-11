@@ -15,18 +15,13 @@ import {
   dataSourceLabel,
   filterFundedTrades,
   filterLabel,
-  oneRValue,
   toCompareSnapshot,
   type DirectionFilter,
   type SessionFilter,
   type WeekdayFilter,
 } from "@/lib/trading/funded-roadmap"
 import { FUNDED_ACCOUNT_LADDER } from "@/lib/trading/funded-presets"
-import {
-  computeChallengeRStats,
-  computeRMultipleStats,
-  type FundedTrade,
-} from "@/lib/trading/r-multiples"
+import { computeRMultipleStats, type FundedTrade } from "@/lib/trading/r-multiples"
 import {
   FUNDED_TRADE_SELECT,
   buildTradeQuery,
@@ -37,16 +32,23 @@ import {
 function parseRules(searchParams: URLSearchParams): FundedChallengeRules {
   const preset = FUNDED_FIRM_PRESETS.find((item) => item.id === searchParams.get("preset"))
   const base = preset?.rules ?? DEFAULT_FUNDED_RULES
-  const num = (key: string, fallback: number) => {
+  // Clamp to sane ranges so a malformed query (e.g. ?maxDrawdownPct=99999)
+  // can't turn every simulation into an automatic pass.
+  const clamp = (key: string, min: number, max: number, fallback: number) => {
     const raw = Number(searchParams.get(key))
-    return Number.isFinite(raw) && raw > 0 ? raw : fallback
+    return Number.isFinite(raw) && raw > 0 ? Math.min(max, Math.max(min, raw)) : fallback
   }
+  const profitTargetPct = clamp("profitTargetPct", 1, 100, base.profitTargetPct)
+  const maxDrawdownPct = clamp("maxDrawdownPct", 1, 100, base.maxDrawdownPct)
   return {
-    profitTargetPct: num("profitTargetPct", base.profitTargetPct),
-    maxDrawdownPct: num("maxDrawdownPct", base.maxDrawdownPct),
-    dailyDrawdownPct: num("dailyDrawdownPct", base.dailyDrawdownPct),
-    minTradingDays: num("minTradingDays", base.minTradingDays),
-    profitSplitPct: num("profitSplitPct", base.profitSplitPct),
+    profitTargetPct,
+    maxDrawdownPct,
+    dailyDrawdownPct: Math.min(
+      maxDrawdownPct,
+      clamp("dailyDrawdownPct", 0.25, 100, base.dailyDrawdownPct),
+    ),
+    minTradingDays: clamp("minTradingDays", 1, 365, base.minTradingDays),
+    profitSplitPct: clamp("profitSplitPct", 1, 100, base.profitSplitPct),
   }
 }
 
@@ -105,15 +107,16 @@ export async function GET(request: NextRequest) {
     const riskMode = (searchParams.get("riskMode") === "fixed" ? "fixed" : "percent") as RiskMode
     const riskPercent = Number(searchParams.get("riskPercent"))
     const fixedRisk = Number(searchParams.get("fixedRisk"))
-    const currentStageIndex = Number(searchParams.get("currentStageIndex") || 0)
+    const rawStageIndex = Number(searchParams.get("currentStageIndex") || 0)
 
     const riskConfig = {
       mode: riskMode,
       riskPercent: Number.isFinite(riskPercent) && riskPercent > 0 ? riskPercent : 1,
       fixedRisk: Number.isFinite(fixedRisk) && fixedRisk > 0 ? fixedRisk : 50,
     }
-    const stageIndex = Number.isFinite(currentStageIndex) ? currentStageIndex : 0
-    const stageSize = FUNDED_ACCOUNT_LADDER[stageIndex]?.size ?? FUNDED_ACCOUNT_LADDER[0].size
+    const stageIndex = Number.isFinite(rawStageIndex)
+      ? Math.max(0, Math.min(FUNDED_ACCOUNT_LADDER.length - 1, Math.round(rawStageIndex)))
+      : 0
 
     const model = buildFundedRoadmap({
       analytics,
@@ -124,34 +127,23 @@ export async function GET(request: NextRequest) {
       currentStageIndex: stageIndex,
     })
 
-    const challengeRStats = computeChallengeRStats(trades, oneRValue(stageSize, riskConfig))
+    const label = filterLabel({
+      instrument: filters.instrument ?? undefined,
+      strategy: filters.strategy ?? undefined,
+      session: filters.session,
+      direction: filters.direction,
+    })
 
     return NextResponse.json(
       {
         ...model,
-        rMultiples: challengeRStats.rMultiples,
-        slRStats,
         timezone,
         strategies: analytics.strategies,
         instruments: analytics.instruments,
         source: filters.source,
         sourceLabel: dataSourceLabel(filters.source),
-        filterLabel: filterLabel({
-          instrument: filters.instrument ?? undefined,
-          strategy: filters.strategy ?? undefined,
-          session: filters.session,
-          direction: filters.direction,
-        }),
-        snapshot: toCompareSnapshot(
-          filterLabel({
-            instrument: filters.instrument ?? undefined,
-            strategy: filters.strategy ?? undefined,
-            session: filters.session,
-            direction: filters.direction,
-          }),
-          model,
-        ),
-        equityCurve: analytics.equityCurve,
+        filterLabel: label,
+        snapshot: toCompareSnapshot(label, model, stageIndex),
         rules,
       },
       { headers: { "Cache-Control": "no-store" } },
