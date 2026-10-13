@@ -22,8 +22,8 @@ export type DeltaBracketLevelsInput = {
   deltaAnchor: number
   tickSize?: number
   /**
-   * When set (> 0), take-profit distance = stop-loss distance × this ratio (1 = 1:1).
-   * TV TP price is ignored — use when Pine R:R is symmetric but alert TP/entry drift.
+   * When set (> 0 and not 1), take-profit distance = stop-loss distance × this ratio.
+   * Omit/null to use the TV TP price distance from entry (recommended).
    */
   rewardFromStopRisk?: number | null
 }

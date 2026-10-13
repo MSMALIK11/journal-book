@@ -6,6 +6,7 @@ import { normalizePnlSource } from "@/lib/trading/account-pnl-config"
 import {
   canonicalInstrumentSymbol,
   dedupeInstrumentSymbol,
+  instrumentAliasList,
   isSpotGoldSymbol,
   isTokenizedGoldSymbol,
 } from "@/lib/trading/account-match"
@@ -844,43 +845,43 @@ export function accountPrimarySymbol(account: { name?: string; symbols?: string[
 /** Move XAUT* rows off spot-GOLD / XAUUSD portfolios (and the reverse). */
 export async function rerouteMisroutedGoldFamilies(userId: string) {
   let accounts = await getUserAccounts(userId)
-  const tvTrades = await Trade.find({ userId, source: "tradingview" }).select(
-    "_id accountId instrument",
-  )
+  const spotAccountIds = accounts
+    .filter((account) => accountPrimarySymbol(account) === "XAUUSD")
+    .map((account) => String(account._id))
+  const tokenAccountIds = accounts
+    .filter((account) => accountPrimarySymbol(account) === "XAUTUSD")
+    .map((account) => String(account._id))
 
   let moved = 0
-  for (const trade of tvTrades) {
-    const canonical = canonicalInstrumentSymbol(String(trade.instrument || ""))
-    const token = isTokenizedGoldSymbol(canonical)
-    const spot = isSpotGoldSymbol(canonical)
-    if (!token && !spot) continue
 
-    const account = accounts.find((row) => String(row._id) === String(trade.accountId))
-    if (!account) continue
+  if (spotAccountIds.length) {
+    const deleted = await Trade.deleteMany({
+      userId,
+      accountId: { $in: spotAccountIds },
+      instrument: { $regex: /^XAUT/i },
+    })
+    moved += deleted.deletedCount ?? 0
+  }
 
-    const accountFamily = accountPrimarySymbol(account)
-    const tradeFamily = dedupeInstrumentSymbol(canonical)
-    if (accountFamily === tradeFamily) {
-      if (trade.instrument !== canonical) {
-        trade.instrument = canonical
-        await trade.save()
-      }
-      continue
-    }
+  const spotSymbols = instrumentAliasList("XAUUSD")
+  if (tokenAccountIds.length && spotSymbols.length) {
+    const misplaced = await Trade.find({
+      userId,
+      source: "tradingview",
+      accountId: { $in: tokenAccountIds },
+      instrument: { $in: spotSymbols },
+    })
+      .select("_id instrument")
+      .limit(500)
 
-    // Token gold on spot-GOLD portfolio — hard delete (user journal is XAUUSD-only there).
-    if (token && accountFamily === "XAUUSD") {
-      await Trade.deleteOne({ _id: trade._id, userId })
-      moved += 1
-      continue
-    }
-
-    if (spot && accountFamily === "XAUTUSD") {
+    for (const trade of misplaced) {
+      const canonical = canonicalInstrumentSymbol(String(trade.instrument || ""))
       const resolved = await resolveOrCreateAccountForInstrument(userId, canonical, accounts)
       accounts = resolved.accounts
-      trade.accountId = String(resolved.account._id)
-      trade.instrument = canonical
-      await trade.save()
+      await Trade.updateOne(
+        { _id: trade._id, userId },
+        { $set: { accountId: String(resolved.account._id), instrument: canonical } },
+      )
       moved += 1
     }
   }
@@ -897,17 +898,11 @@ export async function purgeNonSpotGoldFromSpotGoldAccounts(userId: string) {
 
   if (!spotAccountIds.length) return 0
 
-  const rows = await Trade.find({
+  const spotSymbols = instrumentAliasList("XAUUSD")
+  const result = await Trade.deleteMany({
     userId,
     accountId: { $in: spotAccountIds },
-  }).select("_id instrument")
-
-  const deleteIds = rows
-    .filter((trade) => !isSpotGoldSymbol(String(trade.instrument || "")))
-    .map((trade) => trade._id)
-
-  if (!deleteIds.length) return 0
-
-  const result = await Trade.deleteMany({ _id: { $in: deleteIds }, userId })
+    instrument: spotSymbols.length ? { $nin: spotSymbols } : { $regex: /.+/ },
+  })
   return result.deletedCount ?? 0
 }

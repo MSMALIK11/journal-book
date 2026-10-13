@@ -6,11 +6,14 @@ import { resolveDeltaProductId } from "@/lib/broker/delta-orders"
 export async function closeDeltaPosition(
   creds: DeltaCredentials,
   environment: DeltaEnvironment,
-  input: { symbol: string; side: "long" | "short"; size: number },
+  input: { symbol: string; side: "long" | "short"; size: number; productId?: number },
 ) {
   const symbol = input.symbol.toUpperCase()
   const closeSide = input.side === "long" ? "sell" : "buy"
-  const productId = (await getDeltaProductId(symbol, environment)) ?? resolveDeltaProductId(symbol, environment)
+  const productId =
+    input.productId ??
+    (await getDeltaProductId(symbol, environment)) ??
+    resolveDeltaProductId(symbol, environment)
 
   return placeOrder(creds, environment, {
     ...(productId != null ? { product_id: productId } : { product_symbol: symbol }),

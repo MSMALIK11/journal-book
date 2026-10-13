@@ -27,6 +27,7 @@ import {
   getPositions,
   parseAverageFillPrice,
   setProductLeverage,
+  type DeltaCredentials,
 } from "@/lib/broker/delta-exchange"
 import { persistDeltaTradeNotifications } from "@/lib/delta/delta-trade-notifications"
 import { isServerLiveTradingBlocked, isUserLiveTradingEnabled } from "@/lib/broker/delta-live-guard"
@@ -39,7 +40,7 @@ import {
   type DeltaBracketContext,
   type DeltaMarketOrderBracket,
 } from "@/lib/broker/delta-orders"
-import { normalizeDeltaPositions } from "@/lib/broker/delta-positions"
+import { normalizeDeltaPositions, type DeltaPositionRow } from "@/lib/broker/delta-positions"
 import { mapTvInstrumentToDelta, isEnabledAutoTradeSymbol } from "@/lib/broker/delta-symbol-map"
 import {
   getDeltaAutoTradeConfig,
@@ -61,6 +62,47 @@ function isDuplicateKeyError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false
   const code = (error as { code?: number }).code
   return code === 11000
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+/** Delta perpetuals use integer contract counts; round up partial sizes so reduce-only closes fully. */
+function closeSizeFromPosition(size: number): number {
+  if (!Number.isFinite(size) || size <= 0) return 0
+  const rounded = Math.round(size)
+  if (rounded >= 1) return rounded
+  return Math.ceil(size)
+}
+
+type AutoTradeClaimResult = {
+  claimed: boolean
+  closeRetry?: {
+    onlyAccountIds: string[]
+    priorOk: DeltaAutoTradeAccountResult[]
+  }
+}
+
+async function findMatchingOpenPosition(input: {
+  creds: DeltaCredentials
+  environment: DeltaEnvironment
+  symbol: string
+  positionSide: "long" | "short"
+}): Promise<DeltaPositionRow | null> {
+  const symbolCandidates = new Set(getDeltaSymbolCandidates(input.symbol))
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const positionsResponse = await getPositions(input.creds, input.environment)
+    const positions = normalizeDeltaPositions(positionsResponse.result)
+    const match = positions.find(
+      (p) => symbolCandidates.has(p.symbol.toUpperCase()) && p.side === input.positionSide && p.size > 0,
+    )
+    if (match) return match
+    if (attempt < 3) await delay(600 * (attempt + 1))
+  }
+  return null
 }
 
 function isLongTradeType(tradeType: string): boolean {
@@ -118,7 +160,7 @@ async function claimAutoTradeExecution(input: {
   tvTradeId: string
   fillReason: string
   kind: "open" | "close"
-}): Promise<boolean> {
+}): Promise<AutoTradeClaimResult> {
   const query = {
     userId: new mongoose.Types.ObjectId(input.userId),
     environment: input.environment,
@@ -127,23 +169,43 @@ async function claimAutoTradeExecution(input: {
     kind: input.kind,
   }
 
+  const resetClaim = async (closeRetry?: AutoTradeClaimResult["closeRetry"]) => {
+    const unset: Record<string, ""> = { error: "", symbol: "", side: "", lots: "" }
+    if (!closeRetry) unset.accountResults = ""
+    await DeltaAutoTradeLog.findOneAndUpdate(query, {
+      $set: { status: "skipped" },
+      $unset: unset,
+    })
+    return { claimed: true as const, closeRetry }
+  }
+
   try {
     await DeltaAutoTradeLog.create({
       ...query,
       status: "skipped",
     })
-    return true
+    return { claimed: true }
   } catch (error) {
     if (!isDuplicateKeyError(error)) throw error
 
-    const existing = await DeltaAutoTradeLog.findOne(query).select("status").lean()
-    if (!existing || existing.status !== "failed") return false
+    const existing = await DeltaAutoTradeLog.findOne(query).select("status accountResults").lean()
+    if (!existing) return { claimed: false }
 
-    await DeltaAutoTradeLog.findOneAndUpdate(query, {
-      $set: { status: "skipped" },
-      $unset: { error: "", accountResults: "", symbol: "", side: "", lots: "" },
-    })
-    return true
+    if (existing.status === "failed") {
+      return resetClaim()
+    }
+
+    if (input.kind === "close" && existing.status === "partial") {
+      const prior = (existing.accountResults ?? []) as DeltaAutoTradeAccountResult[]
+      const failedIds = prior.filter((r) => !r.ok).map((r) => r.accountId)
+      if (failedIds.length === 0) return { claimed: false }
+      return resetClaim({
+        onlyAccountIds: failedIds,
+        priorOk: prior.filter((r) => r.ok),
+      })
+    }
+
+    return { claimed: false }
   }
 }
 
@@ -520,56 +582,77 @@ async function executeAutoTradeClose(input: {
   fill: LiveFillEvent
   symbol: string
   accountIds: string[]
+  closeRetry?: AutoTradeClaimResult["closeRetry"]
 }) {
   const fillReason = input.fill.reason
   const positionSide = positionSideFromTradeType(input.fill.trade.trade_type)
-  const results: DeltaAutoTradeAccountResult[] = []
+  const targetAccountIds = input.closeRetry?.onlyAccountIds ?? input.accountIds
 
-  for (const accountId of input.accountIds) {
-    const resolved = await getDeltaCredentialsByAccountId(input.userId, accountId, input.environment)
-    if (!resolved) {
-      results.push({ accountId, label: accountId, ok: false, error: "missing_credentials" })
-      continue
-    }
+  const settled = await Promise.allSettled(
+    targetAccountIds.map(async (accountId) => {
+      const resolved = await getDeltaCredentialsByAccountId(input.userId, accountId, input.environment)
+      if (!resolved) {
+        return { accountId, label: accountId, ok: false as const, error: "missing_credentials" }
+      }
 
-    try {
-      const positionsResponse = await getPositions(resolved.creds, input.environment)
-      const positions = normalizeDeltaPositions(positionsResponse.result)
-      const symbolCandidates = new Set(getDeltaSymbolCandidates(input.symbol))
-      const match = positions.find(
-        (p) => symbolCandidates.has(p.symbol.toUpperCase()) && p.side === positionSide && p.size > 0,
-      )
+      const match = await findMatchingOpenPosition({
+        creds: resolved.creds,
+        environment: input.environment,
+        symbol: input.symbol,
+        positionSide,
+      })
 
       if (!match) {
-        results.push({
+        return {
           accountId,
           label: resolved.account.label,
-          ok: false,
+          ok: false as const,
           error: "no_matching_position",
-        })
-        continue
+        }
+      }
+
+      const size = closeSizeFromPosition(match.size)
+      if (size <= 0) {
+        return {
+          accountId,
+          label: resolved.account.label,
+          ok: false as const,
+          error: "no_matching_position",
+        }
       }
 
       await closeDeltaPosition(resolved.creds, input.environment, {
         symbol: match.symbol,
         side: positionSide,
-        size: Math.max(1, Math.floor(match.size)),
+        size,
+        productId: match.productId,
       })
 
-      results.push({ accountId, label: resolved.account.label, ok: true })
-    } catch (error) {
-      results.push({
-        accountId,
-        label: resolved.account.label,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      })
+      return { accountId, label: resolved.account.label, ok: true as const }
+    }),
+  )
+
+  const attemptResults: DeltaAutoTradeAccountResult[] = settled.map((entry, index) => {
+    const accountId = targetAccountIds[index] ?? "unknown"
+    if (entry.status === "fulfilled") return entry.value
+    return {
+      accountId,
+      label: accountId,
+      ok: false,
+      error: entry.reason instanceof Error ? entry.reason.message : String(entry.reason),
     }
-  }
+  })
+
+  const priorOk = input.closeRetry?.priorOk ?? []
+  const mergedByAccount = new Map<string, DeltaAutoTradeAccountResult>()
+  for (const row of priorOk) mergedByAccount.set(row.accountId, row)
+  for (const row of attemptResults) mergedByAccount.set(row.accountId, row)
+  const results = [...mergedByAccount.values()]
 
   const okCount = results.filter((r) => r.ok).length
+  const expectedAccounts = input.accountIds.length
   const status: DeltaAutoTradeLogStatus =
-    okCount === 0 ? "failed" : okCount === results.length ? "success" : "partial"
+    okCount === 0 ? "failed" : okCount >= expectedAccounts ? "success" : "partial"
 
   await finalizeAutoTradeLog({
     userId: input.userId,
@@ -629,14 +712,14 @@ async function processFillForEnvironment(
   const mapped = mapTvInstrumentToDelta(fill.trade.instrument)
   if (!mapped || !isEnabledAutoTradeSymbol(config.symbols, mapped)) return
 
-  const claimed = await claimAutoTradeExecution({
+  const claim = await claimAutoTradeExecution({
     userId,
     environment,
     tvTradeId: fill.trade.id,
     fillReason: fill.reason,
     kind: fill.kind,
   })
-  if (!claimed) return
+  if (!claim.claimed) return
 
   const symbol = await resolveAutoTradeSymbol(mapped, environment)
   if (!symbol) {
@@ -682,6 +765,7 @@ async function processFillForEnvironment(
         fill,
         symbol,
         accountIds: effectiveAccountIds,
+        closeRetry: claim.closeRetry,
       })
     }
   } catch (error) {

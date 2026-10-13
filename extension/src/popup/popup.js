@@ -230,6 +230,9 @@ document.getElementById("importAll").addEventListener("click", async () => {
     statusEl.textContent = `Syncing ${result.trades.length} trades...`
     const syncResult = await JBSync.syncTrades(result.trades, config, result.instrument, {
       reconcileFromTrades: result.trades,
+      onBatchProgress: ({ batch, batches, rows, total }) => {
+        statusEl.textContent = `Syncing ${rows}/${total} (batch ${batch}/${batches})...`
+      },
     })
     const msg = await saveRefreshResult(syncResult, result)
 

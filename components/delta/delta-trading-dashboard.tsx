@@ -21,10 +21,10 @@ import { useDeltaAccountMargins } from "@/components/delta/use-delta-account-mar
 import {
   prefetchDeltaMarketData,
   refreshDeltaDashboard,
-  useDeltaAccountActivity,
   useDeltaAccounts,
   useDeltaOrders,
   useDeltaPositions,
+  useDerivedDeltaAccountActivity,
 } from "@/components/delta/use-delta-dashboard-data"
 import {
   deltaActiveTabKey,
@@ -95,15 +95,17 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
     mutate: mutateOrders,
   } = useDeltaOrders(environment, brokerDataReady)
 
-  const {
-    data: activityData,
-    isLoading: activityLoading,
-    mutate: mutateActivity,
-  } = useDeltaAccountActivity(environment, brokerDataReady)
-
   const positions = positionsData?.positions ?? []
   const orders = ordersData?.orders ?? []
-  const accountActivity = activityData?.accounts ?? []
+  const accountActivity = useDerivedDeltaAccountActivity(
+    accounts,
+    envOverride,
+    environment,
+    positions,
+    orders,
+    positionsData?.accounts,
+  )
+  const brokerDataLoading = positionsLoading || ordersLoading
 
   const accountMargins = useDeltaAccountMargins(environment, enabledAccountIds, {
     enabled: configured && enabledAccountIds.length > 0,
@@ -417,7 +419,7 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             <span className="rounded-md border border-border/60 bg-muted/10 px-2.5 py-1 tabular-nums">
               {maxOrderSize} lot max
             </span>
-            {positionsLoading || ordersLoading || activityLoading ? (
+            {brokerDataLoading ? (
               <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Syncing…</span>
             ) : null}
           </div>
@@ -464,11 +466,11 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
         <TabsContent value="by-account" className="mt-0">
           <DeltaPerAccountTrades
             accounts={accountActivity}
-            loading={activityLoading}
+            loading={brokerDataLoading}
             positionsForPnl={positions}
-            refreshing={activityLoading || positionsLoading}
+            refreshing={brokerDataLoading}
             onRefresh={async () => {
-              await Promise.all([mutateActivity(), mutatePositions(), mutateOrders()])
+              await Promise.all([mutatePositions(), mutateOrders()])
             }}
           />
         </TabsContent>
@@ -540,7 +542,7 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             singleAccountId={singleAccountId}
             broadcastAccountIds={broadcastAccountIds}
             onRefreshPositions={async () => {
-              await Promise.all([mutatePositions(), mutateOrders(), mutateActivity()])
+              await Promise.all([mutatePositions(), mutateOrders()])
             }}
           />
         </TabsContent>

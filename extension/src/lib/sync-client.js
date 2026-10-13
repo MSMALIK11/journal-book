@@ -1447,7 +1447,8 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
     }
   }
 
-  const batchSize = 400
+  const bulkImport = trades.length >= 80
+  const batchSize = bulkImport ? 800 : 400
   let imported = 0
   let updated = 0
   let skipped = 0
@@ -1459,13 +1460,25 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
 
   for (let i = 0; i < trades.length; i += batchSize) {
     const chunk = trades.slice(i, i + batchSize)
+    const isLastBatch = i + batchSize >= trades.length
     const payload = {
       chartSymbol: normalizedChart || undefined,
       chartInterval: options.chartInterval || undefined,
       trades: JBSync.normalizeTrades(chunk, config.assetType, chartSymbol),
     }
+    if (bulkImport) {
+      payload.bulkImportPhase = isLastBatch ? "finalize" : "batch"
+    }
     if (i === 0 && options.screenshotJpeg) {
       payload.screenshotJpeg = options.screenshotJpeg
+    }
+    if (typeof options.onBatchProgress === "function") {
+      options.onBatchProgress({
+        batch: Math.floor(i / batchSize) + 1,
+        batches: Math.ceil(trades.length / batchSize),
+        rows: Math.min(i + chunk.length, trades.length),
+        total: trades.length,
+      })
     }
     const result = await JBSync.postJson(`${config.apiUrl}/api/sync/trades`, config.syncToken, payload)
     imported += result.imported || 0

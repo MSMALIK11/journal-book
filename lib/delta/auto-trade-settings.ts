@@ -45,7 +45,8 @@ export const DEFAULT_DELTA_AUTO_TRADE_CONFIG: DeltaAutoTradeConfig = {
   symbols: ["BTCUSD"],
   marginPct: 25,
   attachTvBrackets: true,
-  bracketRiskRewardRatio: 1,
+  /** null = keep TV SL and TP point distances from entry (shifted to Delta fill). */
+  bracketRiskRewardRatio: null,
   closeOnTvExit: true,
 }
 
@@ -97,10 +98,12 @@ function normalizeLeverageBySymbol(value: unknown): DeltaLeverageBySymbol {
   return out
 }
 
-function normalizeBracketRiskRewardRatio(value: unknown): number | null | undefined {
-  if (value === null) return null
+function normalizeBracketRiskRewardRatio(value: unknown): number | null {
+  if (value === null || value === undefined) return null
   const n = Number(value)
   if (!Number.isFinite(n) || n <= 0) return null
+  // Legacy configs stored `1` from the old hidden default (symmetric TP). Use TV TP distances instead.
+  if (n === 1) return null
   return Math.min(10, Math.max(0.25, n))
 }
 

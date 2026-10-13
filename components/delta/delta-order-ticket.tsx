@@ -928,7 +928,7 @@ export function DeltaOrderTicket({
             <div>
               <p className="text-xs font-medium">TV distance SL/TP</p>
               <p className="text-[11px] text-muted-foreground">
-                SL from TV risk, shifted to each account&apos;s Delta fill; TP = same distance (1:1)
+                Same SL/TP point distances as TV (from entry), shifted to each account&apos;s Delta fill price
               </p>
             </div>
             <Switch

@@ -729,141 +729,159 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const fillSideEffects = await dispatchFillSideEffects(
-      auth.userId,
-      fillEvents,
-      bracketLevelUpdates,
-      chartPhoto,
-    )
-    let lastEventId = fillSideEffects.eventId
-    const telegramPrefs = await getTelegramPrefs(auth.userId)
-    const chartPhotoAlertKeys = filterChartPhotoAlertKeys(
-      fillSideEffects.chartPhotoAlertKeys,
-      telegramPrefs,
-    )
+    const isBulkBatch = parsed.data.bulkImportPhase === "batch"
+    let lastEventId: string | undefined
+    let chartPhotoAlertKeys: string[] = []
+    let deduped = 0
+    let closedStale = 0
 
-    const deduped = await dedupeSyncedTradesByExternalId(auth.userId)
-    await healMisclosedSameFillOpens(auth.userId)
-    const duplicateOpens = await closeDuplicateLiveOpens(auth.userId)
-    updated += await dedupeIdenticalLiveOpens(auth.userId)
-    for (const row of duplicateOpens) {
-      const accountId = String(row.accountId)
-      touchedAccounts.add(accountId)
-      if (!byAccount[accountId]) {
-        byAccount[accountId] = { name: "TradingView", imported: 0, updated: 0, skipped: 0 }
-      }
-      byAccount[accountId].updated += 1
-      updated += 1
-    }
-
-    const reversedOpens = await enforceOneLiveOpenPerInstrument(auth.userId)
-    for (const row of reversedOpens) {
-      const accountId = String(row.accountId)
-      touchedAccounts.add(accountId)
-      if (!byAccount[accountId]) {
-        byAccount[accountId] = { name: "TradingView", imported: 0, updated: 0, skipped: 0 }
-      }
-      byAccount[accountId].updated += 1
-      updated += 1
-    }
-
-    const healedReversals = await healWrongReversalCloses(auth.userId)
-    if (healedReversals) updated += healedReversals
-
-    let closedStale = reversedOpens.length + healedReversals
-    const reconcileInstrument =
-      chartSymbolOverride ||
-      parsed.data.reconcileOpens?.instrument ||
-      canonicalInstrumentSymbol(incomingTrades[0]?.instrument || "")
-    const scrapedOpens = reconcileInstrument
-      ? pickTvActiveOpens(
-          incomingTrades.filter(
-            (row) =>
-              canonicalInstrumentSymbol(row.instrument || "") === reconcileInstrument ||
-              row.instrument === reconcileInstrument,
-          ),
-        )
-      : []
-    const activeOpens = mergeActiveOpenHints(scrapedOpens, parsed.data.reconcileOpens)
-    if (reconcileInstrument && activeOpens.length) {
-      closedStale += await reconcileStaleOpenTrades(auth.userId, reconcileInstrument, activeOpens)
-    }
-    const purged = await purgeSupersededOpenTrades(auth.userId)
-    closedStale += purged.deleted
-    updated += purged.deleted
-    const dedupedOpens = await dedupeIdenticalLiveOpens(auth.userId)
-    closedStale += dedupedOpens
-    updated += dedupedOpens
-    const reroutedGold = await rerouteMisroutedGoldFamilies(auth.userId)
-    closedStale += reroutedGold
-    updated += reroutedGold
-    const purgedForeignGold = await purgeNonSpotGoldFromSpotGoldAccounts(auth.userId)
-    closedStale += purgedForeignGold
-    updated += purgedForeignGold
-    for (const touch of purged.touches) {
-      touchedAccounts.add(touch.accountId)
-      if (!byAccount[touch.accountId]) {
-        byAccount[touch.accountId] = { name: "TradingView", imported: 0, updated: 0, skipped: 0 }
-      }
-      byAccount[touch.accountId].updated += 1
-    }
-    await healNotionalTvPnls(auth.userId)
-    await healSignalLevels(auth.userId)
-    const healResult = await healIncompleteTvCloses(auth.userId)
-    closedStale += healResult.healed
-    healResult.touches.push(...purged.touches.map((touch) => ({ ...touch, updated: 1 })))
-    for (const touch of healResult.touches) {
-      touchedAccounts.add(touch.accountId)
-    }
-
-    if (closedStale > 0) {
-      const refreshTargets = new Map<string, { accountId: string; instrument: string; accountName: string; updated: number }>()
-      const symbol = canonicalInstrumentSymbol(
-        parsed.data.reconcileOpens?.instrument || chartSymbolOverride || incomingTrades[0]?.instrument || "",
+    if (!isBulkBatch) {
+      const fillSideEffects = await dispatchFillSideEffects(
+        auth.userId,
+        fillEvents,
+        bracketLevelUpdates,
+        chartPhoto,
       )
-      if (symbol && parsed.data.reconcileOpens) {
-        const account = resolveAccountForInstrument(accounts, symbol)
-        const accountId = String(account._id)
-        refreshTargets.set(accountId, {
-          accountId,
-          instrument: symbol,
-          accountName: account.name,
-          updated: closedStale - healResult.healed,
-        })
+      lastEventId = fillSideEffects.eventId
+      const telegramPrefs = await getTelegramPrefs(auth.userId)
+      chartPhotoAlertKeys = filterChartPhotoAlertKeys(
+        fillSideEffects.chartPhotoAlertKeys,
+        telegramPrefs,
+      )
+
+      deduped = await dedupeSyncedTradesByExternalId(auth.userId)
+      await healMisclosedSameFillOpens(auth.userId)
+      const duplicateOpens = await closeDuplicateLiveOpens(auth.userId)
+      updated += await dedupeIdenticalLiveOpens(auth.userId)
+      for (const row of duplicateOpens) {
+        const accountId = String(row.accountId)
+        touchedAccounts.add(accountId)
+        if (!byAccount[accountId]) {
+          byAccount[accountId] = { name: "TradingView", imported: 0, updated: 0, skipped: 0 }
+        }
+        byAccount[accountId].updated += 1
+        updated += 1
       }
+
+      const reversedOpens = await enforceOneLiveOpenPerInstrument(auth.userId)
+      for (const row of reversedOpens) {
+        const accountId = String(row.accountId)
+        touchedAccounts.add(accountId)
+        if (!byAccount[accountId]) {
+          byAccount[accountId] = { name: "TradingView", imported: 0, updated: 0, skipped: 0 }
+        }
+        byAccount[accountId].updated += 1
+        updated += 1
+      }
+
+      const healedReversals = await healWrongReversalCloses(auth.userId)
+      if (healedReversals) updated += healedReversals
+
+      closedStale = reversedOpens.length + healedReversals
+      const reconcileInstrument =
+        chartSymbolOverride ||
+        parsed.data.reconcileOpens?.instrument ||
+        canonicalInstrumentSymbol(incomingTrades[0]?.instrument || "")
+      const scrapedOpens = reconcileInstrument
+        ? pickTvActiveOpens(
+            incomingTrades.filter(
+              (row) =>
+                canonicalInstrumentSymbol(row.instrument || "") === reconcileInstrument ||
+                row.instrument === reconcileInstrument,
+            ),
+          )
+        : []
+      const activeOpens = mergeActiveOpenHints(scrapedOpens, parsed.data.reconcileOpens)
+      if (reconcileInstrument && activeOpens.length) {
+        closedStale += await reconcileStaleOpenTrades(auth.userId, reconcileInstrument, activeOpens)
+      }
+      const purged = await purgeSupersededOpenTrades(
+        auth.userId,
+        chartSymbolOverride || reconcileInstrument || undefined,
+      )
+      closedStale += purged.deleted
+      updated += purged.deleted
+      const dedupedOpens = await dedupeIdenticalLiveOpens(auth.userId)
+      closedStale += dedupedOpens
+      updated += dedupedOpens
+      const reroutedGold = await rerouteMisroutedGoldFamilies(auth.userId)
+      closedStale += reroutedGold
+      updated += reroutedGold
+      const purgedForeignGold = await purgeNonSpotGoldFromSpotGoldAccounts(auth.userId)
+      closedStale += purgedForeignGold
+      updated += purgedForeignGold
+      for (const touch of purged.touches) {
+        touchedAccounts.add(touch.accountId)
+        if (!byAccount[touch.accountId]) {
+          byAccount[touch.accountId] = { name: "TradingView", imported: 0, updated: 0, skipped: 0 }
+        }
+        byAccount[touch.accountId].updated += 1
+      }
+      await healNotionalTvPnls(auth.userId)
+      await healSignalLevels(auth.userId)
+      const healResult = await healIncompleteTvCloses(auth.userId)
+      closedStale += healResult.healed
+      healResult.touches.push(...purged.touches.map((touch) => ({ ...touch, updated: 1 })))
       for (const touch of healResult.touches) {
-        const existing = refreshTargets.get(touch.accountId)
-        if (existing) {
-          existing.updated += touch.updated
-          continue
-        }
-        const account = resolveAccountForInstrument(accounts, touch.instrument)
-        refreshTargets.set(touch.accountId, {
-          accountId: touch.accountId,
-          instrument: touch.instrument,
-          accountName: account.name,
-          updated: touch.updated,
-        })
+        touchedAccounts.add(touch.accountId)
       }
-      for (const target of refreshTargets.values()) {
-        if (!byAccount[target.accountId]) {
-          byAccount[target.accountId] = {
-            name: target.accountName,
-            imported: 0,
-            updated: 0,
-            skipped: 0,
-          }
+
+      if (closedStale > 0) {
+        const refreshTargets = new Map<
+          string,
+          { accountId: string; instrument: string; accountName: string; updated: number }
+        >()
+        const symbol = canonicalInstrumentSymbol(
+          parsed.data.reconcileOpens?.instrument || chartSymbolOverride || incomingTrades[0]?.instrument || "",
+        )
+        if (symbol && parsed.data.reconcileOpens) {
+          const account = resolveAccountForInstrument(accounts, symbol)
+          const accountId = String(account._id)
+          refreshTargets.set(accountId, {
+            accountId,
+            instrument: symbol,
+            accountName: account.name,
+            updated: closedStale - healResult.healed,
+          })
         }
-        byAccount[target.accountId].updated += target.updated
-        updated += target.updated
+        for (const touch of healResult.touches) {
+          const existing = refreshTargets.get(touch.accountId)
+          if (existing) {
+            existing.updated += touch.updated
+            continue
+          }
+          const account = resolveAccountForInstrument(accounts, touch.instrument)
+          refreshTargets.set(touch.accountId, {
+            accountId: touch.accountId,
+            instrument: touch.instrument,
+            accountName: account.name,
+            updated: touch.updated,
+          })
+        }
+        for (const target of refreshTargets.values()) {
+          if (!byAccount[target.accountId]) {
+            byAccount[target.accountId] = {
+              name: target.accountName,
+              imported: 0,
+              updated: 0,
+              skipped: 0,
+            }
+          }
+          byAccount[target.accountId].updated += target.updated
+          updated += target.updated
+        }
       }
     }
 
-    const { moved: reassigned, accountIds: reassignedAccountIds } = await reconcileTradeAccounts(
-      auth.userId,
-    )
-    for (const accountId of reassignedAccountIds) {
-      touchedAccounts.add(accountId)
+    let reassigned = 0
+    const reassignedAccountIds: string[] = []
+    if (!isBulkBatch) {
+      const reconcileResult = await reconcileTradeAccounts(auth.userId)
+      reassigned = reconcileResult.moved
+      reassignedAccountIds.push(...reconcileResult.accountIds)
+      for (const accountId of reassignedAccountIds) {
+        touchedAccounts.add(accountId)
+      }
     }
 
     if (newAccounts.length) {
