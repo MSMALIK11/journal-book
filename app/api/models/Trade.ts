@@ -35,6 +35,8 @@ export interface ITrade {
   tv_scraped_profit?: number
   tv_scraped_return_pct?: number
   strategy?: string
+  /** TV chart resolution when this row was synced (5, 15, 60, D, …). */
+  chart_interval?: string
   emotion_tag?: string
   confidence_rating?: number
   followed_plan?: boolean
@@ -166,6 +168,10 @@ const TradeSchema = new mongoose.Schema<ITrade>(
     },
     strategy: {
       type: String,
+    },
+    chart_interval: {
+      type: String,
+      maxlength: 16,
     },
     emotion_tag: {
       type: String,

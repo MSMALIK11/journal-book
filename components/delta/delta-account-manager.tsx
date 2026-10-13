@@ -22,7 +22,9 @@ import {
   isLowMargin,
   type DeltaAccountMarginEntry,
 } from "@/components/delta/use-delta-account-margins"
-import { deltaApiPath } from "@/components/delta/delta-shared"
+import { deltaApiPath, formatSignedUsd, pnlClassName } from "@/components/delta/delta-shared"
+import { activityForAccount } from "@/lib/delta/account-activity-lookup"
+import type { DeltaAccountActivityRow } from "@/lib/delta/account-activity"
 import { authFetch } from "@/lib/client-auth"
 import { useToast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
@@ -37,6 +39,8 @@ type DeltaAccountManagerProps = {
   busy: string | null
   onBusyChange: (busy: string | null) => void
   marginEntries?: Record<string, DeltaAccountMarginEntry>
+  accountActivity?: DeltaAccountActivityRow[]
+  onViewAccountTrades?: () => void
   onAccountsChange: (accounts?: DeltaAccount[]) => void
   addModalOpen: boolean
   onAddModalOpenChange: (open: boolean) => void
@@ -50,6 +54,8 @@ export function DeltaAccountManager({
   busy,
   onBusyChange,
   marginEntries,
+  accountActivity,
+  onViewAccountTrades,
   onAccountsChange,
   addModalOpen,
   onAddModalOpenChange,
@@ -236,12 +242,14 @@ export function DeltaAccountManager({
 
       {accounts.length > 0 ? (
         <div className="grid gap-3 sm:grid-cols-2">
-          {accounts.map((account) => (
+          {accounts.map((account) => {
+            const activity = activityForAccount(accountActivity, account.id)
+            return (
             <div
               key={account.id}
               className={cn(
                 "group rounded-xl border bg-[#0c0d12] p-4 transition-colors hover:border-violet-400/30",
-                account.enabled ? "border-border/60" : "border-border/40 opacity-80",
+                activity?.hasOpenPosition ? "border-emerald-400/25" : account.enabled ? "border-border/60" : "border-border/40 opacity-80",
               )}
             >
               <div className="flex items-start justify-between gap-3">
@@ -325,6 +333,32 @@ export function DeltaAccountManager({
                       </p>
                     )
                   })() : null}
+                  {activity ? (
+                    <button
+                      type="button"
+                      onClick={() => onViewAccountTrades?.()}
+                      className={cn(
+                        "mt-1 w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-muted/20",
+                        activity.hasOpenPosition ? "border-emerald-400/25 bg-emerald-500/5" : "border-border/50",
+                      )}
+                    >
+                      {activity.hasOpenPosition ? (
+                        <>
+                          <span className="font-medium text-emerald-400">Active trade</span>
+                          {activity.positions.map((p) => (
+                            <span key={`${p.symbol}-${p.side}`} className="ml-1.5 text-muted-foreground">
+                              {p.symbol} {p.side} ·{" "}
+                              <span className={pnlClassName(p.unrealizedPnl)}>
+                                {formatSignedUsd(p.unrealizedPnl)}
+                              </span>
+                            </span>
+                          ))}
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">No open position · view history in By account</span>
+                      )}
+                    </button>
+                  ) : null}
                   <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                     <Badge
                       variant="outline"
@@ -396,7 +430,8 @@ export function DeltaAccountManager({
                 </Button>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       ) : (
         <div className="rounded-xl border border-dashed border-border/60 bg-[#0c0d12]/50 px-6 py-10 text-center">

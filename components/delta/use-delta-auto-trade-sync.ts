@@ -166,7 +166,9 @@ export function useDeltaAutoTradeSync({
       return
     }
     const timer = window.setTimeout(() => {
-      void patchSettingsRef.current({}).catch(() => undefined)
+      void patchSettingsRef.current({}).catch((error) => {
+        console.error("Auto-trade settings sync failed:", error)
+      })
     }, 400)
     return () => window.clearTimeout(timer)
   }, [attachTvBrackets, closeOnTvExit, enabled, persistReady, tradeMode, singleAccountId, broadcastKey, ticketSymbol])

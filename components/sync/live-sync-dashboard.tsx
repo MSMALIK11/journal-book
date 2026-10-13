@@ -56,6 +56,7 @@ import {
 } from "@/lib/live-sync-settings"
 import { resolveClosedTradeMetrics } from "@/lib/trading/close-pnl"
 import type { TradeListSummary } from "@/lib/trading/trade-list-summary"
+import { formatChartIntervalLabel } from "@/lib/trading/chart-interval"
 import { formatTradeSignal } from "@/lib/trading/trade-display"
 import { cn } from "@/lib/utils"
 
@@ -77,6 +78,7 @@ type SyncTrade = {
   stop_loss?: number
   target?: number
   strategy?: string
+  chart_interval?: string
   external_id?: string
   is_open?: boolean
 }
@@ -812,7 +814,14 @@ export function LiveSyncDashboard() {
                       highlightTradeId === trade.id && "bg-cyan-400/15 ring-1 ring-inset ring-cyan-400/40",
                     )}
                   >
-                    <TableCell className="font-medium">{trade.instrument}</TableCell>
+                    <TableCell className="font-medium">
+                      <div>{trade.instrument}</div>
+                      {trade.chart_interval ? (
+                        <div className="mt-0.5 text-[10px] font-normal text-muted-foreground">
+                          TF {formatChartIntervalLabel(trade.chart_interval)}
+                        </div>
+                      ) : null}
+                    </TableCell>
                     <TableCell>
                       <Badge
                         variant="outline"

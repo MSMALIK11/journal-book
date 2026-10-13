@@ -8,6 +8,7 @@ const nextConfig = (phase) => {
     // Keep dev and production artifacts isolated so `next build` cannot
     // invalidate CSS or route chunks used by a running dev server.
     distDir: isDevelopment ? ".next-dev" : ".next",
+    serverExternalPackages: ["node-edge-tts", "ws"],
     poweredByHeader: false,
     eslint: {
       ignoreDuringBuilds: true,

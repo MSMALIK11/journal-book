@@ -883,41 +883,52 @@ export function DeltaOrderTicket({
             <p className="text-[11px] text-muted-foreground">
               {autoSizingSummary} ·{" "}
               {tradeMode === "broadcast"
-                ? `${marginReadyCount}/${accountIds.length} account(s) ready`
-                : targetLabels[0] ?? "selected account"}
+                ? `TV → ${targetLabels.join(", ") || "no accounts selected"} (${marginReadyCount}/${accountIds.length} margin OK)`
+                : `TV → ${targetLabels[0] ?? "pick an account"}`}
             </p>
           ) : null}
 
           {autoTrade.lastLog ? (
-            <p
-              className="truncate text-[11px] text-muted-foreground"
-              title={autoTrade.lastLog.error ?? undefined}
-            >
-              Last {autoTrade.lastLog.kind} ·{" "}
-              {[autoTrade.lastLog.symbol, autoTrade.lastLog.lots != null ? `${autoTrade.lastLog.lots} Lot` : null]
-                .filter(Boolean)
-                .join(" ")}
-              {" · "}
-              <span
-                className={cn(
-                  autoTrade.lastLog.status === "success" && "text-emerald-400",
-                  autoTrade.lastLog.status === "failed" && "text-rose-400",
-                  autoTrade.lastLog.status === "partial" && "text-amber-300",
-                )}
-              >
-                {autoTrade.lastLog.status}
-              </span>
-              {autoTrade.formatLogTime(autoTrade.lastLog.createdAt)
-                ? ` · ${autoTrade.formatLogTime(autoTrade.lastLog.createdAt)}`
-                : ""}
-            </p>
+            <div className="space-y-1 text-[11px] text-muted-foreground">
+              <p className="truncate" title={autoTrade.lastLog.error ?? undefined}>
+                Last {autoTrade.lastLog.kind} ·{" "}
+                {[autoTrade.lastLog.symbol, autoTrade.lastLog.lots != null ? `${autoTrade.lastLog.lots} Lot` : null]
+                  .filter(Boolean)
+                  .join(" ")}
+                {" · "}
+                <span
+                  className={cn(
+                    autoTrade.lastLog.status === "success" && "text-emerald-400",
+                    autoTrade.lastLog.status === "failed" && "text-rose-400",
+                    autoTrade.lastLog.status === "partial" && "text-amber-300",
+                  )}
+                >
+                  {autoTrade.lastLog.status}
+                </span>
+                {autoTrade.formatLogTime(autoTrade.lastLog.createdAt)
+                  ? ` · ${autoTrade.formatLogTime(autoTrade.lastLog.createdAt)}`
+                  : ""}
+              </p>
+              {autoTrade.lastLog.accountResults?.length ? (
+                <ul className="space-y-0.5 rounded-md border border-border/40 bg-black/20 px-2 py-1.5">
+                  {autoTrade.lastLog.accountResults.map((row) => (
+                    <li key={row.label} className="flex justify-between gap-2">
+                      <span>{row.label}</span>
+                      <span className={row.ok ? "text-emerald-400" : "text-rose-400"}>
+                        {row.ok ? "OK" : row.error ?? "skipped"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
           ) : null}
 
           <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-2.5 py-2">
             <div>
               <p className="text-xs font-medium">TV distance SL/TP</p>
               <p className="text-[11px] text-muted-foreground">
-                Apply TV point offset from Delta fill price
+                SL from TV risk, shifted to each account&apos;s Delta fill; TP = same distance (1:1)
               </p>
             </div>
             <Switch

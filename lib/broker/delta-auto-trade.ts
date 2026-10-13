@@ -239,6 +239,7 @@ async function resolveOpenBracket(input: {
 
   const productMeta = await getDeltaProductMeta(input.symbol, input.environment)
   const tickSize = getDeltaTickSize(productMeta.raw)
+  const rewardFromStopRisk = input.config.bracketRiskRewardRatio ?? null
   const computed = computeDeltaBracketLevels({
     tradeType: input.fill.trade.trade_type,
     tvEntry: input.fill.trade.entry_price,
@@ -246,6 +247,7 @@ async function resolveOpenBracket(input: {
     tvTp,
     deltaAnchor: input.markPrice,
     tickSize,
+    rewardFromStopRisk,
   })
 
   if (computed.stopLoss == null && computed.takeProfit == null) {
@@ -384,6 +386,7 @@ async function executeAutoTradeOpen(input: {
     tvEntry: input.fill.trade.entry_price,
     tvSl: bracketPlan.tvSl,
     tvTp: bracketPlan.tvTp,
+    rewardFromStopRisk: input.config.bracketRiskRewardRatio ?? null,
   }
 
   await ensureAutoTradeLeverage({
@@ -771,6 +774,7 @@ export async function runDeltaBracketUpdatesForOpenTrades(
         tvTp: update.target,
         deltaAnchor: anchor,
         tickSize,
+        rewardFromStopRisk: config.bracketRiskRewardRatio ?? null,
       })
 
       if (computed.stopLoss == null && computed.takeProfit == null) continue

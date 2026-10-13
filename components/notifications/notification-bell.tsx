@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Bell } from "lucide-react"
+import { Bell, CheckCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -20,11 +20,10 @@ export function NotificationBell() {
   const { activeAccount } = useActiveAccount()
   const { active, history, unreadCount, verdict, isLoading, markRead } = useTradingAlerts()
 
+  // Opening the bell used to mark everything read, which filtered every alert out of
+  // "Now" on the next refresh — alerts vanished the first time you looked at them.
   function handleOpenChange(isOpen: boolean) {
     setOpen(isOpen)
-    if (isOpen && unreadCount > 0) {
-      void markRead({ all: true })
-    }
   }
 
   return (
@@ -40,10 +39,25 @@ export function NotificationBell() {
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-[360px] p-0">
-        <div className="border-b px-4 py-3">
+        <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
           <div>
             <p className="text-sm font-semibold">Alerts</p>
             <p className="text-xs text-muted-foreground">{activeAccount?.name || "Account"}</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            {unreadCount > 0 ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-cyan-200"
+                aria-label="Mark all read"
+                title="Mark all read"
+                onClick={() => void markRead({ all: true })}
+              >
+                <CheckCheck className="h-4 w-4" />
+              </Button>
+            ) : null}
           </div>
         </div>
 

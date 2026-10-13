@@ -4,10 +4,11 @@ import Trade from "@/app/api/models/Trade"
 import { canonicalInstrumentSymbol, resolveAccountForInstrument } from "@/lib/trading/account-match"
 import { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { dropSupersededOpenTradesFromPayload, resolveSyncedInstrument } from "@/lib/trading/price-sanity"
-import { closeDuplicateLiveOpens, enforceOneLiveOpenPerInstrument, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, healWrongReversalCloses, purgeSupersededOpenTrades, reconcileStaleOpenTrades } from "@/lib/trading/reconcile-open-trades"
+import { accountPrimarySymbol, closeDuplicateLiveOpens, dedupeIdenticalLiveOpens, enforceOneLiveOpenPerInstrument, healIncompleteTvCloses, healMisclosedSameFillOpens, healNotionalTvPnls, healSignalLevels, healWrongReversalCloses, purgeNonSpotGoldFromSpotGoldAccounts, purgeSupersededOpenTrades, reconcileStaleOpenTrades, rerouteMisroutedGoldFamilies } from "@/lib/trading/reconcile-open-trades"
+import { isSpotGoldSymbol } from "@/lib/trading/account-match"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
 import { isFlatMtmOpen, isOpenSyncedTrade, isOpenTvTrade, markPaintedOpenTrades, pickTvActiveOpens, type TvActiveOpenHint } from "@/lib/trading/tradingview-open"
-import { dedupeSyncedTradesByExternalId, findExistingSyncedTrade, isOpenCoveredByLaterClose, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
+import { dedupeSyncedTradesByExternalId, findDuplicateLiveOpen, findExistingSyncedTrade, isOpenCoveredByLaterClose, shouldMigrateExternalId } from "@/lib/trading/sync-dedup"
 import { normalizePnlSource } from "@/lib/trading/account-pnl-config"
 import { formatAccount, getUserAccounts, reconcileTradeAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
 import { publishAccountsUpdated, publishTradesUpdated } from "@/lib/sync-events"
@@ -76,6 +77,7 @@ function mergeSyncedTrade(
   existing.instrument = mapped.instrument
   existing.trade_type = mapped.trade_type
   existing.strategy = mapped.strategy
+  if (mapped.chart_interval) existing.chart_interval = mapped.chart_interval
   existing.signal = mapped.signal
 
   if (mapped.exit_date) {
@@ -388,8 +390,9 @@ export async function POST(request: NextRequest) {
     if (parsed.data.trades.length === 0) {
       await healMisclosedSameFillOpens(auth.userId)
       await closeDuplicateLiveOpens(auth.userId)
+      let closedStale = await dedupeIdenticalLiveOpens(auth.userId)
       const reversedOpens = await enforceOneLiveOpenPerInstrument(auth.userId)
-      let closedStale = reversedOpens.length + (await healWrongReversalCloses(auth.userId))
+      closedStale += reversedOpens.length + (await healWrongReversalCloses(auth.userId))
       if (parsed.data.reconcileOpens) {
         closedStale += await reconcileStaleOpenTrades(
           auth.userId,
@@ -399,6 +402,9 @@ export async function POST(request: NextRequest) {
       }
       const purged = await purgeSupersededOpenTrades(auth.userId)
       closedStale += purged.deleted
+      closedStale += await dedupeIdenticalLiveOpens(auth.userId)
+      closedStale += await rerouteMisroutedGoldFamilies(auth.userId)
+      closedStale += await purgeNonSpotGoldFromSpotGoldAccounts(auth.userId)
       await healNotionalTvPnls(auth.userId)
       await healSignalLevels(auth.userId)
       const healResult = await healIncompleteTvCloses(auth.userId)
@@ -448,6 +454,7 @@ export async function POST(request: NextRequest) {
 
     const fillEvents: LiveFillEvent[] = []
     const bracketLevelUpdates: DeltaBracketLevelUpdate[] = []
+    const chartInterval = parsed.data.chartInterval?.trim() || undefined
 
     for (const tvTrade of incomingTrades) {
       const symbol = resolveSyncedInstrument(
@@ -474,6 +481,7 @@ export async function POST(request: NextRequest) {
       const pnlSource = normalizePnlSource(targetAccount.pnlSource)
       const mapped = mapTradingViewTrade({ ...tvTrade, instrument: symbol }, auth.userId, accountId, {
         pnlSource,
+        chartInterval,
       })
       const existing = await findExistingSyncedTrade(
         auth.userId,
@@ -492,11 +500,31 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      if (accountPrimarySymbol(targetAccount) === "XAUUSD" && !isSpotGoldSymbol(mapped.instrument)) {
+        if (existing) {
+          await Trade.deleteOne({ _id: existing._id, userId: auth.userId })
+          updated += 1
+          byAccount[accountId].updated += 1
+        } else {
+          skipped += 1
+          byAccount[accountId].skipped += 1
+        }
+        continue
+      }
+
       if (!existing) {
         if (!mapped.exit_date && (await isOpenCoveredByLaterClose(auth.userId, mapped))) {
           skipped += 1
           byAccount[accountId].skipped += 1
           continue
+        }
+        if (!mapped.exit_date) {
+          const dupeOpen = await findDuplicateLiveOpen(auth.userId, mapped)
+          if (dupeOpen) {
+            skipped += 1
+            byAccount[accountId].skipped += 1
+            continue
+          }
         }
         const created = await Trade.create(mapped)
         imported += 1
@@ -717,6 +745,7 @@ export async function POST(request: NextRequest) {
     const deduped = await dedupeSyncedTradesByExternalId(auth.userId)
     await healMisclosedSameFillOpens(auth.userId)
     const duplicateOpens = await closeDuplicateLiveOpens(auth.userId)
+    updated += await dedupeIdenticalLiveOpens(auth.userId)
     for (const row of duplicateOpens) {
       const accountId = String(row.accountId)
       touchedAccounts.add(accountId)
@@ -762,6 +791,15 @@ export async function POST(request: NextRequest) {
     const purged = await purgeSupersededOpenTrades(auth.userId)
     closedStale += purged.deleted
     updated += purged.deleted
+    const dedupedOpens = await dedupeIdenticalLiveOpens(auth.userId)
+    closedStale += dedupedOpens
+    updated += dedupedOpens
+    const reroutedGold = await rerouteMisroutedGoldFamilies(auth.userId)
+    closedStale += reroutedGold
+    updated += reroutedGold
+    const purgedForeignGold = await purgeNonSpotGoldFromSpotGoldAccounts(auth.userId)
+    closedStale += purgedForeignGold
+    updated += purgedForeignGold
     for (const touch of purged.touches) {
       touchedAccounts.add(touch.accountId)
       if (!byAccount[touch.accountId]) {

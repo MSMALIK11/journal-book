@@ -5,6 +5,7 @@ import connectDB from "@/app/api/db/mongoose"
 import BrokerCredential from "@/app/api/models/BrokerCredential"
 import { getDeltaEnvironmentFromRequest } from "@/lib/broker/delta-api-params"
 import { getBrokerAccountForUser, listDeltaAccounts, deltaCredentialEnvironmentFilter, invalidateBrokerCredentialMigration } from "@/lib/broker/delta-credentials"
+import { appendAccountToAutoTradeBroadcast } from "@/lib/delta/auto-trade-broadcast-sync"
 import { getSession } from "@/lib/session"
 
 const patchSchema = z.object({
@@ -54,11 +55,16 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       doc.isDefault = true
     }
 
+    const wasEnabled = doc.enabled !== false
     if (typeof parsed.data.enabled === "boolean") {
       doc.enabled = parsed.data.enabled
     }
 
     await doc.save()
+
+    if (parsed.data.enabled === true && !wasEnabled) {
+      await appendAccountToAutoTradeBroadcast(session.sub, environment, id)
+    }
     invalidateBrokerCredentialMigration(session.sub)
     const accounts = await listDeltaAccounts(session.sub, environment)
     return NextResponse.json({ accounts })

@@ -47,22 +47,75 @@ export function canonicalInstrumentSymbol(instrument: string): string {
     return "USOIL"
   }
 
+  if (/^XAUTUSDT?(P)?$/i.test(normalized) || normalized === "XAUT") {
+    return "XAUTUSD"
+  }
+
   return normalized
 }
 
+export function isTokenizedGoldSymbol(instrument: string): boolean {
+  const normalized = canonicalInstrumentSymbol(instrument)
+  return normalized === "XAUTUSD" || normalized.startsWith("XAUT")
+}
+
+export function isSpotGoldSymbol(instrument: string): boolean {
+  const normalized = canonicalInstrumentSymbol(instrument)
+  if (isTokenizedGoldSymbol(normalized)) return false
+  return (
+    normalized === "XAUUSD" ||
+    normalized === "XAUUSDT" ||
+    normalized === "XAU" ||
+    normalized === "GOLD"
+  )
+}
+
+/** One canonical ticker per alias family — never merge XAUT (token) with XAUUSD (spot). */
+export function dedupeInstrumentSymbol(instrument: string): string {
+  const normalized = canonicalInstrumentSymbol(instrument)
+  if (!normalized) return normalized
+
+  const entries = Object.entries(SYMBOL_ALIASES).sort((a, b) => b[0].length - a[0].length)
+  for (const [primary, aliases] of entries) {
+    const primaryNorm = canonicalInstrumentSymbol(primary)
+    const family = new Set(
+      [primaryNorm, ...aliases.map((alias) => canonicalInstrumentSymbol(alias))].filter(Boolean),
+    )
+    if (family.has(normalized)) return primaryNorm
+  }
+
+  return normalized
+}
+
+/** All stored tickers equivalent to this instrument (same family only). */
+export function instrumentAliasList(instrument: string): string[] {
+  const normalized = canonicalInstrumentSymbol(instrument)
+  if (!normalized) return []
+
+  const entries = Object.entries(SYMBOL_ALIASES).sort((a, b) => b[0].length - a[0].length)
+  for (const [primary, aliases] of entries) {
+    const primaryNorm = canonicalInstrumentSymbol(primary)
+    const family = new Set(
+      [primaryNorm, ...aliases.map((alias) => canonicalInstrumentSymbol(alias))].filter(Boolean),
+    )
+    if (family.has(normalized)) return [...family]
+  }
+
+  return [normalized]
+}
+
+export function instrumentsShareAliasFamily(a: string, b: string): boolean {
+  return dedupeInstrumentSymbol(a) === dedupeInstrumentSymbol(b)
+}
+
 function symbolMatches(accountSymbol: string, normalizedInstrument: string): boolean {
-  const sym = normalizeSymbol(accountSymbol)
-  if (!sym) return false
-  if (normalizedInstrument === sym) return true
-  if (normalizedInstrument.startsWith(sym) || sym.startsWith(normalizedInstrument)) return true
-  return false
+  return instrumentsShareAliasFamily(accountSymbol, normalizedInstrument)
 }
 
 /** TradingView often uses XAUUSD while accounts are named "Gold". */
 const SYMBOL_ALIASES: Record<string, string[]> = {
-  GOLD: ["GOLD", "XAU", "XAUUSD", "XAUUSDT"],
-  XAU: ["XAU", "XAUUSD", "XAUUSDT", "GOLD"],
   XAUUSD: ["XAUUSD", "XAUUSDT", "XAU", "GOLD"],
+  XAUTUSD: ["XAUTUSD", "XAUTUSDT", "XAUT", "XAUTUSDP"],
   PAXG: ["PAXG", "PAXGUSD", "PAXGUSDT"],
   PAXGUSD: ["PAXGUSD", "PAXGUSDT", "PAXG"],
   PAXGUSDT: ["PAXGUSDT", "PAXGUSD", "PAXG"],

@@ -3,7 +3,13 @@ import "server-only"
 import Trade from "@/app/api/models/Trade"
 import TradingAccount from "@/app/api/models/TradingAccount"
 import { normalizePnlSource } from "@/lib/trading/account-pnl-config"
-import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
+import {
+  canonicalInstrumentSymbol,
+  dedupeInstrumentSymbol,
+  isSpotGoldSymbol,
+  isTokenizedGoldSymbol,
+} from "@/lib/trading/account-match"
+import { getUserAccounts, resolveOrCreateAccountForInstrument } from "@/lib/trading-accounts-server"
 import { sanitizeTvClosedEconomics, shouldTrustTvScrapedProfit } from "@/lib/trading/close-pnl"
 import { extractTradeLevelFields } from "@/lib/trading/signal-levels"
 import { sameEntryPrice } from "@/lib/trading/sync-dedup"
@@ -14,7 +20,7 @@ const ENTRY_MATCH_TOLERANCE_MS = 60_000
 
 const INSTRUMENT_ALIASES: Record<string, string[]> = {
   XAUUSD: ["XAUUSD", "XAUUSDT", "XAU", "GOLD"],
-  GOLD: ["GOLD", "XAUUSD", "XAUUSDT", "XAU"],
+  XAUTUSD: ["XAUTUSD", "XAUTUSDT", "XAUT", "XAUTUSDP"],
   XAGUSD: ["XAGUSD", "XAG", "SILVER"],
   BTCUSDT: ["BTCUSDT", "BTCUSD", "BTC"],
   BTCUSD: ["BTCUSD", "BTCUSDT", "BTC"],
@@ -37,8 +43,50 @@ function instrumentMatchList(instrument: string) {
 }
 
 function tradeSideKey(trade: { instrument?: string; trade_type?: string }) {
-  const symbol = canonicalInstrumentSymbol(trade.instrument || "") || trade.instrument || ""
+  const symbol = dedupeInstrumentSymbol(trade.instrument || "") || trade.instrument || ""
   return `${symbol}:${trade.trade_type}`
+}
+
+function openFillDedupeKey(trade: {
+  instrument?: string
+  trade_type?: string
+  entry_date?: Date
+  entry_price?: number | null
+}) {
+  const symbol = dedupeInstrumentSymbol(trade.instrument || "")
+  const entryMs = trade.entry_date?.getTime?.() ?? new Date(trade.entry_date as Date).getTime()
+  const minuteBucket = Number.isFinite(entryMs) ? Math.floor(entryMs / 60_000) : -1
+  const priceKey =
+    trade.entry_price != null && Number.isFinite(trade.entry_price)
+      ? Math.round(trade.entry_price * 100)
+      : 0
+  return `${symbol}:${trade.trade_type}:${minuteBucket}:${priceKey}`
+}
+
+/** Delete duplicate live rows (same fill scraped twice — often GOLD vs XAUUSD instrument strings). */
+export async function dedupeIdenticalLiveOpens(userId: string) {
+  const opens = await Trade.find({
+    userId,
+    source: "tradingview",
+    $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+  }).sort({ entry_date: -1, updatedAt: -1 })
+
+  const keeperByKey = new Map<string, string>()
+  const toDelete: string[] = []
+
+  for (const trade of opens) {
+    const key = openFillDedupeKey(trade)
+    const keeperId = keeperByKey.get(key)
+    if (!keeperId) {
+      keeperByKey.set(key, String(trade._id))
+      continue
+    }
+    toDelete.push(String(trade._id))
+  }
+
+  if (!toDelete.length) return 0
+  const result = await Trade.deleteMany({ _id: { $in: toDelete }, userId })
+  return result.deletedCount ?? 0
 }
 
 function matchesActiveOpenHint(
@@ -223,8 +271,9 @@ export async function closeDuplicateLiveOpens(userId: string) {
 }
 
 function liveOpenInstrumentKey(trade: { accountId?: unknown; instrument?: string }) {
-  const symbol = canonicalInstrumentSymbol(trade.instrument || "") || String(trade.instrument || "")
-  return `${String(trade.accountId || "")}:${symbol}`
+  const symbol = dedupeInstrumentSymbol(trade.instrument || "") || String(trade.instrument || "")
+  // pyramiding=0 — one live leg per symbol, not per portfolio account
+  return symbol
 }
 
 async function findReversalExitFill(
@@ -243,7 +292,6 @@ async function findReversalExitFill(
   const query: Record<string, unknown> = {
     userId,
     source: "tradingview",
-    accountId: String(staleOpen.accountId || ""),
     trade_type: opposite,
     entry_date: { $gt: staleOpen.entry_date },
   }
@@ -744,6 +792,7 @@ export async function purgeSupersededOpenTrades(userId: string, instrument?: str
     .lean()
 
   const maxClosedExitBySide = new Map<string, number>()
+  const maxClosedEntryBySide = new Map<string, number>()
   for (const trade of trades) {
     if (isOpenSyncedTrade(trade) || !trade.exit_date) continue
     const exitMs = new Date(trade.exit_date).getTime()
@@ -751,14 +800,23 @@ export async function purgeSupersededOpenTrades(userId: string, instrument?: str
     const key = tradeSideKey(trade)
     const prev = maxClosedExitBySide.get(key) ?? -Infinity
     if (exitMs > prev) maxClosedExitBySide.set(key, exitMs)
+
+    const entryMs = trade.entry_date ? new Date(trade.entry_date).getTime() : NaN
+    if (Number.isFinite(entryMs)) {
+      const prevEntry = maxClosedEntryBySide.get(key) ?? -Infinity
+      if (entryMs > prevEntry) maxClosedEntryBySide.set(key, entryMs)
+    }
   }
 
   const stale = trades.filter((trade) => {
     if (!isOpenSyncedTrade(trade)) return false
     const entryMs = trade.entry_date ? new Date(trade.entry_date).getTime() : NaN
     if (!Number.isFinite(entryMs)) return false
-    const maxExit = maxClosedExitBySide.get(tradeSideKey(trade))
-    return maxExit != null && entryMs < maxExit
+    const key = tradeSideKey(trade)
+    const maxExit = maxClosedExitBySide.get(key)
+    if (maxExit != null && entryMs < maxExit) return true
+    const maxClosedEntry = maxClosedEntryBySide.get(key)
+    return maxClosedEntry != null && entryMs < maxClosedEntry
   })
 
   if (!stale.length) return empty
@@ -775,4 +833,81 @@ export async function purgeSupersededOpenTrades(userId: string, instrument?: str
   }
 
   return { deleted: result.deletedCount ?? 0, touches: [...touches.values()] }
+}
+
+export function accountPrimarySymbol(account: { name?: string; symbols?: string[] }) {
+  const fromSymbols = account.symbols?.map((sym) => dedupeInstrumentSymbol(sym)).find(Boolean)
+  if (fromSymbols) return fromSymbols
+  return dedupeInstrumentSymbol(account.name || "")
+}
+
+/** Move XAUT* rows off spot-GOLD / XAUUSD portfolios (and the reverse). */
+export async function rerouteMisroutedGoldFamilies(userId: string) {
+  let accounts = await getUserAccounts(userId)
+  const tvTrades = await Trade.find({ userId, source: "tradingview" }).select(
+    "_id accountId instrument",
+  )
+
+  let moved = 0
+  for (const trade of tvTrades) {
+    const canonical = canonicalInstrumentSymbol(String(trade.instrument || ""))
+    const token = isTokenizedGoldSymbol(canonical)
+    const spot = isSpotGoldSymbol(canonical)
+    if (!token && !spot) continue
+
+    const account = accounts.find((row) => String(row._id) === String(trade.accountId))
+    if (!account) continue
+
+    const accountFamily = accountPrimarySymbol(account)
+    const tradeFamily = dedupeInstrumentSymbol(canonical)
+    if (accountFamily === tradeFamily) {
+      if (trade.instrument !== canonical) {
+        trade.instrument = canonical
+        await trade.save()
+      }
+      continue
+    }
+
+    // Token gold on spot-GOLD portfolio — hard delete (user journal is XAUUSD-only there).
+    if (token && accountFamily === "XAUUSD") {
+      await Trade.deleteOne({ _id: trade._id, userId })
+      moved += 1
+      continue
+    }
+
+    if (spot && accountFamily === "XAUTUSD") {
+      const resolved = await resolveOrCreateAccountForInstrument(userId, canonical, accounts)
+      accounts = resolved.accounts
+      trade.accountId = String(resolved.account._id)
+      trade.instrument = canonical
+      await trade.save()
+      moved += 1
+    }
+  }
+
+  return moved
+}
+
+/** GOLD / XAUUSD portfolios — delete anything that is not spot gold (XAUT*, BTC, etc.). */
+export async function purgeNonSpotGoldFromSpotGoldAccounts(userId: string) {
+  const accounts = await getUserAccounts(userId)
+  const spotAccountIds = accounts
+    .filter((account) => accountPrimarySymbol(account) === "XAUUSD")
+    .map((account) => String(account._id))
+
+  if (!spotAccountIds.length) return 0
+
+  const rows = await Trade.find({
+    userId,
+    accountId: { $in: spotAccountIds },
+  }).select("_id instrument")
+
+  const deleteIds = rows
+    .filter((trade) => !isSpotGoldSymbol(String(trade.instrument || "")))
+    .map((trade) => trade._id)
+
+  if (!deleteIds.length) return 0
+
+  const result = await Trade.deleteMany({ _id: { $in: deleteIds }, userId })
+  return result.deletedCount ?? 0
 }

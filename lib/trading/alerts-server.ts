@@ -36,10 +36,11 @@ import { buildTradeMomentAdvice } from "@/lib/trading/trade-moment-advice"
 import { FRESH_FILL_MS } from "@/lib/trading/live-fill-alerts"
 import { resolveTradeLevels } from "@/lib/trading/signal-levels"
 
-export const ALERT_RETENTION_DAYS = 2
+/** Alerts live for a day, then delete themselves on the next read. */
+export const ALERT_RETENTION_HOURS = 24
 
 export function getAlertRetentionCutoff(now = new Date()): Date {
-  return new Date(now.getTime() - ALERT_RETENTION_DAYS * 86_400_000)
+  return new Date(now.getTime() - ALERT_RETENTION_HOURS * 3_600_000)
 }
 
 export async function pruneOldAlerts(userId: string) {
@@ -643,7 +644,13 @@ export async function markAlertsRead(
   let changed = false
 
   if (options.all) {
-    const result = await TradingAlert.updateMany({ userId, read: false }, { $set: { read: true } })
+    // Scoped to the account the bell is showing (plus the shared Delta streams,
+    // which surface in every bell) — otherwise one glance marks every account read.
+    const scopeIds = [accountId, DELTA_DEMO_ALERT_ACCOUNT, DELTA_LIVE_ALERT_ACCOUNT]
+    const result = await TradingAlert.updateMany(
+      { userId, accountId: { $in: scopeIds }, read: false },
+      { $set: { read: true } },
+    )
     changed = (result.modifiedCount ?? 0) > 0
   } else if (options.ids?.length) {
     const result = await TradingAlert.updateMany(

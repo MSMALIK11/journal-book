@@ -1,4 +1,5 @@
 import Trade from "@/app/api/models/Trade"
+import { dedupeInstrumentSymbol, instrumentAliasList } from "@/lib/trading/account-match"
 import type { mapTradingViewTrade } from "@/lib/trading/tradingview-mapper"
 import { buildLegacyExternalId } from "@/lib/validations/tradingview-sync"
 
@@ -146,21 +147,55 @@ export async function findExistingSyncedTrade(
   return null
 }
 
+function instrumentQuerySymbols(instrument: string) {
+  const aliases = instrumentAliasList(instrument)
+  if (aliases.length) return aliases
+  const normalized = instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+  return [...new Set([normalized, instrument].filter(Boolean))]
+}
+
 /** Incoming Open that started before a later same-side exit is a capture ghost — do not insert. */
 export async function isOpenCoveredByLaterClose(userId: string, mapped: MappedTrade) {
   if (mapped.exit_date) return false
   const entryMs = mapped.entry_date?.getTime?.() ?? NaN
   if (!Number.isFinite(entryMs)) return false
 
+  const symbols = instrumentQuerySymbols(mapped.instrument)
   const covering = await Trade.findOne({
     userId,
     source: "tradingview",
-    instrument: mapped.instrument,
+    instrument: symbols.length > 1 ? { $in: symbols } : mapped.instrument,
     trade_type: mapped.trade_type,
-    exit_date: { $gt: mapped.entry_date },
+    $or: [
+      { exit_date: { $gt: mapped.entry_date } },
+      { exit_date: { $exists: true, $ne: null }, entry_date: { $gt: mapped.entry_date } },
+    ],
   }).select("_id")
 
   return Boolean(covering)
+}
+
+export async function findDuplicateLiveOpen(userId: string, mapped: MappedTrade) {
+  if (mapped.exit_date) return null
+  const symbols = instrumentQuerySymbols(mapped.instrument)
+  const entryMs = mapped.entry_date.getTime()
+  const candidates = await Trade.find({
+    userId,
+    source: "tradingview",
+    instrument: symbols.length > 1 ? { $in: symbols } : mapped.instrument,
+    trade_type: mapped.trade_type,
+    $or: [{ exit_date: null }, { exit_date: { $exists: false } }],
+    entry_date: {
+      $gte: new Date(entryMs - ENTRY_MATCH_TOLERANCE_MS),
+      $lte: new Date(entryMs + ENTRY_MATCH_TOLERANCE_MS),
+    },
+  }).limit(4)
+
+  return (
+    candidates.find((row) => sameEntryPrice(row.entry_price, mapped.entry_price)) ||
+    candidates[0] ||
+    null
+  )
 }
 
 /** A new TV Open must not reuse a different closed row — that counts as update and skips the alarm. */

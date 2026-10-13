@@ -24,6 +24,11 @@ import {
   zoneOverallHeadline,
   type ZoneThresholds,
 } from "@/lib/trading/trade-zones"
+import {
+  digestBestHourLine,
+  digestWorstHourLine,
+  hourEdgeFact,
+} from "@/lib/trading/alert-edge-facts"
 
 export type AlertSeverity = "danger" | "warning" | "success" | "info"
 export type AlertCategory =
@@ -60,6 +65,8 @@ export type AlertContext = {
   instrument?: string
   zone?: string
   telegramSentAt?: string
+  /** Analytics-derived time-edge sentence, e.g. "16:00 is your strongest hour — 80% wins across 15 trades." */
+  edgeFact?: string
   source?: string
   environment?: string
   accountLabel?: string
@@ -451,16 +458,17 @@ function evaluateResearchAndAnalyticsAlerts(
   const hourStr = String(hour)
   const avoidHour = findAvoidMatch(analytics.avoid.hours, hourStr)
   if (avoidHour) {
+    const fact = hourEdgeFact(avoidHour, analytics, "worst")
     alerts.push(
       withPriority({
         key: `analytics_avoid:hour:${hourStr}:${dateKey}`,
         category: "analytics_avoid",
         severity: "warning",
         title: `Wait — ${avoidHour.label} loses you money`,
-        message: avoidHour.reason,
+        message: fact?.sentence ?? avoidHour.reason,
         metric: formatMetric(avoidHour),
         action: "Consider skipping this hour",
-        context: { ...baseContext, hour, zone: "red" },
+        context: { ...baseContext, hour, zone: "red", ...(fact ? { edgeFact: fact.sentence } : {}) },
       }),
     )
   }
@@ -483,16 +491,17 @@ function evaluateResearchAndAnalyticsAlerts(
 
   const bestHour = analytics.avoid.bestHours.find((b) => b.key === hourStr)
   if (bestHour) {
+    const fact = hourEdgeFact(bestHour, analytics, "best")
     alerts.push(
       withPriority({
         key: `analytics_best:hour:${hourStr}:${dateKey}`,
         category: "analytics_best",
         severity: "success",
         title: `Good hour — ${bestHour.label} is strong`,
-        message: bestHour.reason,
+        message: fact?.sentence ?? bestHour.reason,
         metric: formatMetric(bestHour),
         action: "Trade your usual setup",
-        context: { ...baseContext, hour, zone: "green" },
+        context: { ...baseContext, hour, zone: "green", ...(fact ? { edgeFact: fact.sentence } : {}) },
       }),
     )
   }
@@ -1232,6 +1241,12 @@ export function buildDailyDigest(
     )
   }
 
+  // Hours were never in the digest — the day/week/month view only had sessions.
+  const bestHourLine = digestBestHourLine(analytics)
+  const worstHourLine = digestWorstHourLine(analytics)
+  if (bestHourLine) parts.push(bestHourLine)
+  if (worstHourLine) parts.push(worstHourLine)
+
   const keySessions = ["LondonOpen", "NewYorkOpen", "LondonNyOverlap"] as const
   const keyStatus = keySessions
     .map((key) => {
@@ -1269,7 +1284,10 @@ export function buildDailyDigest(
 
   const streak = analytics.records.currentStreak
   if (streak.count > 0 && streak.type !== "none") {
-    parts.push(`${streak.count} ${streak.type}${streak.count > 1 ? "s" : ""} in a row.`)
+    // "loss" + "s" reads "losss" — and the voice layer spells exactly what it is given.
+    const plural =
+      streak.count > 1 ? (streak.type === "loss" ? "losses" : "wins") : streak.type
+    parts.push(`${streak.count} ${plural} in a row.`)
   }
 
   const planParts: string[] = []

@@ -34,6 +34,7 @@ type DeltaAccountSelectorProps = {
   onSingleAccountChange: (accountId: string | null) => void
   onBroadcastAccountIdsChange: (ids: string[]) => void
   skipLocalHydrate?: boolean
+  settingsSyncing?: boolean
 }
 
 export function loadDeltaTradeMode(environment: DeltaEnvironment): DeltaTradeMode {
@@ -73,6 +74,7 @@ export function DeltaAccountSelector({
   onSingleAccountChange,
   onBroadcastAccountIdsChange,
   skipLocalHydrate = false,
+  settingsSyncing = false,
 }: DeltaAccountSelectorProps) {
   const { toast } = useToast()
   const [initialized, setInitialized] = useState(false)
@@ -207,14 +209,37 @@ export function DeltaAccountSelector({
       )}
 
       {mode === "broadcast" ? (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] text-muted-foreground">
+              {settingsSyncing ? "Saving to server… · " : null}
+              Manual + TV auto-trade on{" "}
+              <Badge variant="outline" className="mx-0.5 border-violet-400/40 text-violet-300">
+                {broadcastAccountIds.length}
+              </Badge>{" "}
+              account(s)
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 px-2 text-[11px]"
+              onClick={() => onBroadcastAccountIdsChange(accounts.map((a) => a.id))}
+            >
+              All enabled
+            </Button>
+          </div>
+          {accounts.some((a) => !broadcastAccountIds.includes(a.id)) ? (
+            <p className="text-[11px] text-amber-300/90">
+              Unchecked accounts (e.g. new ones) will not get TV auto-trades — tap All enabled or select them.
+            </p>
+          ) : null}
+        </div>
+      ) : (
         <p className="text-[11px] text-muted-foreground">
-          Long/Short will place the same market order on{" "}
-          <Badge variant="outline" className="mx-0.5 border-violet-400/40 text-violet-300">
-            {broadcastAccountIds.length}
-          </Badge>{" "}
-          selected account(s). Each account uses its own margin.
+          Single mode: only the selected account receives manual orders and TV auto-trades.
         </p>
-      ) : null}
+      )}
     </div>
   )
 }

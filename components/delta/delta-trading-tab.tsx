@@ -38,6 +38,7 @@ type DeltaTradingTabProps = {
   marginReadyCount?: number
   onRefreshMargins?: () => void
   persistReady?: boolean
+  routingSyncing?: boolean
 }
 
 function KpiCard({ label, value, sub, valueClass }: { label: string; value: string; sub?: string; valueClass?: string }) {
@@ -76,6 +77,7 @@ export function DeltaTradingTab({
   marginReadyCount = 0,
   onRefreshMargins,
   persistReady = true,
+  routingSyncing = false,
 }: DeltaTradingTabProps) {
   const targetLabels = useMemo(() => {
     if (tradeMode === "broadcast") {
@@ -163,6 +165,7 @@ export function DeltaTradingTab({
               onSingleAccountChange={onSingleAccountChange}
               onBroadcastAccountIdsChange={onBroadcastAccountIdsChange}
               skipLocalHydrate={persistReady}
+              settingsSyncing={routingSyncing}
             />
             <div className="grid gap-2">
               <Label>Symbol</Label>

@@ -101,6 +101,25 @@
       close to TV fill time. While a trade is open, the extension also checks every 2 seconds for exits.
     </p>
 
+    <label for="chartIntervalLock">Chart interval lock (optional)</label>
+    <select id="chartIntervalLock">
+      <option value="">Any timeframe — sync whatever chart is open</option>
+      <option value="1">1 minute</option>
+      <option value="3">3 minutes</option>
+      <option value="5">5 minutes</option>
+      <option value="15">15 minutes</option>
+      <option value="30">30 minutes</option>
+      <option value="45">45 minutes</option>
+      <option value="60">1 hour</option>
+      <option value="120">2 hours</option>
+      <option value="240">4 hours</option>
+      <option value="D">1 day</option>
+    </select>
+    <p class="hint">
+      When set, the extension skips sync if your TV chart is on a different timeframe — stops wrong-interval
+      Strategy Tester rows from landing in the journal when you flip charts.
+    </p>
+
     <div class="checkbox-row">
       <input id="autoSyncTrades" type="checkbox" />
       <label for="autoSyncTrades" style="margin: 0">Auto-sync new trades (instant + poll backup)</label>

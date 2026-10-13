@@ -21,6 +21,11 @@ export type DeltaBracketLevelsInput = {
   tvTp?: number | null
   deltaAnchor: number
   tickSize?: number
+  /**
+   * When set (> 0), take-profit distance = stop-loss distance × this ratio (1 = 1:1).
+   * TV TP price is ignored — use when Pine R:R is symmetric but alert TP/entry drift.
+   */
+  rewardFromStopRisk?: number | null
 }
 
 export type DeltaBracketLevelsResult = {
@@ -100,6 +105,32 @@ export function computeDeltaBracketLevels(input: DeltaBracketLevelsInput): Delta
           takeProfit = undefined
           tpDistance = undefined
         }
+      }
+    }
+  }
+
+  const rewardRatio =
+    typeof input.rewardFromStopRisk === "number" &&
+    Number.isFinite(input.rewardFromStopRisk) &&
+    input.rewardFromStopRisk > 0
+      ? input.rewardFromStopRisk
+      : null
+
+  if (rewardRatio != null && slDistance != null && slDistance > 0) {
+    tpDistance = slDistance * rewardRatio
+    if (side === "long") {
+      takeProfit = roundToTick(deltaAnchor + tpDistance, input.tickSize)
+      if (takeProfit <= deltaAnchor) {
+        skipped.push("tp_below_entry_long_reward")
+        takeProfit = undefined
+        tpDistance = undefined
+      }
+    } else {
+      takeProfit = roundToTick(deltaAnchor - tpDistance, input.tickSize)
+      if (takeProfit >= deltaAnchor) {
+        skipped.push("tp_above_entry_short_reward")
+        takeProfit = undefined
+        tpDistance = undefined
       }
     }
   }

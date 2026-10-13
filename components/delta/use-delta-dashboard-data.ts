@@ -9,6 +9,7 @@ import {
   type PositionRow,
 } from "@/components/delta/delta-shared"
 import type { DeltaProductInfo } from "@/lib/broker/delta-product"
+import type { DeltaAccountActivityRow } from "@/lib/delta/account-activity"
 import { authFetch } from "@/lib/client-auth"
 
 /** Product metadata and leverage change rarely — reuse the cached copy this long. */
@@ -28,6 +29,10 @@ type DeltaPositionsResponse = {
 
 type DeltaOrdersResponse = {
   orders: OrderRow[]
+}
+
+type DeltaAccountActivityResponse = {
+  accounts: DeltaAccountActivityRow[]
 }
 
 export type DeltaMarketDataResponse = {
@@ -70,6 +75,10 @@ export function deltaOrdersKey(environment: DeltaEnvironment) {
   return deltaApiPath("/api/delta/orders", environment)
 }
 
+export function deltaAccountActivityKey(environment: DeltaEnvironment) {
+  return deltaApiPath("/api/delta/account-activity", environment)
+}
+
 export function deltaWalletsKey(environment: DeltaEnvironment, accountIds: string[]) {
   if (accountIds.length === 0) return null
   const sorted = [...accountIds].sort().join(",")
@@ -103,6 +112,14 @@ export function useDeltaOrders(environment: DeltaEnvironment, enabled = true) {
   return useSWR<DeltaOrdersResponse>(enabled ? deltaOrdersKey(environment) : null, fetcher, {
     revalidateOnFocus: false,
   })
+}
+
+export function useDeltaAccountActivity(environment: DeltaEnvironment, enabled = true) {
+  return useSWR<DeltaAccountActivityResponse>(
+    enabled ? deltaAccountActivityKey(environment) : null,
+    fetcher,
+    { revalidateOnFocus: false },
+  )
 }
 
 export function useDeltaMarketData(
@@ -149,6 +166,7 @@ export async function refreshDeltaDashboard(
     globalMutate(deltaAccountsKey(environment)),
     globalMutate(deltaPositionsKey(environment)),
     globalMutate(deltaOrdersKey(environment)),
+    globalMutate(deltaAccountActivityKey(environment)),
     accountIds.length > 0 ? globalMutate(deltaWalletsKey(environment, accountIds)) : Promise.resolve(),
   ])
 }

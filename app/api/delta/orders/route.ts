@@ -61,6 +61,7 @@ export async function GET(request: NextRequest) {
         side: order.side,
         size: order.size,
         price: order.price,
+        source: order.source === "auto" ? "auto" : "manual",
         createdAt: order.createdAt,
       })),
     })

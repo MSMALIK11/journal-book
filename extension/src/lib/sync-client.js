@@ -609,6 +609,58 @@ JBSync.readChartSymbolFromTab = async function readChartSymbolFromTab(tab) {
   return JBSync.symbolFromTabUrl(tab.url)
 }
 
+JBSync.normalizeChartInterval = function normalizeChartInterval(value) {
+  const raw = String(value || "").trim()
+  if (!raw) return ""
+  const upper = raw.toUpperCase()
+  if (/^\d+$/.test(upper)) return String(Number.parseInt(upper, 10))
+  if (upper === "D" || upper === "1D") return "D"
+  if (upper === "W" || upper === "1W") return "W"
+  if (upper === "M" || upper === "1M" || upper === "MO") return "M"
+  const suffixed = upper.match(/^(\d+)(S|H|D|W|M)$/)
+  if (suffixed) {
+    const n = Number.parseInt(suffixed[1], 10)
+    const unit = suffixed[2]
+    if (unit === "S") return String(n)
+    if (unit === "H") return String(n * 60)
+    if (unit === "D") return "D"
+    if (unit === "W") return "W"
+    if (unit === "M") return "M"
+  }
+  return upper.slice(0, 16)
+}
+
+JBSync.readChartIntervalFromTab = async function readChartIntervalFromTab(tab) {
+  if (!tab?.id) return ""
+  try {
+    const injections = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
+      world: "MAIN",
+      func: () => {
+        try {
+          const chart = window.tvWidget?.activeChart?.()
+          const res = chart?.resolution?.()
+          if (res) return String(res)
+        } catch {
+          // ignore
+        }
+        const title = document.title || ""
+        const m = title.match(/,\s*(\d{1,4})\s*[·,|]/i) || title.match(/\b(\d{1,4})\s*(?:min|m)\b/i)
+        if (m) return m[1]
+        if (/\b1D\b/i.test(title)) return "D"
+        return ""
+      },
+    })
+    for (const injection of injections || []) {
+      const normalized = JBSync.normalizeChartInterval(injection?.result || "")
+      if (normalized) return normalized
+    }
+  } catch {
+    // ignore
+  }
+  return ""
+}
+
 const JB_FIAT_CURRENCIES = new Set([
   "USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF",
   "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "TRY", "ZAR",
@@ -636,7 +688,8 @@ JBSync.priceMatchesInstrument = function priceMatchesInstrument(price, symbol) {
     .replace(/[^A-Za-z0-9]/g, "")
     .toUpperCase()
 
-  if (/^(XAU|GOLD)/.test(s)) return price >= 500 && price <= 15000
+  if (/^XAUT/.test(s)) return price >= 500 && price <= 15000
+  if (/^(XAUUSD|XAUUSDT|XAU|GOLD)$/.test(s)) return price >= 500 && price <= 15000
   if (/^(XAG|SILVER)/.test(s)) return price >= 5 && price <= 200
   if (/BTC/.test(s)) return price >= 5000 && price <= 500000
   if (/ETH/.test(s)) return price >= 50 && price <= 50000
@@ -659,18 +712,32 @@ JBSync.priceMatchesInstrument = function priceMatchesInstrument(price, symbol) {
   return true
 }
 
+JBSync.instrumentsSameFamily = function instrumentsSameFamily(a, b) {
+  const left = JBSync.normalizeChartSymbol(a)
+  const right = JBSync.normalizeChartSymbol(b)
+  if (!left || !right) return false
+  if (left === right) return true
+  const spotGold = new Set(["XAUUSD", "XAUUSDT", "XAU", "GOLD"])
+  const tokenGold = new Set(["XAUTUSD", "XAUTUSDT", "XAUT", "XAUTUSDP"])
+  if (spotGold.has(left) && spotGold.has(right)) return true
+  if (tokenGold.has(left) && tokenGold.has(right)) return true
+  const btc = new Set(["BTC", "BTCUSD", "BTCUSDT", "BTCUSDC"])
+  if (btc.has(left) && btc.has(right)) return true
+  const eth = new Set(["ETH", "ETHUSD", "ETHUSDT"])
+  if (eth.has(left) && eth.has(right)) return true
+  return false
+}
+
 JBSync.filterTradesForChart = function filterTradesForChart(trades, chartSymbol) {
   const symbol = JBSync.normalizeChartSymbol(chartSymbol)
   if (!symbol) return trades || []
 
   return (trades || []).filter((trade) => {
     const tradeInst = JBSync.normalizeChartSymbol(trade.instrument)
-    if (tradeInst && tradeInst !== "UNKNOWN" && tradeInst === symbol) return true
-    if (JBSync.priceMatchesInstrument(trade.entry?.price, symbol)) return true
     if (tradeInst && tradeInst !== "UNKNOWN") {
-      return JBSync.priceMatchesInstrument(trade.entry?.price, tradeInst)
+      return JBSync.instrumentsSameFamily(tradeInst, symbol)
     }
-    return false
+    return JBSync.priceMatchesInstrument(trade.entry?.price, symbol)
   })
 }
 
@@ -714,6 +781,10 @@ JBSync.applyChartSymbol = function applyChartSymbol(trades, chartSymbol) {
   }
   const stamp = JBSync.inferChartSymbolFromTrades(filtered.length ? filtered : trades, normalized)
   for (const trade of filtered) {
+    const tradeInst = JBSync.normalizeChartSymbol(trade.instrument)
+    if (tradeInst && tradeInst !== "UNKNOWN" && !JBSync.instrumentsSameFamily(tradeInst, stamp)) {
+      continue
+    }
     if (JBSync.priceMatchesInstrument(trade.entry?.price, stamp)) {
       trade.instrument = stamp
     }
@@ -737,6 +808,7 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
   }
 
   const chartSymbol = JBSync.normalizeChartSymbol(await JBSync.readChartSymbolFromTab(tab))
+  const chartInterval = JBSync.normalizeChartInterval(await JBSync.readChartIntervalFromTab(tab))
 
   if (!chartSymbol) {
     return {
@@ -992,10 +1064,12 @@ JBSync.scrapeFromActiveTab = async function scrapeFromActiveTab(importAll = fals
 
     const result = {
       trades,
+      chartInterval: chartInterval || null,
       strategy: bestGrid?.strategy || "TradingView Strategy",
       instrument: resolvedSymbol || chartSymbol || bestGrid?.instrument || trades[0]?.instrument || "",
       debug: {
         chartSymbol: chartSymbol || null,
+        chartInterval: chartInterval || null,
         resolvedSymbol: resolvedSymbol || null,
         tabId: tab.id,
         tabTitle: tab.title || null,
@@ -1045,6 +1119,7 @@ JBSync.getConfig = async function getConfig() {
     "assetType",
     "pollIntervalSeconds",
     "autoSyncTrades",
+    "chartIntervalLock",
   ])
 
   const pollIntervalSeconds =
@@ -1057,6 +1132,7 @@ JBSync.getConfig = async function getConfig() {
     pollIntervalSeconds: Number.isFinite(pollIntervalSeconds) ? pollIntervalSeconds : 30,
     // Default ON when unset — capture sync always runs; this gates poll backup only.
     autoSyncTrades: stored.autoSyncTrades === undefined ? true : Boolean(stored.autoSyncTrades),
+    chartIntervalLock: JBSync.normalizeChartInterval(stored.chartIntervalLock || ""),
   }
 }
 
@@ -1385,6 +1461,7 @@ JBSync.syncTrades = async function syncTrades(trades, config, chartSymbol, optio
     const chunk = trades.slice(i, i + batchSize)
     const payload = {
       chartSymbol: normalizedChart || undefined,
+      chartInterval: options.chartInterval || undefined,
       trades: JBSync.normalizeTrades(chunk, config.assetType, chartSymbol),
     }
     if (i === 0 && options.screenshotJpeg) {
@@ -1800,10 +1877,14 @@ JBSync.syncCapturedTrades = async function syncCapturedTrades(config, trades, ch
     }
   }
 
+  const chartInterval = JBSync.normalizeChartInterval(
+    options.chartInterval || (await JBSync.readChartIntervalFromTab(tvTab)),
+  )
   const syncResult = await JBSync.syncTrades(newOrUpdated, config, symbol, {
     reconcileFromTrades: stamped,
     reconcile: options.instant !== true,
     screenshotJpeg: null,
+    chartInterval: chartInterval || undefined,
   })
 
   if (options.instant === true) {
@@ -2052,6 +2133,23 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config, options = {}) 
 
   let syncResult = { imported: 0, updated: 0, skipped: 0, deduped: 0, closedStale: 0, byAccount: {} }
 
+  let chartInterval = JBSync.normalizeChartInterval(result?.chartInterval || result?.debug?.chartInterval || "")
+  if (!chartInterval && tab) {
+    chartInterval = JBSync.normalizeChartInterval(await JBSync.readChartIntervalFromTab(tab))
+  }
+  const intervalLock = JBSync.normalizeChartInterval(config.chartIntervalLock || "")
+  if (intervalLock && chartInterval && intervalLock !== chartInterval) {
+    return {
+      imported: 0,
+      updated: 0,
+      skipped: tradesToSync.length,
+      closedStale: 0,
+      byAccount: {},
+      message: `Skipped sync: chart is ${chartInterval}, extension lock is ${intervalLock}`,
+      warning: "Switch to the locked timeframe on TradingView or clear Chart interval lock in extension Options.",
+    }
+  }
+
   if (tradesToSync.length) {
     // Reconcile only when the scrape still sees a live Open. Empty open set
     // must not delete journal Opens (missed Type=Open / light scrape).
@@ -2059,6 +2157,7 @@ JBSync.refreshNewTrades = async function refreshNewTrades(config, options = {}) 
       reconcileFromTrades: result.trades,
       reconcile: scrapedOpens.length > 0,
       screenshotJpeg: null,
+      chartInterval: chartInterval || undefined,
     })
   }
 

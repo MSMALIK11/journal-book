@@ -1,4 +1,4 @@
-const fields = ["apiUrl", "syncToken", "assetType", "pollIntervalSeconds", "autoSyncTrades"]
+const fields = ["apiUrl", "syncToken", "assetType", "pollIntervalSeconds", "autoSyncTrades", "chartIntervalLock"]
 
 function formatPollLabel(seconds) {
   if (seconds <= 0) return null

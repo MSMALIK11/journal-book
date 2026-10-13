@@ -11,9 +11,11 @@ import {
 import {
   createPositionBracketOrder,
   getDeltaProductMeta,
+  getPositions,
   parseAverageFillPrice,
   placeOrder,
 } from "@/lib/broker/delta-exchange"
+import { normalizeDeltaPositions } from "@/lib/broker/delta-positions"
 import {
   computeDeltaBracketLevels,
   type DeltaBracketPrices,
@@ -24,6 +26,7 @@ export type DeltaBracketContext = {
   tvEntry: number
   tvSl?: number
   tvTp?: number
+  rewardFromStopRisk?: number | null
 }
 
 export type DeltaOrderSide = "buy" | "sell"
@@ -129,6 +132,7 @@ function resolveFinalBracket(input: {
       tvTp: input.bracketContext.tvTp,
       deltaAnchor: anchor,
       tickSize: input.tickSize,
+      rewardFromStopRisk: input.bracketContext.rewardFromStopRisk,
     })
     if (recomputed.stopLoss != null || recomputed.takeProfit != null) {
       return { stopLoss: recomputed.stopLoss, takeProfit: recomputed.takeProfit }
@@ -147,6 +151,34 @@ function resolveFinalBracket(input: {
   return input.bracket
 }
 
+async function resolveFillAnchorPrice(input: {
+  creds: { apiKey: string; apiSecret: string }
+  environment: DeltaEnvironment
+  productId: number | null
+  resolvedSymbol: string
+  estimatedAnchor: number
+  raw: unknown
+}): Promise<number> {
+  const fromOrder = parseAverageFillPrice(input.raw)
+  if (fromOrder != null && fromOrder > 0) return fromOrder
+
+  try {
+    const positionsRaw = await getPositions(input.creds, input.environment)
+    const positions = normalizeDeltaPositions(positionsRaw?.result)
+    const symbol = input.resolvedSymbol.toUpperCase()
+    const match =
+      positions.find((p) => p.symbol === symbol) ??
+      (input.productId != null ? positions.find((p) => p.productId === input.productId) : undefined)
+    if (match?.entryPrice != null && match.entryPrice > 0) {
+      return match.entryPrice
+    }
+  } catch {
+    /* position read is best-effort */
+  }
+
+  return input.estimatedAnchor > 0 ? input.estimatedAnchor : 0
+}
+
 async function attachPositionBracketAfterFill(input: {
   creds: { apiKey: string; apiSecret: string }
   environment: DeltaEnvironment
@@ -158,7 +190,14 @@ async function attachPositionBracketAfterFill(input: {
   bracketContext?: DeltaBracketContext
   raw: unknown
 }) {
-  const fillPrice = parseAverageFillPrice(input.raw) ?? input.estimatedAnchor
+  const fillPrice = await resolveFillAnchorPrice({
+    creds: input.creds,
+    environment: input.environment,
+    productId: input.productId,
+    resolvedSymbol: input.resolvedSymbol,
+    estimatedAnchor: input.estimatedAnchor,
+    raw: input.raw,
+  })
   const finalBracket = resolveFinalBracket({
     bracket: input.bracket,
     bracketContext: input.bracketContext,

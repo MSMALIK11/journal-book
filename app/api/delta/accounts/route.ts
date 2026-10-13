@@ -15,6 +15,7 @@ import {
 import { isServerLiveTradingBlocked } from "@/lib/broker/delta-live-guard"
 import { getDeltaOrderMaxSize } from "@/lib/broker/delta-orders"
 import { encryptSecret } from "@/lib/encryption"
+import { appendAccountToAutoTradeBroadcast } from "@/lib/delta/auto-trade-broadcast-sync"
 import { getSession } from "@/lib/session"
 
 const createAccountSchema = z.object({
@@ -134,6 +135,7 @@ export async function POST(request: NextRequest) {
     }
 
     invalidateBrokerCredentialMigration(session.sub)
+    await appendAccountToAutoTradeBroadcast(session.sub, environment, doc._id.toString())
     const accounts = await listDeltaAccounts(session.sub, environment)
     return NextResponse.json({
       account: {

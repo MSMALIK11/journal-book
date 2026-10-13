@@ -1,7 +1,8 @@
 import type { AssetType } from "@/lib/instruments"
 import { ASSET_TYPE_DEFAULTS, getQuantityMode, INSTRUMENTS } from "@/lib/instruments"
 import type { AccountPnlSource } from "@/lib/trading/account-pnl-config"
-import { canonicalInstrumentSymbol } from "@/lib/trading/account-match"
+import { canonicalInstrumentSymbol, dedupeInstrumentSymbol } from "@/lib/trading/account-match"
+import { normalizeChartInterval } from "@/lib/trading/chart-interval"
 import { alignClosedFillPrices, clampTvCryptoQuantity, sanitizeTvClosedEconomics } from "@/lib/trading/close-pnl"
 import { normalizeSignalLabel, parseSignalLevels } from "@/lib/trading/signal-levels"
 import { isOpenTvSignal, isOpenTvTrade } from "@/lib/trading/tradingview-open"
@@ -60,9 +61,11 @@ export function mapTradingViewTrade(
   trade: TradingViewTradeInput,
   userId: string,
   accountId: string,
-  options?: { pnlSource?: AccountPnlSource },
+  options?: { pnlSource?: AccountPnlSource; chartInterval?: string },
 ) {
   const instrument = resolveInstrumentSpec(trade.instrument, trade.assetType)
+  const storedSymbol = dedupeInstrumentSymbol(instrument.symbol) || instrument.symbol
+  const chart_interval = normalizeChartInterval(options?.chartInterval)
   const external_id = buildExternalId(
     trade.strategy,
     trade.instrument,
@@ -142,9 +145,10 @@ export function mapTradingViewTrade(
   return {
     userId,
     accountId,
-    instrument: instrument.symbol,
+    instrument: storedSymbol,
     entry_date,
     exit_date,
+    chart_interval,
     trade_type: tradeType,
     order_type: "Futures" as const,
     entry_price,

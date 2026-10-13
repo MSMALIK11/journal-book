@@ -23,6 +23,10 @@ export type DeltaAutoTradeConfig = {
   leverageBySymbol?: DeltaLeverageBySymbol
   lotSizeBySymbol?: DeltaLotSizeBySymbol
   attachTvBrackets?: boolean
+  /**
+   * TP distance = SL distance × this ratio on Delta fill (1 = 1:1). Null/0 = use TV TP price as-is.
+   */
+  bracketRiskRewardRatio?: number | null
   /** Market-close Delta when TV sends a close fill (in addition to bracket SL/TP). */
   closeOnTvExit?: boolean
 }
@@ -41,6 +45,7 @@ export const DEFAULT_DELTA_AUTO_TRADE_CONFIG: DeltaAutoTradeConfig = {
   symbols: ["BTCUSD"],
   marginPct: 25,
   attachTvBrackets: true,
+  bracketRiskRewardRatio: 1,
   closeOnTvExit: true,
 }
 
@@ -90,6 +95,13 @@ function normalizeLeverageBySymbol(value: unknown): DeltaLeverageBySymbol {
     if (lv != null) out[sym] = lv
   }
   return out
+}
+
+function normalizeBracketRiskRewardRatio(value: unknown): number | null | undefined {
+  if (value === null) return null
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return Math.min(10, Math.max(0.25, n))
 }
 
 function normalizeLotSizeBySymbol(value: unknown): DeltaLotSizeBySymbol {
@@ -144,6 +156,10 @@ export function normalizeDeltaAutoTradeConfig(
     leverageBySymbol: normalizeLeverageBySymbol(input?.leverageBySymbol),
     lotSizeBySymbol: normalizeLotSizeBySymbol(input?.lotSizeBySymbol),
     attachTvBrackets: input?.attachTvBrackets !== false,
+    bracketRiskRewardRatio:
+      input?.bracketRiskRewardRatio === undefined
+        ? DEFAULT_DELTA_AUTO_TRADE_CONFIG.bracketRiskRewardRatio
+        : normalizeBracketRiskRewardRatio(input.bracketRiskRewardRatio),
     closeOnTvExit: input?.closeOnTvExit !== false,
   }
 }

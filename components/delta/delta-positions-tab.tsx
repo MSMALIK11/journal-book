@@ -19,15 +19,17 @@ import { HudPanel, HudPanelHeader } from "@/components/dashboard/hud-panel"
 import type { DeltaTradeMode } from "@/components/delta/delta-account-selector"
 import {
   deltaApiPath,
+  findOpenPositionForOrder,
   formatPrice,
+  formatSignedUsd,
   formatUsd,
-  orderRowPnl,
   pnlClassName,
   type DeltaAccount,
   type DeltaEnvironment,
   type OrderRow,
   type PositionRow,
 } from "@/components/delta/delta-shared"
+import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { authFetch } from "@/lib/client-auth"
 import { useToast } from "@/hooks/use-toast"
@@ -217,7 +219,7 @@ export function DeltaPositionsTab({
               {positions.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
-                    No open positions — place a trade from Configuration
+                    No open positions — open the Configuration tab to place a trade
                   </TableCell>
                 </TableRow>
               ) : (
@@ -231,7 +233,9 @@ export function DeltaPositionsTab({
                     <TableCell>{row.size}</TableCell>
                     <TableCell>{formatPrice(row.entryPrice)}</TableCell>
                     <TableCell>{formatPrice(row.markPrice)}</TableCell>
-                    <TableCell className={pnlClassName(row.unrealizedPnl)}>{formatPrice(row.unrealizedPnl)}</TableCell>
+                    <TableCell className={cn("tabular-nums", pnlClassName(row.unrealizedPnl))}>
+                      {formatSignedUsd(row.unrealizedPnl)}
+                    </TableCell>
                     <TableCell>
                       {isLive ? (
                         <Button
@@ -264,7 +268,10 @@ export function DeltaPositionsTab({
       </HudPanel>
 
       <HudPanel>
-        <HudPanelHeader title="Recent orders" />
+        <HudPanelHeader
+          title="Recent orders"
+          description="Unrealized P&L only on the fill that opened your current position"
+        />
         <div className="overflow-x-auto px-2 pb-4">
           <Table>
             <TableHeader>
@@ -274,20 +281,24 @@ export function DeltaPositionsTab({
                 <TableHead>Symbol</TableHead>
                 <TableHead>Side</TableHead>
                 <TableHead>Size</TableHead>
-                <TableHead>Entry price</TableHead>
-                <TableHead>P&L</TableHead>
+                <TableHead>Fill</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Unrealized</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {orders.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                     No orders yet — your fills will appear here
                   </TableCell>
                 </TableRow>
               ) : (
                 orders.map((row) => {
-                  const pnl = orderRowPnl(row, positions)
+                  const openPosition = findOpenPositionForOrder(row, positions)
+                  const pnl = openPosition?.unrealizedPnl
+                  const isOpenLeg = openPosition != null
                   return (
                     <TableRow key={row.id}>
                       <TableCell className="whitespace-nowrap text-xs">
@@ -299,9 +310,31 @@ export function DeltaPositionsTab({
                         {row.side}
                       </TableCell>
                       <TableCell>{row.size}</TableCell>
-                      <TableCell>{formatPrice(row.price)}</TableCell>
-                      <TableCell className={pnl != null ? pnlClassName(pnl) : "text-muted-foreground"}>
-                        {pnl != null ? formatPrice(pnl) : "—"}
+                      <TableCell className="tabular-nums">{formatPrice(row.price)}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-[10px] font-normal capitalize">
+                          {row.source ?? "manual"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {isOpenLeg ? (
+                          <Badge
+                            variant="outline"
+                            className="border-emerald-400/30 text-[10px] font-normal text-emerald-400"
+                          >
+                            Open leg
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Closed / other</span>
+                        )}
+                      </TableCell>
+                      <TableCell
+                        className={cn(
+                          "text-right tabular-nums",
+                          pnl != null ? pnlClassName(pnl) : "text-muted-foreground",
+                        )}
+                      >
+                        {pnl != null ? formatSignedUsd(pnl) : "—"}
                       </TableCell>
                     </TableRow>
                   )

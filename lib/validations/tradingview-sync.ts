@@ -33,6 +33,8 @@ const reconcileOpenHintSchema = z.object({
 export const tradingViewSyncSchema = z
   .object({
     chartSymbol: z.string().trim().min(1).max(40).optional(),
+    /** Active TV chart resolution when this batch was scraped (5, 15, 60, D, …). */
+    chartInterval: z.string().trim().max(16).optional(),
     trades: z.array(tradingViewTradeSchema).max(10000).default([]),
     /** Currently open trades on TV for this chart — journal opens not in this list are removed. */
     reconcileOpens: z

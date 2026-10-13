@@ -267,12 +267,22 @@ export async function createPositionBracketOrder(
   )
 }
 
+function readPositivePrice(value: unknown): number | undefined {
+  const price = Number(value)
+  return Number.isFinite(price) && price > 0 ? price : undefined
+}
+
 export function parseAverageFillPrice(raw: unknown): number | undefined {
   if (!raw || typeof raw !== "object" || !("result" in raw)) return undefined
   const result = (raw as { result?: unknown }).result
-  if (!result || typeof result !== "object" || !("average_fill_price" in result)) return undefined
-  const price = Number((result as { average_fill_price?: unknown }).average_fill_price)
-  return Number.isFinite(price) && price > 0 ? price : undefined
+  if (!result || typeof result !== "object") return undefined
+  const row = result as Record<string, unknown>
+  return (
+    readPositivePrice(row.average_fill_price) ??
+    readPositivePrice(row.avg_fill_price) ??
+    readPositivePrice(row.execution_price) ??
+    readPositivePrice(row.price)
+  )
 }
 
 export async function closeAllPositions(

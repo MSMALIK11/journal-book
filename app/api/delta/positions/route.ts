@@ -5,7 +5,7 @@ import { getPositions } from "@/lib/broker/delta-exchange"
 import {
   getDeltaCredentialsByAccountId,
   hasEnvDeltaCredentials,
-  listEnabledDeltaAccounts,
+  listDeltaAccounts,
 } from "@/lib/broker/delta-credentials"
 import { normalizeDeltaPositions } from "@/lib/broker/delta-positions"
 import { getSession } from "@/lib/session"
@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    const accounts = await listEnabledDeltaAccounts(session.sub, environment)
+    const accounts = await listDeltaAccounts(session.sub, environment)
     if (accounts.length === 0) {
       return NextResponse.json({ error: "No Delta accounts configured" }, { status: 400 })
     }
@@ -45,7 +45,9 @@ export async function GET(request: NextRequest) {
 
     const settled = await Promise.allSettled(
       targets.map(async (account) => {
-        const resolved = await getDeltaCredentialsByAccountId(session.sub, account.id, environment)
+        const resolved = await getDeltaCredentialsByAccountId(session.sub, account.id, environment, {
+          allowDisabled: true,
+        })
         if (!resolved) throw new Error("missing credentials")
         const response = await getPositions(resolved.creds, environment)
         const positions = normalizeDeltaPositions(response.result).map((p) => ({

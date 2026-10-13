@@ -1,3 +1,4 @@
+import { instrumentsShareAliasFamily } from "@/lib/trading/account-match"
 import { isOpenTvTrade } from "@/lib/trading/tradingview-open"
 import {
   normalizeTradingViewDatetime,
@@ -31,7 +32,8 @@ export function priceMatchesInstrument(price: number | null | undefined, instrum
 
   const s = instrument.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
 
-  if (/^(XAU|GOLD)/.test(s)) return price >= 500 && price <= 15000
+  if (/^XAUT/.test(s)) return price >= 500 && price <= 15000
+  if (/^(XAUUSD|XAUUSDT|XAU|GOLD)$/.test(s)) return price >= 500 && price <= 15000
   if (/PAXG/.test(s)) return price >= 500 && price <= 15000
   if (/^(XAG|SILVER)/.test(s)) return price >= 5 && price <= 200
   if (/BTC/.test(s)) return price >= 5000 && price <= 500000
@@ -70,7 +72,8 @@ export function resolveSyncedInstrument(
 ): string | null {
   const chart = chartSymbol && priceMatchesInstrument(price, chartSymbol) ? chartSymbol : null
   const trade = tradeSymbol && priceMatchesInstrument(price, tradeSymbol) ? tradeSymbol : null
-  // Prefer the trade's own symbol when the chart URL/widget is stale (BTCUSDT vs NIFTY).
+  // Prefer the trade's own symbol when families differ (XAUTUSD vs XAUUSD) or chart is stale.
+  if (trade && chart && !instrumentsShareAliasFamily(trade, chart)) return trade
   if (trade && chart && trade !== chart) return trade
   return trade || chart || null
 }

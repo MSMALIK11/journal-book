@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DeltaIntegrationsTab } from "@/components/delta/delta-integrations-tab"
+import { DeltaPerAccountTrades } from "@/components/delta/delta-per-account-trades"
 import { DeltaPositionsTab } from "@/components/delta/delta-positions-tab"
 import {
   loadDeltaBroadcastAccountIds,
@@ -20,6 +21,7 @@ import { useDeltaAccountMargins } from "@/components/delta/use-delta-account-mar
 import {
   prefetchDeltaMarketData,
   refreshDeltaDashboard,
+  useDeltaAccountActivity,
   useDeltaAccounts,
   useDeltaOrders,
   useDeltaPositions,
@@ -32,6 +34,7 @@ import {
   type DeltaEnvironment,
 } from "@/components/delta/delta-shared"
 import { authFetch } from "@/lib/client-auth"
+import { persistAutoTradeRouting } from "@/lib/delta/persist-auto-trade-client"
 import {
   isDeltaAutoTradeSymbol,
   type DeltaAutoTradeConfig,
@@ -56,6 +59,10 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
   const [userLiveEnabled, setUserLiveEnabled] = useState(false)
   const [liveSettingsLoading, setLiveSettingsLoading] = useState(isLive)
   const syncedAccountsRef = useRef(false)
+  const serverRoutingLoadedRef = useRef(false)
+  const routingPersistTimerRef = useRef<number | null>(null)
+  const skipRoutingPersistRef = useRef(true)
+  const [routingSyncing, setRoutingSyncing] = useState(false)
 
   const {
     data: accountsData,
@@ -73,21 +80,30 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
   const enabledAccounts = useMemo(() => accounts.filter((a) => a.enabled), [accounts])
   const enabledAccountIds = useMemo(() => enabledAccounts.map((a) => a.id), [enabledAccounts])
   const configured = envOverride || enabledAccounts.length > 0
+  /** Load positions/activity for every connected account (even if all are disabled). */
+  const brokerDataReady = envOverride || accounts.length > 0
 
   const {
     data: positionsData,
     isLoading: positionsLoading,
     mutate: mutatePositions,
-  } = useDeltaPositions(environment, configured)
+  } = useDeltaPositions(environment, brokerDataReady)
 
   const {
     data: ordersData,
     isLoading: ordersLoading,
     mutate: mutateOrders,
-  } = useDeltaOrders(environment, configured)
+  } = useDeltaOrders(environment, brokerDataReady)
+
+  const {
+    data: activityData,
+    isLoading: activityLoading,
+    mutate: mutateActivity,
+  } = useDeltaAccountActivity(environment, brokerDataReady)
 
   const positions = positionsData?.positions ?? []
   const orders = ordersData?.orders ?? []
+  const accountActivity = activityData?.accounts ?? []
 
   const accountMargins = useDeltaAccountMargins(environment, enabledAccountIds, {
     enabled: configured && enabledAccountIds.length > 0,
@@ -160,6 +176,8 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
   useEffect(() => {
     let cancelled = false
     syncedAccountsRef.current = false
+    serverRoutingLoadedRef.current = false
+    skipRoutingPersistRef.current = true
     setConfigReady(false)
     void (async () => {
       try {
@@ -168,13 +186,18 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
         if (cancelled) return
         if (response.ok && data.config) {
           const config = data.config as DeltaAutoTradeConfig
+          serverRoutingLoadedRef.current = true
           setTradeMode(config.tradeMode)
           if (isDeltaAutoTradeSymbol(config.symbol) && (DEMO_SYMBOLS as readonly string[]).includes(config.symbol)) {
             setSymbol(config.symbol as (typeof DEMO_SYMBOLS)[number])
           }
           if (config.singleAccountId) setSingleAccountId(config.singleAccountId)
-          if ((config.broadcastAccountIds?.length ?? 0) > 0) {
-            setBroadcastAccountIds(config.broadcastAccountIds ?? [])
+          if (config.tradeMode === "broadcast") {
+            setBroadcastAccountIds(
+              (config.broadcastAccountIds?.length ?? 0) > 0
+                ? config.broadcastAccountIds ?? []
+                : enabledAccounts.map((a) => a.id),
+            )
           }
         } else {
           setTradeMode(loadDeltaTradeMode(environment))
@@ -199,16 +222,61 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
     })
     setBroadcastAccountIds((prev) => {
       const valid = prev.filter((id) => enabledAccounts.some((account) => account.id === id))
+      if (serverRoutingLoadedRef.current) {
+        return valid.length > 0 ? valid : enabledAccounts.map((a) => a.id)
+      }
       if (valid.length > 0) return valid
       return loadDeltaBroadcastAccountIds(enabledAccounts, environment)
     })
   }, [configReady, enabledAccounts, environment])
 
+  useEffect(() => {
+    if (!configReady || !brokerDataReady) return
+    if (skipRoutingPersistRef.current) {
+      skipRoutingPersistRef.current = false
+      return
+    }
+    if (routingPersistTimerRef.current != null) {
+      window.clearTimeout(routingPersistTimerRef.current)
+    }
+    routingPersistTimerRef.current = window.setTimeout(() => {
+      setRoutingSyncing(true)
+      void persistAutoTradeRouting(environment, {
+        tradeMode,
+        singleAccountId,
+        broadcastAccountIds,
+      })
+        .then(() => {
+          serverRoutingLoadedRef.current = true
+        })
+        .catch((error) => {
+          toast({
+            title: "Could not save broadcast settings",
+            description: error instanceof Error ? error.message : "Unknown error",
+            variant: "destructive",
+          })
+        })
+        .finally(() => setRoutingSyncing(false))
+    }, 500)
+    return () => {
+      if (routingPersistTimerRef.current != null) {
+        window.clearTimeout(routingPersistTimerRef.current)
+      }
+    }
+  }, [configReady, brokerDataReady, environment, tradeMode, singleAccountId, broadcastAccountIds, toast])
+
   const tabStorageKey = deltaActiveTabKey(environment)
 
   useEffect(() => {
     const saved = localStorage.getItem(tabStorageKey)
-    if (saved === "integrations" || saved === "trading" || saved === "positions") setActiveTab(saved)
+    if (
+      saved === "integrations" ||
+      saved === "by-account" ||
+      saved === "trading" ||
+      saved === "positions"
+    ) {
+      setActiveTab(saved)
+    }
   }, [tabStorageKey])
 
   useEffect(() => {
@@ -262,6 +330,15 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
     const ids = enabled.map((a) => a.id)
     await refreshDeltaDashboard(environment, ids)
     accountMargins.refresh()
+    try {
+      const response = await authFetch(deltaApiPath("/api/delta/auto-trade-settings", environment))
+      const data = await response.json()
+      if (response.ok && data.config?.tradeMode === "broadcast") {
+        setBroadcastAccountIds(data.config.broadcastAccountIds ?? [])
+      }
+    } catch {
+      /* best-effort sync after account change */
+    }
   }
 
   async function handleOrderPlaced() {
@@ -340,7 +417,7 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             <span className="rounded-md border border-border/60 bg-muted/10 px-2.5 py-1 tabular-nums">
               {maxOrderSize} lot max
             </span>
-            {positionsLoading || ordersLoading ? (
+            {positionsLoading || ordersLoading || activityLoading ? (
               <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Syncing…</span>
             ) : null}
           </div>
@@ -352,7 +429,7 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-6">
-        <TabsList className="inline-flex h-10 w-full max-w-xl rounded-lg border border-border/60 bg-muted/10 p-1">
+        <TabsList className="inline-flex h-10 w-full max-w-3xl flex-wrap gap-1 rounded-lg border border-border/60 bg-muted/10 p-1">
           <TabsTrigger
             value="integrations"
             className="flex-1 rounded-md text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm"
@@ -360,10 +437,21 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             Accounts
           </TabsTrigger>
           <TabsTrigger
+            value="by-account"
+            className="relative flex-1 rounded-md text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm"
+          >
+            By account
+            {accountActivity.some((a) => a.hasOpenPosition) ? (
+              <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-600 px-1 text-[10px] font-medium text-white">
+                {accountActivity.filter((a) => a.hasOpenPosition).length}
+              </span>
+            ) : null}
+          </TabsTrigger>
+          <TabsTrigger
             value="trading"
             className="flex-1 rounded-md text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm"
           >
-            Trade
+            Configuration
           </TabsTrigger>
           <TabsTrigger
             value="positions"
@@ -372,6 +460,18 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             Positions
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="by-account" className="mt-0">
+          <DeltaPerAccountTrades
+            accounts={accountActivity}
+            loading={activityLoading}
+            positionsForPnl={positions}
+            refreshing={activityLoading || positionsLoading}
+            onRefresh={async () => {
+              await Promise.all([mutateActivity(), mutatePositions(), mutateOrders()])
+            }}
+          />
+        </TabsContent>
 
         <TabsContent value="integrations" className="mt-0">
           <DeltaIntegrationsTab
@@ -382,6 +482,8 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             busy={busy}
             onBusyChange={setBusy}
             marginEntries={accountMargins.entries}
+            accountActivity={accountActivity}
+            onViewAccountTrades={() => setActiveTab("by-account")}
             onAccountsChange={(accounts) => {
               void handleAccountsChange(accounts).catch((error) => {
                 toast({
@@ -421,10 +523,11 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             marginReadyCount={accountMargins.readyCount}
             onRefreshMargins={accountMargins.refresh}
             persistReady={configReady}
+            routingSyncing={routingSyncing}
           />
         </TabsContent>
 
-        <TabsContent value="positions" className="mt-0">
+        <TabsContent value="positions" className="mt-0 space-y-6">
           <DeltaPositionsTab
             environment={environment}
             enabledAccounts={enabledAccounts}
@@ -437,7 +540,7 @@ export function DeltaTradingDashboard({ environment = "demo" }: DeltaTradingDash
             singleAccountId={singleAccountId}
             broadcastAccountIds={broadcastAccountIds}
             onRefreshPositions={async () => {
-              await mutatePositions()
+              await Promise.all([mutatePositions(), mutateOrders(), mutateActivity()])
             }}
           />
         </TabsContent>

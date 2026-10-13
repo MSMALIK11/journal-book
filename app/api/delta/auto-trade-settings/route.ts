@@ -33,6 +33,8 @@ const patchSchema = z.object({
     .record(z.enum(DELTA_AUTO_TRADE_SYMBOLS), z.number().int().positive().nullable())
     .optional(),
   attachTvBrackets: z.boolean().optional(),
+  /** 1 = TP distance matches SL risk on fill; null = use TV TP price literally. */
+  bracketRiskRewardRatio: z.number().min(0.25).max(10).nullable().optional(),
   closeOnTvExit: z.boolean().optional(),
 })
 
@@ -61,11 +63,19 @@ export async function GET(request: NextRequest) {
       config = { ...config, broadcastAccountIds: enabledAccounts.map((a) => a.id) }
     }
 
+    const targetAccounts = enabledAccounts
+      .filter((a) => {
+        if (config.tradeMode === "single") return a.id === config.singleAccountId
+        return (config.broadcastAccountIds ?? []).includes(a.id)
+      })
+      .map((a) => ({ id: a.id, label: a.label }))
+
     const recentLogs = await getRecentAutoTradeLogs(session.sub, environment)
 
     return NextResponse.json({
       environment,
       config,
+      targetAccounts,
       recentLogs,
       serverLiveBlocked: isServerLiveTradingBlocked(),
     })
