@@ -362,7 +362,7 @@ export async function persistNewTradeAlert(
   }
 
   publishAlertsUpdated(userId, accountId)
-  return sentAt ? alertKey : null
+  return alertKey
 }
 
 export async function persistClosedTradeAlert(
@@ -457,7 +457,7 @@ export async function persistClosedTradeAlert(
   }
 
   publishAlertsUpdated(userId, accountId)
-  return sentAt ? alertKey : null
+  return alertKey
 }
 
 export async function evaluateAndPersistAlerts(

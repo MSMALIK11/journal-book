@@ -1,4 +1,5 @@
 import { setDefaultResultOrder } from "node:dns"
+import https from "node:https"
 import connectDB from "@/app/api/db/mongoose"
 import TradingAlert from "@/app/api/models/TradingAlert"
 import User from "@/app/api/models/User"
@@ -17,6 +18,7 @@ try {
 const TELEGRAM_API = "https://api.telegram.org"
 const PREFS_CACHE_TTL_MS = 60_000
 const TELEGRAM_FETCH_ATTEMPTS = 3
+const TELEGRAM_HTTPS_TIMEOUT_MS = 25_000
 const PHOTO_DEDUPE_MS = 90_000
 const recentPhotoKeys = new Map<string, number>()
 
@@ -76,11 +78,90 @@ function telegramChatIdCandidates(chatId: string) {
   return [...new Set(candidates)]
 }
 
+function formatTelegramNetworkError(message: string) {
+  if (/fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(message)) {
+    return `${message} — server cannot reach api.telegram.org (check TELEGRAM_BOT_TOKEN on Vercel/.env and network).`
+  }
+  return message
+}
+
+function telegramJsonViaHttps<T>(
+  path: string,
+  body: string,
+): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
+  const token = getBotToken()
+  if (!token) {
+    return Promise.resolve({
+      ok: false,
+      error: "Telegram bot token is not configured. Add TELEGRAM_BOT_TOKEN to .env.",
+    })
+  }
+
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        hostname: "api.telegram.org",
+        port: 443,
+        path: `/bot${token}/${path}`,
+        method: "POST",
+        family: 4,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+        timeout: TELEGRAM_HTTPS_TIMEOUT_MS,
+      },
+      (res) => {
+        let raw = ""
+        res.on("data", (chunk) => {
+          raw += chunk
+        })
+        res.on("end", () => {
+          const data = (() => {
+            try {
+              return JSON.parse(raw) as { ok?: boolean; description?: string; result?: T }
+            } catch {
+              return null
+            }
+          })()
+          if (!res.statusCode || res.statusCode >= 400 || !data?.ok) {
+            resolve({
+              ok: false,
+              error: data?.description || `Telegram request failed (${res.statusCode || 0})`,
+            })
+            return
+          }
+          resolve({ ok: true, data: data.result as T })
+        })
+      },
+    )
+    req.on("error", (error) => {
+      resolve({
+        ok: false,
+        error: formatTelegramNetworkError(error instanceof Error ? error.message : "Telegram request failed"),
+      })
+    })
+    req.on("timeout", () => {
+      req.destroy()
+      resolve({ ok: false, error: "Telegram request timed out" })
+    })
+    req.write(body)
+    req.end()
+  })
+}
+
 async function telegramRequest<T>(path: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
   const token = getBotToken()
   if (!token) {
     return { ok: false, error: "Telegram bot token is not configured. Add TELEGRAM_BOT_TOKEN to .env." }
   }
+
+  const body =
+    typeof init?.body === "string"
+      ? init.body
+      : init?.body
+        ? String(init.body)
+        : ""
 
   let lastError = "Telegram request failed"
   for (let attempt = 0; attempt < TELEGRAM_FETCH_ATTEMPTS; attempt++) {
@@ -88,6 +169,7 @@ async function telegramRequest<T>(path: string, init?: RequestInit): Promise<{ o
       const response = await fetch(`${TELEGRAM_API}/bot${token}/${path}`, {
         ...init,
         cache: "no-store",
+        signal: AbortSignal.timeout(TELEGRAM_HTTPS_TIMEOUT_MS),
         headers: {
           "Content-Type": "application/json",
           ...(init?.headers || {}),
@@ -113,7 +195,13 @@ async function telegramRequest<T>(path: string, init?: RequestInit): Promise<{ o
     }
   }
 
-  return { ok: false, error: lastError }
+  if (body) {
+    const fallback = await telegramJsonViaHttps<T>(path, body)
+    if (fallback.ok) return fallback
+    lastError = fallback.error
+  }
+
+  return { ok: false, error: formatTelegramNetworkError(lastError) }
 }
 
 export function warmTelegramConnection() {
@@ -151,29 +239,35 @@ async function telegramMultipartRequest(
     return { ok: false, error: "Telegram bot token is not configured. Add TELEGRAM_BOT_TOKEN to .env." }
   }
 
-  try {
-    const response = await fetch(`${TELEGRAM_API}/bot${token}/${path}`, {
-      method: "POST",
-      body: form,
-      cache: "no-store",
-    })
-    const data = (await response.json().catch(() => null)) as
-      | { ok?: boolean; description?: string }
-      | null
+  let lastError = "Telegram request failed"
+  for (let attempt = 0; attempt < TELEGRAM_FETCH_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(`${TELEGRAM_API}/bot${token}/${path}`, {
+        method: "POST",
+        body: form,
+        cache: "no-store",
+        signal: AbortSignal.timeout(TELEGRAM_HTTPS_TIMEOUT_MS),
+      })
+      const data = (await response.json().catch(() => null)) as
+        | { ok?: boolean; description?: string }
+        | null
 
-    if (!response.ok || !data?.ok) {
-      return {
-        ok: false,
-        error: data?.description || `Telegram request failed (${response.status})`,
+      if (!response.ok || !data?.ok) {
+        return {
+          ok: false,
+          error: data?.description || `Telegram request failed (${response.status})`,
+        }
+      }
+      return { ok: true }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Telegram request failed"
+      if (attempt < TELEGRAM_FETCH_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
       }
     }
-    return { ok: true }
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : "Telegram request failed",
-    }
   }
+
+  return { ok: false, error: formatTelegramNetworkError(lastError) }
 }
 
 export async function sendTelegramPhoto(

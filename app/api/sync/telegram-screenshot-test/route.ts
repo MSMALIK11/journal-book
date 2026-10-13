@@ -5,6 +5,8 @@ import { withSyncCors } from "@/lib/sync-cors"
 import { decodeScreenshotJpeg } from "@/lib/telegram/screenshot"
 import { notifyTelegramTradeEvent, sendTelegramChartFollowUp } from "@/lib/telegram/send-trade-alert"
 
+export const runtime = "nodejs"
+
 const testSchema = z.object({
   screenshotJpeg: z.string().min(32).max(1_800_000),
   kind: z.enum(["open", "close"]).optional(),

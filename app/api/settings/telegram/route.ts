@@ -24,6 +24,8 @@ import {
 import { buildTelegramCaptionForAccount } from "@/lib/trading/alerts-server"
 import { getDefaultAccountId } from "@/lib/trading-accounts-server"
 
+export const runtime = "nodejs"
+
 const telegramSchema = z.object({
   enabled: z.boolean().optional(),
   chatId: z.string().max(32).optional(),
